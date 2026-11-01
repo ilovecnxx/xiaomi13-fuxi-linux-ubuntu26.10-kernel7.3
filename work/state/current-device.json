@@ -7,7 +7,7 @@
   "image_sha256": "20ac77941ddbad7d283c3681e16a31eadef71cb1486f6ffb7f0276cf03fe76ef",
   "kernel": "7.3.0+ #222 modem16-epmap",
   "classification": "Running Linux candidate with physically accepted native display and working GPU acceleration; not yet promoted to daily baseline (needs cold-boot/long-run regression).",
-  "boot_id": "b9326dd2-b840-412b-ac58-8e8f5808120a",
+  "boot_id": "615869b7-4318-4a3c-bd2d-c5785fd2c2a2",
   "fallback_image": "work/kbuild/abl-fuxi-s2idle2.img",
   "recovery_backup": "work/backup/display-install-20261029-104150/recovery_b-before.img",
   "health_with_sensors_failures": 0,
@@ -170,7 +170,7 @@
     "Second microphone (AMIC mapping), headset path (MBHC/USB-C mux), speaker protection/calibration."
   ],
   "regression_tests_passed": 57,
-  "previous_boot_id": "1c3a57e4-39e3-4352-a0a9-b74a3afe5d29",
+  "previous_boot_id": "b9326dd2-b840-412b-ac58-8e8f5808120a",
   "priority": "计划第 1 项 M5.2 已复验完成；计划第 2 项通话/基带继续采集 tms/servreg domain-list 响应，并区分 qcom_scm_pas_init_image 的 -12 来源；每次设备试验后恢复 s2idle2。源码复核：PDR -6 对应无匹配域的 -ENXIO，非事务超时；现有 QRTR 服务公告错误不足以证明 modem 因果。",
   "modem": {
     "pd_mapper_userspace_package": "protection-domain-mapper 1.0-4ubuntu6 installed/enabled during modem8 #214; IPA SMEM assertion still reproduced",
@@ -296,7 +296,7 @@
       "ui_acceptance": "not tested"
     }
   },
-  "updated_at": "2026-11-01 22:53 CST",
+  "updated_at": "2026-11-01 23:30 CST",
   "secondary_fallback_image": "work/kbuild/abl-fuxi-daily-pm1.img",
   "validation_scope": "s2idle2 #207: WiFi+sensor health check, 5 GHz association, CN regulatory domain, Bluetooth powered, Phosh restart count, and 57 host regression tests verified 2026-10-30; cold-boot and long-run regression remain pending.",
   "health_with_sensors_current_image_verified": true,
@@ -344,7 +344,7 @@
     "device_mutations_during_check": false
   },
   "last_linux_candidate_image": "work/kbuild/abl-fuxi-screen-audio9-host-bindingfix.img",
-  "latest_host_observation": "2026-11-01 22:53 baseline #222 (recovery_b 20ac7794), boot b9326dd2 (rebooted 22:32 via Android->adb reboot recovery); 81voltd-sub2 v5 (77460da0); ModemManager = mm-netlink UAF fix fe35ae9f (sha 863c42bd; old c6b20435 backup d42cc108); SIM1+SIM2 IMS registered (SIM2 at uptime 173 s, held 10 min). See docs/交接-新会话-20261101-2253.md",
+  "latest_host_observation": "2026-11-01 23:30 baseline #222 (recovery_b 20ac7794) restored 23:24 after voice-graphopen test (#226, 1e7b80eb); boot 615869b7; fuxi-health 0 failures; 81voltd-sub2 v5 (77460da0); ModemManager mm-netlink UAF fix (863c42bd); heal tuned (c8ce6204, grace 240 s) and keeper tuned (5da92d94, boot holdoff 300 s); SIM1+SIM2 IMS registered (SIM2 by uptime 186 s, no heal restart).",
   "last_linux_kernel": "7.3.0+ #207",
   "gpu": {
     "initialized": true,

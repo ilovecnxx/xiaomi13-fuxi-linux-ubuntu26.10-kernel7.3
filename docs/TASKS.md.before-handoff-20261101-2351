@@ -1,0 +1,28 @@
+# TASKS（2026-11-01 23:29）
+
+**完整交接：`docs/交接-新会话-20261101-2329.md`**（上一版 `docs/交接-新会话-20261101-2253.md`；旧 TASKS 备份 `docs/TASKS.md.before-handoff-20261101-2329`）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- 基线 #222（recovery_b 20ac7794）；boot_id 615869b7；fuxi-health 失败 0；两卡 IMS 都 registered。
+- 81voltd-sub2 = v5（77460da0）。ModemManager = mm-netlink UAF 修复版（863c42bd）；kill qmi-proxy 3 轮无崩溃。
+- 上游 MM 已修同一问题（`9317cbc4`，未发版）；本地补丁保留，发版后换 cherry-pick。
+- heal 宽限 240 s、keeper 开机 300 s 内不循环，已上机 1 次开机通过（样本少）。
+- 语音：GRAPH_OPEN 两图成功，VCPM 仍 EBADPARAM；缺第 3 个图、端点配置、启动顺序（交接 §7）。
+- 主仓库 HEAD 5b533d5，4 项未 commit；内核树 8 项未 commit。
+
+## 下一步
+1. 只读核对（交接 §9.1）。
+2. 离线补语音：第 3 个图、端点配置、对齐 Android 顺序（交接 §9.2–9.3）。
+3. 需要上机时先问用户；试验后回基线并跑 fuxi-health。
+4. 问用户：git commit；给刷测脚本默认带序列号；在上游 #1110 留言。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b，**必须带 `ANDROID_SERIAL=f8286c82`**；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；顺序重启是 stop 81voltd、restart MM、start 81voltd。
+- 刷机/重启、替换二进制、restart MM、kill qmi-proxy、建 PDN 试验、ADSP 命令、进 Android、费用操作、git commit/push、对外留言都要先问用户。
+- 不要重试：kctl 原样再写 SIM2（VCPM EBADPARAM）；卡 2 卡在 ctnet 时再做顺序重启或换 MM 版本；连续 kill qmi-proxy；改 Start Network 参数。
+- adb 用 `tools/platform-tools/adb -s f8286c82`。不要用 `pkill -f`。`work/claude-logs/android-voice-20261101/` 别提交。报告区分实测与推测。
