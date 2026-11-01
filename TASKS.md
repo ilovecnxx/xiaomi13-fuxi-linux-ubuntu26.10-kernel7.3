@@ -10,12 +10,12 @@
 - 81voltd-sub2 = v5（77460da0）；ModemManager = mm-netlink UAF 修复版（863c42bd）。
 - 【已实测，#236，设计文档 §7o】模式 0 里给 TX 补 SG/容器额外属性（`voice_extra` bit0）后 VSID 通过；只补 2 条图内连线（`voice_extra`=2）仍被拒、modem 崩溃。bit0 的作用与 mask 2 的失败各只观测一次。
 - 现在卡点与 Android 块模式一样：`start(TX)`（GRAPH_START）回 status 1。【推测】缺图外的东西：端点配置（0x2012 SET_CFG、tx_ep）、校准块 0x01001008。
-- 主仓库 HEAD 79f6e48；内核树 HEAD 1915bcc92（`audioreach.c/.h` 新增可选 SG/容器额外属性，`q6apm-voice.c` 新增 `voice_extra`）。全部未提交；试验镜像 `work/kbuild/abl-fuxi-voice-extra.img`（前缀 ffbd37d2）。
+- 主仓库 HEAD 8d223b1（已提交）；内核树 HEAD 7f3051fe4（只提交了 `audioreach.c/.h`；`q6apm-voice.c`、`q6apm.c/.h`、`q6voice-{ctrl,oob,agraph}.h` 仍未提交，因依赖不提交的厂商头文件）。试验镜像 `work/kbuild/abl-fuxi-voice-extra.img`（前缀 ffbd37d2）。
 
 ## 下一步
-1. 离线研究 `start(TX)` status 1：对比 Android 抓包里 START 之前发的命令（0x01001008 在 pkt0111/0114/0117/0141/0147，0x2012 SET_CFG、端点配置），设计方案写入设计文档 §7p。
+1. 离线研究 `start(TX)` status 1（已发现：Android 在 TX 的 START 前给 0x43af 发 SET_CFG 0x08001017 与 0x08001063，包日志只存了前 40 字节，各缺最后一个字；见对话）：对比 Android 抓包里 START 之前发的命令（0x01001008 在 pkt0111/0114/0117/0141/0147，0x2012 SET_CFG、端点配置），设计方案写入设计文档 §7p。
 2. 方案定了再问用户批准上机；失败的先跑，通过的最后跑。试验后回基线 #222 并跑 fuxi-health。
-3. 问用户：git commit（依赖不提交的头文件）；上游 #1110 留言。
+3. 问用户：上游 #1110 留言（用户自己贴，N 要核对）；内核树剩余文件怎么提交。
 
 ## 红线
 - 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
