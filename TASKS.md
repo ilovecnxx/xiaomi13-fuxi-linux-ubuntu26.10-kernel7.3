@@ -18,7 +18,7 @@
 2. （已完成）基线两卡 IMS 5 分钟内都注册。
 3. VSID 被拒的原因仍未知。候选：VSID 负载本身、Android 在 VSID 前发的 0x01001008。问用户选：Android 再抓 0x01001008（要进 Android、打电话有费用，需告知打给谁）或 ADSP ftrace（向 ADSP 发命令）。
 4. 试验后回基线 #222 并跑 fuxi-health。
-5. 问用户：内核树是否 commit；刷测脚本默认带序列号；上游 #1110 留言内容。
+5. 已完成：内核树提交 1915bcc92（分支 fuxi/20261031）；`fuxi-test-recovery.sh` 默认带序列号（250d153）。待做：上游 #1110 留言（草稿等用户确认，本机没有 glab）。
 
 ## 红线
 - 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
