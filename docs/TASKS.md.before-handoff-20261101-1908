@@ -1,0 +1,101 @@
+# TASKS（2026-11-01 15:57）
+
+**完整交接：`docs/交接-新会话-20261101-1557.md`**（上一版 `docs/交接-新会话-20261101-1421.md`；旧 TASKS 备份 `docs/TASKS.md.before-handoff-20261101-1557`）
+
+## 目标（用户 2026-11-01 13:30：自主推进，自选最优路线）
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- 基线 = modem16 #222（recovery_b sha256 20ac7794…）；实机 boot_id 7a65a89e；卡 1 IMS registered。
+- 双卡路线 1（用户 15:0x 选定）：MM 管卡 1，卡 2 由自写工具/补丁管。
+- 已实测：卡 2 注册在电信 LTE；卡 2 选中电信 VoLTE MBN；基带为卡 2 请求 IMS PDN，但原版 81voltd 把它建在了卡 1 上。
+- 81voltd 副卡补丁 `work/patches/81voltd-sub2-20261101/` 在手机上编译通过（5b612447…），**未部署**：部署被 auto mode 分类器拦截，需要用户批准。
+
+## 16:15 更新（补丁已部署，用户批准）
+- 部署：drop-in `81voltd.service.d/fuxi-sub2.conf` → `/usr/local/sbin/81voltd-sub2`（v2 sha 4d17d0d7…）；原版备份 `/usr/local/lib/fuxi-81voltd/81voltd.orig`，v1 备份 `81voltd-sub2.v1-nomux`。回滚见补丁 README。
+- v1 实测：副卡 Start Network 返回 InvalidOperation(70)。试验工具 `scripts/fuxi-qmi-wds-sub2-test.py`（日志 wds-mux-test.txt）证实：必须先 Bind Mux Data Port（embedded/1/mux N）；IPv6 + profile 2 返回 PDN_IPV6_CALL_DISALLOWED(210)，只给 APN "IMS" 不给 profile 就成功。
+- v2（mux 0xF0+sub，有 APN 时不带 profile）：卡 2 IMS PDN 连上、地址已回报基带；卡 1 仍 registered。卡 2 IMSA 一直 `registering`（4 分钟以上，期间退回过一次 not-registered）。
+- 疑点【推测】：卡 2 PDN 的 IPv6 前缀是 2408:8453（联通段），电信一般是 240e:。PDN 可能没建在卡 2 上，需要核实。
+- 源码改前备份：`work/src-untrusted/81voltd-20261101/qvd-connection.c.before-mux-20261101`；diff 文件 `work/patches/81voltd-sub2-20261101/81voltd-sub2-wds.diff` 还没更新到 v2。
+
+## 16:25 更新（找到卡 2 PDN 建错卡的原因，v3 已编译未部署）
+- 16:18 只读确认：boot_id 7a65a89e，81voltd 跑 v2（4d17d0d7…），sub0 registered，sub1 registering。
+- 只读探针 `scripts/fuxi-qmi-wds-bind-order.py`（日志 wds-bind-order.txt）【已实测】：Bind Mux Data Port 会把 WDS 客户端的订阅重置回主卡。先 sub2 再 mux，profile 列表是联通的；先 mux 再 sub2，列表是电信的。v2 的顺序是先 sub 再 mux，所以卡 2 的 PDN 建在卡 1 上，2408: 前缀就是这么来的。
+- v3：alloc → mux → bind sub → set ip family → start。在手机上编译通过，sha256 01a06b13…（voltd-build6.txt）。改前备份 `qvd-connection.c.v2-before-bindorder-20261101`。
+- v3 部署【未做】，需要用户批准。做法与 v2 相同：先备份 v2 为 `81voltd-sub2.v2-subfirst`，再 install，然后按 stop 81voltd、restart MM、start 81voltd 的顺序重启。
+
+## 16:24 v3 已部署（用户批准）——卡 2 IMS registered
+- 16:22:46 v2 备份到 `/usr/local/lib/fuxi-81voltd/81voltd-sub2.v2-subfirst`（4d17d0d7…），装上 v3（01a06b13…）；16:23:08 按 stop 81voltd、restart MM、start 81voltd 的顺序重启（deploy3.txt）。
+- 【已实测】运行中进程 exe sha 01a06b13…；卡 2 PDN 地址 240e:569:…（电信段）；约 21 s 后 MM connected，sub0 和 sub1 都是 registered，两张卡的 SMS/voice 都是 available。
+- 回滚：把 `81voltd-sub2.v2-subfirst` 装回 `/usr/local/sbin/81voltd-sub2`，再按同样的顺序重启。
+- 待办：更新 `81voltd-sub2-wds.diff` 到 v3；然后接 TASKS 下一步 3（卡 2 VOICE/WMS 常驻工具、keeper 监测卡 2）。
+
+## 17:05 更新（/start 复核）
+- 17:03 只读复核【已实测】：boot_id 7a65a89e；ModemManager、keeper、81voltd、rmtfs 均 active；81voltd exe sha 01a06b13…（v3）；两张卡 IMS 都 registered。
+- `81voltd-sub2-wds.diff` 已是 v3（与源码 git diff 逐字节一致，README 已写明）。
+- 卡 2 VOICE/WMS 常驻服务 `fuxi-sub2-msg.service` 已在手机上部署并运行（16:50 起，enabled/active；脚本 `scripts/fuxi-qmi-sub2-msg.py` sha 2fa256eb…，与手机一致）。收到的短信 PDU 存 `/var/log/fuxi-sim2-sms.jsonl`。本记录之前 TASKS.md 没写这一条。
+- keeper 加卡 2 监测：`scripts/fuxi-modem-keeper.py`（只记日志 `sim2 ims: A -> B`，不自动恢复）。
+- 17:05 keeper 已部署（用户批准）【已实测】：手机 sha ae59133b…；旧版备份 `/usr/local/lib/fuxi-keeper-backup/fuxi-modem-keeper.py.20261101-2abfa06f`；重启后 keeper/MM/81voltd 均 active，日志出现 `sim2 ims: unknown -> registered`，两张卡 IMS 仍 registered。回滚：把备份装回 `/usr/local/sbin/fuxi-modem-keeper.py` 并 restart keeper。
+
+- 17:06:33 卡 2 收短信【已实测】：用户发一条，fuxi-sub2-msg 收到 WMS 传输路由消息（format=6，pdu_len=23），PDU 已存 `/var/log/fuxi-sim2-sms.jsonl`（文件现 4 行），并发出 WMS ack；服务仍 active，卡 2 IMS 仍 registered。未核对短信正文。
+
+- 17:15 用户确认做卡 2 发短信、不进 Android 抓包。发送工具 `scripts/fuxi-qmi-sub2-send.py`（sha 8ee9a44e…）已写好并装到手机 `/usr/local/sbin/`：WMS client 绑订阅 1 → 查 Transport NW Reg → Raw Send（sms_on_ims）。PDU 编码已离线对过标准向量；手机上只跑过 `--dry-run`，**还没碰基带发过**。卡在：用户还没给目标号码和正文。用法 `fuxi-qmi-sub2-send.py [--dry-run] [--no-ims] <号码> <正文>`，输出不含号码和正文。
+
+- 17:11:31 卡 2 发短信【基带已接受，对方是否收到待用户确认】：用户给号码，发了 1 条 UCS2 短信（pdu_len=18），Raw Send 返回 OK，message_id=175；传输注册状态返回值 4（枚举含义未核对）；两张卡 IMS 仍 registered。工具修了两处 GI 调用签名（transport 查询要传 Input 对象），sha 以手机上 `/usr/local/sbin/fuxi-qmi-sub2-send.py` 为准，已与本地同步。
+
+- 17:12 卡 2 发短信【已实测通过】：用户确认对方收到（UCS2 中文，IMS 路径，Raw Send sms_on_ims）。
+- 17:12:46 卡 2 拨出【基带侧已实测：呼叫建立，对方是否振铃/接听待用户确认】：`scripts/fuxi-qmi-sub2-dial.py <号码> [秒]`（已装到手机 /usr/local/sbin）。状态序列 origination > alerting > conversation（17:12:54，type=2 即 VoLTE/IP 语音）> 20 s 后我方 End Call OK > end。无音频通路，所以没有声音。两张卡 IMS 仍 registered，fuxi-sub2-msg 的 VOICE 客户端也同步收到了状态指示。
+
+- 17:13 用户确认：卡 2 拨出对方振铃并接听【已实测通过】；短信收发也已通过。
+- 17:14 蜂窝数据【已实测】：`nmcli con up fuxi-mobile`（卡 1，APN 3gnet）→ qmapmux0.1 拿到 v4+v6，ping 223.5.5.5 3/3（117–248 ms）；路由 metric 1050，wifi(600) 仍优先，ssh 不受影响。`con down` 后卡 1 IMS 短暂 not-registered，约 35 s 内自愈为 registered（未做射频循环）。
+- 17:16 `fuxi-mobile` 已设 autoconnect=yes（用户让继续数据项）。回滚：`nmcli con mod fuxi-mobile connection.autoconnect no`。开机时数据和 IMS 的先后竞争【未验证，要等下次重启】。
+- 来电接听：`scripts/fuxi-qmi-sub2-answer.py [等来电秒] [保持秒]` 一次性工具（不是服务，避免自动接电话），已装手机；17:16 启动了 120 s 的等待窗口，结果看手机 `/tmp/answer.log`。
+- 通话音频：用户 17:2x 先选"不进 Android 的调研"（子 agent 在跑，输出 `docs/调研-通话音频-缺口-20261101.md`），随后又说"可以进安卓"。进 Android 抓包的方案（步骤、话费、回滚）**还没给用户确认**，等调研结果出来再提；进 Android 的方式：Linux 里 `reboot`；回来：`adb reboot recovery` 或音量上+电源，回来后核对 recovery_b = #222 并跑 fuxi-health。
+
+- 17:22 卡 2 来电接听【基带侧已实测：Answer Call OK，状态 incoming > conversation（type=2 VoLTE）】；17:22:23 状态 end（接听后 11 s，早于设定的 15 s，是对方挂断，我方未发 End Call）；两张卡 IMS 仍 registered。第一次窗口（17:16–17:18）用户拨晚了，没接上，但 fuxi-sub2-msg 17:21:22 已记到 incoming。无音频通路。
+
+- 用户要求把 Android 的 LineageOS 更新到最新版。官方接口（download.lineageos.org/api/v2/devices/fuxi/builds）查得最新为 24.0 nightly 2026-10-26；手机当前构建日期未知（要进 Android 才能看）。更新可能覆盖 recovery_b 并换固件分区，与红线冲突，**未执行任何更新**，等用户在"A 出完整方案 / B 先进 Android 看版本"中选择。
+
+- 通话音频调研完成（子 agent，证据 `docs/调研-通话音频-缺口-20261101.md`）：【已证实】内核 qdsp6 无语音前端/VSID 下发，tplg 无 voice，UCM 无 Voice verb，手机无 ACDB（主机有 Tutu_acdb_cal.acdb）；VSID 已知（0x11C05000/0x11DC5000，不用抓包）。【推测】modem 自处理 IMS/RTP，AP 只建 ADSP 语音子图。缺口顺序：q6apm 语音 DAI+子图+VCPM VSID（2–4 周）> tplg > ACDB > UCM Voice verb+启停守护进程 > 麦克风/听筒验证。在主线手拼语音子图会向 ADSP 发命令，做前要问用户；VCPM 参数格式最可靠靠 Android 抓包（用户已同意进 Android，方案待确认）。
+
+- 17:38 用户选 B：进 Android 只读看 LineageOS 版本。重启前 recovery_b 前 10436608 字节 sha256 = 20ac7794…（与基线一致），Linux 根 sda33。adb 用 `tools/platform-tools/adb`（PATH 里没有）。做法：Linux 内 `systemctl reboot`（普通启动进 Android）；只读 `getprop`；回 Linux：`adb reboot recovery`，回来后核对 boot_id/recovery_b 并跑 fuxi-health。不写任何分区，不更新。
+
+- 17:38 【已实测】手机现在在 Android（slot _b，adb 序列号 f8286c82，开机约 30 s）：`ro.lineage.version=24.0-20261019-NIGHTLY-fuxi`，Android 17，安全补丁 2026-10-01。官方最新 = 24.0-20261026（只新一周）。**手机当前停在 Android，还没回 Linux**，回去用 `tools/platform-tools/adb reboot recovery`。
+
+- 17:40 用户选"留在 Android 抓包"。只读摸底【已实测】：`adb root` 可用（uid 0），SELinux Enforcing，tracefs 有、debugfs 没有，`strace`/`simpleperf`/`perfetto` 都在 /system/bin，没有 tinymix。音频走 PAL/AGM（audio HAL 进程 pid 1374，PAL 日志在 logcat），GPR 通道是 audio_pkt 内核模块。两张卡都 LOADED（dsds）。**还没拨号**，等用户确认抓包步骤（话费 + 对方接听）。抓包日志目录 `work/claude-logs/android-voice-20261101/`（已建，空）。
+
+- 18:33 抓包第一次尝试【失败，误拨】：启动了 logcat（`work/claude-logs/android-voice-20261101/logcat-raw.txt`，含号码，未脱敏，别提交）和 strace（手机 `/data/local/tmp/voice-strace.txt`，150 s 超时）；`am start -a CALL` 弹出选卡界面，但几秒后再看时界面已显示"正在通过 China Unicom 进行通话"，即呼叫从**卡 1（联通）**发出，不是用户批准的卡 2。发现后立即 `KEYCODE_ENDCALL` 挂断，mCallState=0，通话时长几秒。原因未查清【推测：选卡界面自动落到了默认卡】。Android 默认外呼卡是 none。重拨前要换确定性的选卡办法，并先问用户。
+
+- 18:39 抓包第二轮【卡 2 已校验，抓到】：脚本 `scripts/fuxi-android-dial-sim2.sh`（点选"中国电信"，用 telecom 日志里 `createConnection ... , 2,` 校验账户，不对就挂断；之前两次因校验写错而保守挂断，各 4–6 s）。第三次卡 2 VoLTE 通话 18:39:53 ACTIVE 到 18:40:24，约 31 s，用户接听。结论见 `docs/调研-通话音频-Android抓包-20261101.md`：Android 拨出时就进 MODE_IN_CALL；PAL stream type 14，前端 107/109；语音图 alias 为 `*_Voice_Call_Tx/Rx_VSID_VSID_DEFAULT`；AGM 在 HAL 进程内建图。**进展（只读分析，18:5x）**：strace 的 fd 8 就是 GPR 通道，已用 `scripts/fuxi-gpr-decode.py` 解出 2118 个包；VCPM（模块 0x4）收到三种 SET_CFG（param 0x080011bc / 0x08001310 / 0x0800116b），VSID=0x11DC5000（卡 2）线上实测，详见文档"追加分析"。**仍缺**：语音图的模块连线（在共享内存里，需读 Android `/vendor/etc` 下 ACDB/AGM 图定义，只读）。原始日志含号码，别提交（`work/claude-logs/android-voice-20261101/`）。
+- **更正**：18:33 那次误拨联通卡 1 实际持续约 26 s（18:33:16 DIALING → 18:33:19 ALERTING → 18:33:42 DISCONNECTED，没有 ACTIVE，没接通），我之前说"几秒"不准确。我是看到界面后才挂的，但挂断前它在响。手机仍停在 Android。
+
+- 18:46 用户选"先读图定义再回 Linux"。只读 `adb pull` 了 `/vendor/etc/` 下 Tutu_acdb_cal.acdb（sha256 b87a086e…，与 `work/firmware-sensors/acdb/kalama_mtp/` 的副本一致）、Tutu_workspaceFileXml.qwsp（f13e477c…）、usecaseKvManager.xml、card-defs.xml，存到 `work/android-vendor-audio-20261101/`。没写任何分区，没拨号。ACDB 里有 `StreamTX_Voice_Call_Tx_VSID_VSID_DEFAULT` 等图别名（strings 可见）；模块连线在二进制里，尚未解析。
+- 18:46:34 `adb reboot recovery` 回 Linux【已实测】：内核 #222，新 boot_id `2d8e767b-929b-4ccf-b293-907a636b6e69`（local `work/state/current-device.json` 还是旧的 7a65a89e，**未更新**）；recovery_b 前 10436608 字节 sha256 = 20ac7794…（与基线一致）；根 sda33；ModemManager/keeper/81voltd/rmtfs/fuxi-sub2-msg 均 active；`fuxi-health --require-wifi --require-sensors` 失败项 0。
+- 开机后数据与 IMS 先后【已实测一次】：`fuxi-mobile` autoconnect 生效，qrtr0 activated，qmapmux0.1 拿到 v4+v6；keeper 开机约 33 s 记到卡 1 `ims registered`，卡 2 `unknown -> registering`。检查时刻卡 2 仍 registering（开机约 1 分钟，**未等到 registered，需稍后复查**）。
+- 18:49–18:52 轮询【已实测】：冷启动后卡 2 IMS 在 `registering` / `not-registered` 间来回，开机约 6 分钟仍未 registered；卡 1 一直 registered。81voltd 日志显示卡 2 PDN 已建好（`WDS sub 2: connected`，地址 240e: 电信段）。对比：16:23 手动按 stop 81voltd、restart MM、start 81voltd 的顺序重启后，卡 2 约 21 s registered。成因【推测】：冷启动时 81voltd 与 MM/基带的先后竞争，未验证。**没有做任何恢复操作**（按顺序重启 81voltd 会断卡 1 IMS/数据约 1 分钟，需用户批准）。
+- 18:53:47 用户批准后按顺序重启（stop 81voltd、restart MM、start 81voltd）【已实测】：18:54:16（约 29 s）两张卡 IMS 都 registered，MM registered；运行中 81voltd-sub2 exe sha 01a06b13…（v3，PID 3611）。**结论：冷启动后卡 2 卡在 registering 时，这个顺序重启能恢复。** 开机竞争的根因仍是【推测】；若要根治，可让 keeper 或一个 systemd 单元在开机时自动做这个顺序（要先问用户，且会断卡 1 约 30 s）。
+- 18:5x 开机自动恢复卡 2 IMS【已部署，用户批准；真正的冷启动效果未验证】：`scripts/fuxi-sub2-ims-heal.sh`（sha 496c8612…，手机 `/usr/local/sbin/`）+ `scripts/fuxi-sub2-ims-heal.service`（手机 `/etc/systemd/system/`，已 enable，Type=simple，不重试）。逻辑：等卡 1 registered（上限 240 s）→ 给卡 2 宽限 90 s → 仍未 registered 才按 stop 81voltd、restart MM、start 81voltd 重启一次 → 观察 120 s。**是条件触发，不是每次开机无条件重启**（卡 2 自己注册上就不动，避免白断卡 1）。已实测：DRYRUN+FORCE 演练命令顺序正确；正式 start 一次，因两卡都已注册，0 s 退出无动作。日志 `journalctl -u fuxi-sub2-ims-heal -b -o cat`。回滚：`systemctl disable --now fuxi-sub2-ims-heal; rm /etc/systemd/system/fuxi-sub2-ims-heal.service /usr/local/sbin/fuxi-sub2-ims-heal.sh; systemctl daemon-reload`。下次重启后要看这个日志，确认触发/恢复。
+- 19:05 ACDB 语音图离线解析完成（子 agent，纯主机，未碰手机）。产出：`scripts/fuxi-acdb-dump.py`（用法 `python3 -I scripts/fuxi-acdb-dump.py <acdb> tags|aliases|graph <别名ID>|sg <SGID>|modules [--json --no-cal --cal-all]`，文件路径在子命令前）、`docs/调研-ACDB语音图-20261101.md`。我抽查了：脚本能跑，别名 224 的 SG/容器/模块输出与文档一致；ACDB 文件 sha 前缀 b87a086e。
+  - 【已证实，字节级】ACDB 块链走到文件末尾；语音 TX 图 = 别名 224：SG 0xb0000039（设备，43af/7001024）、0xb00000b1（Fluence 前处理）、0xb000003f（语音 TX 流，scenario=3）。RX 图 = 别名 272：SG 0xb0000040/41/42/43/0xb0000002（设备，4433/700100e）。抓包里的 miid/mid 与 ACDB 静态编号对得上，运行时可直接用 ACDB 的 miid。
+  - **更正**：`docs/调研-通话音频-Android抓包-20261101.md` 里把 7001000/7001019/7001005/7001003/7001032 当语音图模块是错的；logcat 同一秒标明它们属于 alias 142（铃声/提示音播放流）。语音图里没有 WR/RD_SHARED_MEM_EP、PCM_DEC、PCM_CNV。该文档尚未改，只在新文档里更正。
+  - 【推测】SG 间下游关系（RX 40→41→42→43→2，TX 39→b1→3f）；RX 流与 TX 流有控制耦合；缩减版图 ADSP 是否接受无法离线验证。
+  - 未解析：MTKT/MTLU/MTDE/MTDO、TMLU/TMDE、SCLU/SCDE/SCDO、VCMK/VCLU、PPTC、HASI；MTDE 里有 CODEC_DMA_INTF_CFG（miid 0x43ad）的线索；qwsp 前 48 字节高熵，没解析；SG 间数据连线、GRAPH_OPEN 本体（共享内存）离线拿不到。
+  - 对下一步的含义：内核侧要在 q6apm 上建这些 SG/容器/模块，还要有 CODEC DMA 接口配置和 VCPM 的 3 个 SET_CFG。向 ADSP 发语音子图命令会真正动 ADSP，做前要问用户。
+
+## 下一步
+0. （已完成，见 18:47 更新）手机已回 Linux。
+0.1 离线解析 `work/android-vendor-audio-20261101/` 里的语音图（Tutu_acdb_cal.acdb 二进制里的 graph/模块连线；usecaseKvManager.xml 的 PAL_STREAM_VOICE_CALL 键值在第 194 行起），与 `docs/调研-通话音频-Android抓包-20261101.md` 的 GPR 解码对照。纯主机离线，不碰手机。
+0.5 重拨卡 2 抓包（如需补抓 GPR 负载）：先确认选卡办法（见上），再重新起 strace（旧的已超时）。
+1. 来电接听已验证（看上面）。
+2. 下次重启后核对 autoconnect 与 IMS 的先后；keeper 日志里 `sim2 ims:` 行也能看到卡 2。
+3. 通话音频只能做不进 Android 的部分（读内核/rootfs 里的 ADSP 固件与 ACDB 文件、AudioReach 拓扑），需要先问用户范围。
+2. 卡 2 收短信已通过；之后是发短信、拨出/接听、通话音频（均需用户确认费用/物理操作）。
+3. 去掉调试 drop-in `fuxi-debug.conf` 时同样要按 stop 81voltd、restart MM、start 81voltd 的顺序重启。
+4. 全部工作树改动仍未 commit，commit 要先问用户。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b，写前备份；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`。
+- 部署服务、费用操作、物理操作、进 Android 抓包、git commit/push 先问用户。
+- 日志过滤 password/psk/pin/IMSI/ICCID/IMEI/号码；报告区分实测与推测。

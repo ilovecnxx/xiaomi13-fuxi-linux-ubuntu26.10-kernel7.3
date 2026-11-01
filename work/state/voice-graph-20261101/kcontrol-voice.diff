@@ -1,0 +1,108 @@
+--- work/state/voice-graph-20261101/before-kcontrol/q6apm-voice.c	2026-11-01 19:36:20.341010985 +0800
++++ build/linux/sound/soc/qcom/qdsp6/q6apm-voice.c	2026-11-01 19:35:41.377039896 +0800
+@@ -13,9 +13,9 @@
+  *  - Graph-external connections (echo reference) are left out.
+  *  - Android opens a third graph (hardware endpoints) that is not modelled.
+  *
+- * Nothing calls q6apm_voice_start() yet. It also refuses to run unless the
+- * "experimental" module parameter is set, because it sends GRAPH_OPEN and
+- * friends to the ADSP.
++ * The only caller is the "Voice Call" kcontrol in q6apm-dai.c. It refuses to
++ * run unless the voice_experimental module parameter is set (writable at
++ * runtime), because it sends GRAPH_OPEN and friends to the ADSP.
+  */
+ #include <linux/device.h>
+ #include <linux/idr.h>
+@@ -52,7 +52,7 @@
+ #define Q6VOICE_VCPM_STATE_RUNNING	1
+ 
+ static bool experimental;
+-module_param_named(voice_experimental, experimental, bool, 0444);
++module_param_named(voice_experimental, experimental, bool, 0644);
+ MODULE_PARM_DESC(voice_experimental, "Allow q6apm_voice_start() to talk to the ADSP (unfinished)");
+ 
+ struct q6voice_graph {
+@@ -64,7 +64,39 @@
+ 
+ static DEFINE_MUTEX(q6voice_lock);
+ static struct q6voice_graph q6voice_tx, q6voice_rx;
+-static bool q6voice_active;
++static u32 q6voice_cur_vsid;	/* 0: no call graphs open */
++
++/* kcontrol selector -> VSID: Off, SIM1, SIM2 (fuxi) */
++static const u32 q6voice_vsids[] = { 0, 0x11c05000, 0x11dc5000 };
++
++/**
++ * q6apm_voice_sel_to_vsid() - map a "Voice Call" selector to a VSID
++ * @sel: 0 (Off), 1 (SIM1) or 2 (SIM2)
++ *
++ * Return: the VSID, or 0 for Off and for out-of-range selectors.
++ */
++u32 q6apm_voice_sel_to_vsid(unsigned int sel)
++{
++	return sel < ARRAY_SIZE(q6voice_vsids) ? q6voice_vsids[sel] : 0;
++}
++EXPORT_SYMBOL_GPL(q6apm_voice_sel_to_vsid);
++
++/**
++ * q6apm_voice_get_sel() - selector of the running call, 0 if none
++ */
++unsigned int q6apm_voice_get_sel(void)
++{
++	unsigned int i, sel = 0;
++
++	mutex_lock(&q6voice_lock);
++	for (i = 1; i < ARRAY_SIZE(q6voice_vsids); i++)
++		if (q6voice_vsids[i] == q6voice_cur_vsid)
++			sel = i;
++	mutex_unlock(&q6voice_lock);
++
++	return sel;
++}
++EXPORT_SYMBOL_GPL(q6apm_voice_get_sel);
+ 
+ static void q6voice_free_graph(struct q6apm *apm, struct q6voice_graph *vg)
+ {
+@@ -239,11 +271,13 @@
+ 	struct param_id_vcpm_vsid p = { .vsid = vsid };
+ 	int ret;
+ 
+-	if (!experimental)
++	if (!READ_ONCE(experimental))
+ 		return -EOPNOTSUPP;
++	if (!vsid)
++		return -EINVAL;
+ 
+ 	mutex_lock(&q6voice_lock);
+-	if (q6voice_active) {
++	if (q6voice_cur_vsid) {
+ 		ret = -EBUSY;
+ 		goto unlock;
+ 	}
+@@ -302,7 +336,7 @@
+ 	if (ret)
+ 		goto stop;
+ 
+-	q6voice_active = true;
++	q6voice_cur_vsid = vsid;
+ 	mutex_unlock(&q6voice_lock);
+ 	return 0;
+ 
+@@ -329,7 +363,7 @@
+ 	struct q6apm *apm = dev_get_drvdata(dev->parent);
+ 
+ 	mutex_lock(&q6voice_lock);
+-	if (!q6voice_active) {
++	if (!q6voice_cur_vsid) {
+ 		mutex_unlock(&q6voice_lock);
+ 		return 0;
+ 	}
+@@ -342,7 +376,7 @@
+ 	q6voice_tx.graph = NULL;
+ 	q6voice_free_graph(apm, &q6voice_rx);
+ 	q6voice_free_graph(apm, &q6voice_tx);
+-	q6voice_active = false;
++	q6voice_cur_vsid = 0;
+ 	mutex_unlock(&q6voice_lock);
+ 
+ 	return 0;

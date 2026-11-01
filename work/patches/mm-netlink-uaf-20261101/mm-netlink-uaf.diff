@@ -1,0 +1,27 @@
+--- a/src/mm-netlink.c
++++ b/src/mm-netlink.c
+@@ -229,17 +229,22 @@
+ {
+     GTask *task;
+     guint32 sequence_id;
++    MsgFunc completion_fn;
+ 
+     task = g_steal_pointer (&tr->completion_task);
+     sequence_id = tr->sequence_id;
++    /* fuxi: g_hash_table_remove() frees tr via transaction_free(); copy
++     * everything still needed before removing it (use-after-free fix) */
++    completion_fn = tr->completion_fn;
+ 
+     g_hash_table_remove (tr->self->transactions,
+-                         GUINT_TO_POINTER (tr->sequence_id));
++                         GUINT_TO_POINTER (sequence_id));
++    tr = NULL;
+ 
+     if (!saved_errno) {
+         GError *error = NULL;
+ 
+-        if (!tr->completion_fn (task, hdr, &error))
++        if (!completion_fn (task, hdr, &error))
+             g_task_return_error (task, error);
+     } else {
+         g_task_return_new_error (task, G_IO_ERROR, g_io_error_from_errno (saved_errno),

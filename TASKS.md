@@ -1,32 +1,27 @@
-## Handoff — 2026-10-31 基带（modem）注册稳定性 + modem keeper
+# TASKS（2026-11-01 22:53）
 
-### 目标
-- 小米 13（fuxi）主线 Linux 蜂窝：IPA 数据通路稳定 → LTE/5G 注册稳定 → 短信、通话、双卡。
+**完整交接：`docs/交接-新会话-20261101-2253.md`**（上一版 `docs/交接-新会话-20261101-2222.md`；旧 TASKS 备份 `docs/TASKS.md.before-handoff-20261101-2253`）
 
-### 已完成
-- modem12–15：IMEM 映射、SMEM 整段映射进 IPA IOMMU、SSR 在 offline 事件后 halt GSI 通道；基带崩溃恢复可用。
-- modem16-epmap（#222）：`ipa_data-v5.5.c` 端点 AP_MODEM_RX 23→24、MODEM_AP_RX 21→22，rmnet 下行打通，两次启动实机通过（ping v4/v6、HTTPS、约 85 Mbit/s）。
-- 01:55 曾刷回 s2idle2（#207），health 失败 0；02:09 又刷 modem16 到 recovery_b 准备测 keeper（日志 `work/claude-logs/modem16-keeper-flash-20261031.log`）。
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
 
-### 关键文件及改动
-- `work/patches/modem16-epmap-20261031/`：当前基带内核补丁；镜像 `work/kbuild/abl-fuxi-modem16-epmap.img`。
-- `work/patches/mm-simslot-20261030/`：MM 双卡 active slot 补丁（手机 `/usr/local/lib/fuxi-mm/src/ModemManager`，drop-in `fuxi-patched.conf`）。
-- `scripts/fuxi-modem-keeper.py` + `work/deploy/modem-keeper-20261031/`（keeper、service、usage 工具、MM drop-in）：开机设 data-centric，被拒/掉线后做射频 low→on 循环，带退避。
-- 详细记录：`docs/目标-M5.md` 末节（01:30、01:55 两节）。
+## 当前状态
+- 基线 #222（recovery_b 20ac7794）；boot_id b9326dd2（22:37 经 Android `adb reboot recovery` 重启）；fuxi-health 失败 0。
+- 81voltd-sub2 = v5（77460da0）。ModemManager = mm-netlink UAF 修复版 fe35ae9f（863c42bd），旧版备份 `ModemManager.c6b20435`（d42cc108）。
+- **两卡 IMS 都 registered**：卡 2 在开机 173 s 注册，并保持了 10 分钟。
+- 卡 2 卡在 ctnet 时，换回旧 MM 也救不回（已排除 MM 修复）；重启手机能救回。
+- 主仓库 56 项、81voltd 树、内核树都未 commit。
 
-### 关键结论与坑
-- 掉线原因方向：EMM cause 7（EPS services not allowed）/ voice-centric 下无 IMS 语音 → 基带停用 E-UTRA；只有 `mmcli --set-power-state-low` 再 `-on` 能恢复，data-centric 单独无效。
-- 恢复 #207：`scripts/fuxi-test-recovery.sh work/kbuild/abl-fuxi-s2idle2.img`（需 USB adb），之后跑 `scripts/fuxi-health.sh --require-wifi --require-sensors`。
-- 手机上没有 `curl`/`resolvectl`；补丁版 MM 前台跑会中途退出，用 `systemd-run --unit=mm-patched` 或 drop-in。
-- MM 日志存档前过滤 password/psk/pin 行。
-- 记忆里写着“自主刷机已暂停”（10-30），刷机/重启前先跟用户确认。
+## 下一步
+1. 只读核对（交接 §9.1）。
+2. 问用户：MM 修复第 3 轮验证，只 kill qmi-proxy 1 轮，观察 10 分钟（§9.2）。
+3. 问用户：调 heal（宽限 90 s 太短）和 keeper（§9.3）。
+4. 问用户：git commit；查上游 MM 有没有修过（§9.4）。然后回到通话音频。
 
-### 未完成 TODO
-- keeper 是否已部署到手机、是否 active：未确认；`work/claude-logs/modem16-keeper-run1-20261031/` 为空，测试没跑。
-- 注册稳定性长测（keeper 下 ≥1200 s，统计 registered 比例、射频循环次数）。
-- IMS/VoLTE；短信；通话；卡 2 电信；移动卡全网通。
-- 更新 `work/state/current-device.json`（仍写 #207）、README 进度。
-
-### 下一步先做什么
-1. ssh 到手机：`uname -v` 看是否 #222，`systemctl status fuxi-modem-keeper ModemManager`。
-2. 若 keeper 未部署：按 `work/deploy/modem-keeper-20261031/` 拷到 `/usr/local/sbin`、`/etc/systemd/system` 后 enable，再开始 run1 记录。
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；顺序重启是 stop 81voltd、restart MM、start 81voltd。
+- 刷机/重启、替换二进制、restart MM、kill qmi-proxy、建 PDN 试验、ADSP 命令、进 Android、费用操作、git commit/push 都要先问用户。
+- 不要重试：卡 2 卡在 ctnet 时再做顺序重启或换 MM 版本（2 次都失败），直接问用户能否重启手机；不要连续 kill qmi-proxy；改 Start Network 参数；不先 Bind Mux。
+- adb 用 `tools/platform-tools/adb -s f8286c82`。不要用 `pkill -f`，用 `pgrep -x` 加 PID。`work/claude-logs/android-voice-20261101/` 别提交。报告区分实测与推测。

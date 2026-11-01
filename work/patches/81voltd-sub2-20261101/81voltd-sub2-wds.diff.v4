@@ -1,0 +1,869 @@
+diff --git a/meson.build b/meson.build
+index 4000c6f..596441b 100644
+--- a/meson.build
++++ b/meson.build
+@@ -2,6 +2,7 @@ project('81voltd', 'c', version : '1.2.0')
+ 
+ libmm = dependency('mm-glib')
+ libqmi = dependency('qmi-glib')
++libqrtr_glib = dependency('qrtr-glib')
+ libqrtr = dependency('qrtr')
+ 
+ qmic = find_program('qmic', required : false)
+@@ -26,7 +27,7 @@ executable('81voltd',
+   'qvd-modem.c',
+   'qvd-server.c',
+   qmi,
+-  dependencies : [libmm, libqmi, libqrtr],
++  dependencies : [libmm, libqmi, libqrtr, libqrtr_glib],
+   install : true)
+ 
+ install_man('81voltd.1')
+diff --git a/qvd-connection.c b/qvd-connection.c
+index 1147409..ebcdb4c 100644
+--- a/qvd-connection.c
++++ b/qvd-connection.c
+@@ -4,10 +4,24 @@
+  */
+ 
+ #include <libmm-glib.h>
++#include <libqmi-glib.h>
+ #include <stdbool.h>
+ 
+ #include "qvd-connection.h"
+ 
++#define WDS_TIMEOUT 30
++/* Start Network on an unbound client fails with InvalidOperation, so bind a
++ * mux id well above the ones ModemManager allocates (1, 2, ...). */
++#define WDS_MUX_ID_BASE 0xF0
++/*
++ * Early after boot the modem can complete an APN "IMS" Start Network on the
++ * secondary SIM by handing back its internet (attach) PDN: a different APN,
++ * no IMCN flag and no P-CSCF, so IMS registration never finishes. Such a PDN
++ * is stopped and requested again after a growing delay.
++ */
++#define WDS_RETRY_FIRST_S 20
++#define WDS_RETRY_MAX_S 120
++
+ enum {
+ 	ADDR_CHANGED,
+ 	CONNECT_ERR,
+@@ -25,6 +39,24 @@ struct _QVDConnection {
+ 
+ 	guint32 sub_id, conn_id;
+ 	guint8 local_id;
++
++	/*
++	 * Direct WDS backend, used for subscriptions that ModemManager does not
++	 * manage. The client is bound to the subscription before starting the
++	 * network, so the PDN comes up on the right SIM.
++	 */
++	gboolean is_wds;
++	guint32 wds_sub;
++	gchar *wds_apn;
++	guint16 wds_profile;
++	QmiDevice *qmi;
++	QmiClientWds *wds;
++	gulong wds_ind_sig;
++	guint32 pdh;
++	gboolean wds_busy;
++	/* Wrong-PDN retry: timer source id and attempt count. */
++	guint wds_retry_src;
++	guint wds_retry_n;
+ };
+ 
+ G_DEFINE_TYPE(QVDConnection, qvd_connection, G_TYPE_OBJECT)
+@@ -70,6 +102,14 @@ static void qvd_connection_dispose(GObject *obj)
+ 	if (conn->addr != NULL)
+ 		g_free(g_steal_pointer(&conn->addr));
+ 
++	if (conn->wds != NULL && conn->wds_ind_sig)
++		g_signal_handler_disconnect(conn->wds, conn->wds_ind_sig);
++	conn->wds_ind_sig = 0;
++	g_clear_handle_id(&conn->wds_retry_src, g_source_remove);
++	g_clear_object(&conn->wds);
++	g_clear_object(&conn->qmi);
++	g_clear_pointer(&conn->wds_apn, g_free);
++
+ 	g_clear_object(&conn->bearer);
+ }
+ 
+@@ -155,13 +195,18 @@ static void on_connect(GObject *obj, GAsyncResult *res, gpointer data)
+ 	g_object_unref(conn);
+ }
+ 
++static void wds_start(QVDConnection *conn);
++static void wds_stop(QVDConnection *conn);
++
+ void qvd_connection_connect(QVDConnection *conn)
+ {
+ 	g_assert(conn != NULL);
+ 
+ 	conn->requested = TRUE;
+ 
+-	if (conn->bearer != NULL)
++	if (conn->is_wds)
++		wds_start(conn);
++	else if (conn->bearer != NULL)
+ 		mm_bearer_connect(conn->bearer, NULL, on_connect, g_object_ref(conn));
+ }
+ 
+@@ -183,11 +228,13 @@ static void on_disconnect(GObject *obj, GAsyncResult *res, gpointer data)
+ void qvd_connection_disconnect(QVDConnection *conn)
+ {
+ 	g_assert(conn != NULL);
+-	g_assert(conn->bearer != NULL);
++	g_assert(conn->is_wds || conn->bearer != NULL);
+ 
+ 	conn->requested = FALSE;
+ 
+-	if (conn->bearer != NULL)
++	if (conn->is_wds)
++		wds_stop(conn);
++	else if (conn->bearer != NULL)
+ 		mm_bearer_disconnect(conn->bearer, NULL, on_disconnect, g_object_ref(conn));
+ }
+ 
+@@ -219,3 +266,454 @@ void qvd_connection_set_bearer(QVDConnection *conn, MMBearer *bearer)
+ 	if (conn->requested)
+ 		mm_bearer_connect(conn->bearer, NULL, on_connect, conn);
+ }
++
++static void wds_release_client(QVDConnection *conn)
++{
++	if (conn->wds == NULL)
++		return;
++
++	if (conn->wds_ind_sig)
++		g_signal_handler_disconnect(conn->wds, conn->wds_ind_sig);
++	conn->wds_ind_sig = 0;
++	qmi_device_release_client(conn->qmi, QMI_CLIENT(conn->wds),
++				  QMI_DEVICE_RELEASE_CLIENT_FLAGS_RELEASE_CID,
++				  WDS_TIMEOUT, NULL, NULL, NULL);
++	g_clear_object(&conn->wds);
++}
++
++static void wds_report_error(QVDConnection *conn, GError *err, guint sig)
++{
++	g_printerr("WDS sub %u: %s\n", conn->wds_sub, err->message);
++	g_signal_emit(conn, conn_signals[sig], 0, err);
++}
++
++static void wds_set_addr(QVDConnection *conn, gchar *addr)
++{
++	if (g_strcmp0(addr, conn->addr)) {
++		g_signal_emit(conn, conn_signals[ADDR_CHANGED], 0, conn->ip_type, addr);
++		g_free(conn->addr);
++		conn->addr = addr;
++	} else {
++		g_free(addr);
++	}
++}
++
++/*
++ * The PDN is wrong when the modem reports a different APN than requested, or
++ * reports the IMCN flag as unset. Fields the modem leaves out are not judged.
++ */
++static gboolean wds_wrong_pdn(QVDConnection *conn, const gchar *apn,
++			      gboolean has_imcn, gboolean imcn)
++{
++	if (conn->wds_apn != NULL && conn->wds_apn[0] && apn != NULL && apn[0]
++	 && g_ascii_strcasecmp(apn, conn->wds_apn) != 0)
++		return TRUE;
++
++	return has_imcn && !imcn;
++}
++
++static gboolean wds_retry_fire(gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++
++	conn->wds_retry_src = 0;
++	if (conn->requested) {
++		g_info("WDS sub %u: retrying start network (attempt %u)\n",
++		       conn->wds_sub, conn->wds_retry_n + 1);
++		wds_start(conn);
++	}
++	return G_SOURCE_REMOVE;
++}
++
++static void wds_retry_later(QVDConnection *conn)
++{
++	guint delay = WDS_RETRY_FIRST_S << MIN(conn->wds_retry_n, 3);
++
++	delay = MIN(delay, WDS_RETRY_MAX_S);
++	conn->wds_retry_n++;
++	g_printerr("WDS sub %u: wrong PDN (not apn %s), stopping it, retry in %u s\n",
++		   conn->wds_sub, conn->wds_apn, delay);
++
++	/* Stop keeps the client because the connection is still requested. */
++	wds_stop(conn);
++	g_clear_handle_id(&conn->wds_retry_src, g_source_remove);
++	conn->wds_retry_src = g_timeout_add_seconds_full(G_PRIORITY_DEFAULT, delay,
++							  wds_retry_fire,
++							  g_object_ref(conn),
++							  g_object_unref);
++}
++
++static void wds_settings_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsGetCurrentSettingsOutput *out;
++	GError *err = NULL;
++	GArray *a6 = NULL;
++	guint32 a4 = 0;
++	guint8 plen = 0;
++	gchar *addr = NULL;
++	const gchar *apn = NULL;
++	gboolean has_apn, has_imcn;
++	gint8 imcn = 0;
++
++	out = qmi_client_wds_get_current_settings_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_get_current_settings_output_get_result(out, &err)) {
++		wds_report_error(conn, err, CONNECT_ERR);
++		g_clear_error(&err);
++		goto out;
++	}
++
++	if (conn->ip_type == MM_BEARER_IP_FAMILY_IPV6
++	 && qmi_message_wds_get_current_settings_output_get_ipv6_address(out, &a6, &plen, NULL)
++	 && a6 != NULL && a6->len == 8) {
++		GInetAddress *ia;
++		guint8 b[16];
++		guint i;
++
++		for (i = 0; i < 8; i++) {
++			guint16 w = g_array_index(a6, guint16, i);
++
++			b[2 * i] = w >> 8;
++			b[2 * i + 1] = w & 0xff;
++		}
++		ia = g_inet_address_new_from_bytes(b, G_SOCKET_FAMILY_IPV6);
++		addr = g_inet_address_to_string(ia);
++		g_object_unref(ia);
++	} else if (conn->ip_type == MM_BEARER_IP_FAMILY_IPV4
++		&& qmi_message_wds_get_current_settings_output_get_ipv4_address(out, &a4, NULL)) {
++		addr = g_strdup_printf("%u.%u.%u.%u", a4 >> 24, (a4 >> 16) & 0xff,
++				       (a4 >> 8) & 0xff, a4 & 0xff);
++	}
++
++	has_apn = qmi_message_wds_get_current_settings_output_get_apn_name(out, &apn, NULL);
++	has_imcn = qmi_message_wds_get_current_settings_output_get_imcn_flag(out, &imcn, NULL);
++	g_info("WDS sub %u: connected, pdh 0x%08x, addr %s, apn %s, imcn %s\n",
++	       conn->wds_sub, conn->pdh, addr ? addr : "(none)",
++	       has_apn && apn ? apn : "?", has_imcn ? (imcn ? "1" : "0") : "?");
++
++	if (wds_wrong_pdn(conn, has_apn ? apn : NULL, has_imcn, imcn)) {
++		g_free(addr);
++		wds_retry_later(conn);
++		goto out;
++	}
++	conn->wds_retry_n = 0;
++	if (addr != NULL)
++		wds_set_addr(conn, addr);
++
++out:
++	if (out != NULL)
++		qmi_message_wds_get_current_settings_output_unref(out);
++	g_object_unref(conn);
++}
++
++static void wds_query_settings(QVDConnection *conn)
++{
++	QmiMessageWdsGetCurrentSettingsInput *in;
++
++	in = qmi_message_wds_get_current_settings_input_new();
++	qmi_message_wds_get_current_settings_input_set_requested_settings(in,
++		QMI_WDS_REQUESTED_SETTINGS_IP_ADDRESS | QMI_WDS_REQUESTED_SETTINGS_IP_FAMILY
++		| QMI_WDS_REQUESTED_SETTINGS_APN_NAME | QMI_WDS_REQUESTED_SETTINGS_IMCN_FLAG,
++		NULL);
++	qmi_client_wds_get_current_settings(conn->wds, in, WDS_TIMEOUT, NULL,
++					    wds_settings_ready, g_object_ref(conn));
++	qmi_message_wds_get_current_settings_input_unref(in);
++}
++
++static void wds_on_packet_status(QmiClientWds *client,
++				 QmiIndicationWdsPacketServiceStatusOutput *out,
++				 gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiWdsConnectionStatus st;
++	gboolean reconf;
++
++	if (!qmi_indication_wds_packet_service_status_output_get_connection_status(out, &st, &reconf, NULL))
++		return;
++
++	g_info("WDS sub %u: packet service status %s\n", conn->wds_sub,
++	       qmi_wds_connection_status_get_string(st));
++
++	if (st == QMI_WDS_CONNECTION_STATUS_DISCONNECTED) {
++		/*
++		 * Report the loss and wait: the IMS stack in the modem asks for a
++		 * new connection itself, as it does for the ModemManager bearer.
++		 */
++		conn->pdh = 0;
++		wds_set_addr(conn, NULL);
++	} else if (st == QMI_WDS_CONNECTION_STATUS_CONNECTED && reconf && conn->pdh) {
++		wds_query_settings(conn);
++	}
++}
++
++static void wds_start_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsStartNetworkOutput *out;
++	GError *err = NULL;
++
++	conn->wds_busy = FALSE;
++	out = qmi_client_wds_start_network_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_start_network_output_get_result(out, &err)) {
++		QmiWdsVerboseCallEndReasonType vt;
++		gint16 vr;
++
++		if (out != NULL
++		 && qmi_message_wds_start_network_output_get_verbose_call_end_reason(out, &vt, &vr, NULL))
++			g_printerr("WDS sub %u: call end reason: %s\n", conn->wds_sub,
++				   qmi_wds_verbose_call_end_reason_get_string(vt, vr));
++		wds_report_error(conn, err, CONNECT_ERR);
++		g_clear_error(&err);
++		goto out;
++	}
++
++	qmi_message_wds_start_network_output_get_packet_data_handle(out, &conn->pdh, NULL);
++	if (!conn->requested) {
++		/* Stop arrived while we were connecting. */
++		wds_stop(conn);
++		goto out;
++	}
++	wds_query_settings(conn);
++
++out:
++	if (out != NULL)
++		qmi_message_wds_start_network_output_unref(out);
++	/* Stopped before it ever connected: nothing to tear down but the client. */
++	if (!conn->requested && conn->pdh == 0)
++		wds_release_client(conn);
++	g_object_unref(conn);
++}
++
++static void wds_start_network(QVDConnection *conn)
++{
++	QmiMessageWdsStartNetworkInput *in;
++
++	in = qmi_message_wds_start_network_input_new();
++	if (conn->wds_apn != NULL && conn->wds_apn[0])
++		qmi_message_wds_start_network_input_set_apn(in, conn->wds_apn, NULL);
++	/* The modem's profile is IPv4v6 but rejects IPv6 + profile with
++	 * PDN_IPV6_CALL_DISALLOWED; the APN alone works, so the profile is only a
++	 * fallback. */
++	if (conn->wds_profile != 0xffff && (conn->wds_apn == NULL || !conn->wds_apn[0]))
++		qmi_message_wds_start_network_input_set_profile_index_3gpp(in, conn->wds_profile, NULL);
++	qmi_message_wds_start_network_input_set_ip_family_preference(in,
++		conn->ip_type == MM_BEARER_IP_FAMILY_IPV6 ? QMI_WDS_IP_FAMILY_IPV6 : QMI_WDS_IP_FAMILY_IPV4,
++		NULL);
++
++	g_info("WDS sub %u: start network apn %s profile %u\n", conn->wds_sub,
++	       conn->wds_apn ? conn->wds_apn : "", conn->wds_profile);
++	qmi_client_wds_start_network(conn->wds, in, WDS_TIMEOUT * 2, NULL,
++				     wds_start_ready, g_object_ref(conn));
++	qmi_message_wds_start_network_input_unref(in);
++}
++
++static void wds_ip_family_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsSetIpFamilyOutput *out;
++	GError *err = NULL;
++
++	out = qmi_client_wds_set_ip_family_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_set_ip_family_output_get_result(out, &err)) {
++		/* Not fatal: start network also carries the IP family preference. */
++		g_info("WDS sub %u: set ip family: %s\n", conn->wds_sub, err->message);
++		g_clear_error(&err);
++	}
++	if (out != NULL)
++		qmi_message_wds_set_ip_family_output_unref(out);
++
++	wds_start_network(conn);
++	g_object_unref(conn);
++}
++
++static void wds_bind_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsBindSubscriptionOutput *out;
++	QmiMessageWdsSetIpFamilyInput *in;
++	GError *err = NULL;
++
++	out = qmi_client_wds_bind_subscription_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_bind_subscription_output_get_result(out, &err)) {
++		conn->wds_busy = FALSE;
++		wds_report_error(conn, err, CONNECT_ERR);
++		g_clear_error(&err);
++		/* Drop the client so the next attempt binds a fresh one. */
++		wds_release_client(conn);
++		goto out;
++	}
++
++	g_info("WDS sub %u: client bound\n", conn->wds_sub);
++	conn->wds_ind_sig = g_signal_connect(conn->wds, "packet-service-status",
++					     G_CALLBACK(wds_on_packet_status), conn);
++
++	in = qmi_message_wds_set_ip_family_input_new();
++	qmi_message_wds_set_ip_family_input_set_preference(in,
++		conn->ip_type == MM_BEARER_IP_FAMILY_IPV6 ? QMI_WDS_IP_FAMILY_IPV6 : QMI_WDS_IP_FAMILY_IPV4,
++		NULL);
++	qmi_client_wds_set_ip_family(conn->wds, in, WDS_TIMEOUT, NULL,
++				     wds_ip_family_ready, g_object_ref(conn));
++	qmi_message_wds_set_ip_family_input_unref(in);
++
++out:
++	if (out != NULL)
++		qmi_message_wds_bind_subscription_output_unref(out);
++	g_object_unref(conn);
++}
++
++static void wds_mux_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsBindMuxDataPortOutput *out;
++	QmiMessageWdsBindSubscriptionInput *in;
++	GError *err = NULL;
++
++	out = qmi_client_wds_bind_mux_data_port_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_bind_mux_data_port_output_get_result(out, &err)) {
++		conn->wds_busy = FALSE;
++		wds_report_error(conn, err, CONNECT_ERR);
++		g_clear_error(&err);
++		wds_release_client(conn);
++		goto out;
++	}
++
++	/* Bind Mux Data Port resets the client's subscription to the default
++	 * one, so the subscription must be bound after it. */
++	in = qmi_message_wds_bind_subscription_input_new();
++	qmi_message_wds_bind_subscription_input_set_subscription_id(in,
++		(QmiSubscriptionType) conn->wds_sub, NULL);
++	qmi_client_wds_bind_subscription(conn->wds, in, WDS_TIMEOUT, NULL,
++					 wds_bind_ready, g_object_ref(conn));
++	qmi_message_wds_bind_subscription_input_unref(in);
++
++out:
++	if (out != NULL)
++		qmi_message_wds_bind_mux_data_port_output_unref(out);
++	g_object_unref(conn);
++}
++
++static void wds_alloc_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsBindMuxDataPortInput *in;
++	GError *err = NULL;
++	QmiClient *client;
++
++	client = qmi_device_allocate_client_finish(QMI_DEVICE(obj), res, &err);
++	if (client == NULL) {
++		conn->wds_busy = FALSE;
++		wds_report_error(conn, err, CONNECT_ERR);
++		g_clear_error(&err);
++		g_object_unref(conn);
++		return;
++	}
++
++	conn->wds = QMI_CLIENT_WDS(client);
++
++	/* IPA is the embedded endpoint, interface 1 (as in ModemManager). */
++	in = qmi_message_wds_bind_mux_data_port_input_new();
++	qmi_message_wds_bind_mux_data_port_input_set_endpoint_info(in,
++		QMI_DATA_ENDPOINT_TYPE_EMBEDDED, 1, NULL);
++	qmi_message_wds_bind_mux_data_port_input_set_mux_id(in,
++		WDS_MUX_ID_BASE + conn->wds_sub, NULL);
++	qmi_client_wds_bind_mux_data_port(conn->wds, in, WDS_TIMEOUT, NULL,
++					  wds_mux_ready, conn);
++	qmi_message_wds_bind_mux_data_port_input_unref(in);
++}
++
++static void wds_start(QVDConnection *conn)
++{
++	/* The QMI device may still be opening; attach_qmi() retries. */
++	if (conn->qmi == NULL || conn->wds_busy || conn->pdh != 0)
++		return;
++
++	/* busy covers allocate → mux → bind → set ip family → start network */
++	conn->wds_busy = TRUE;
++	if (conn->wds == NULL)
++		qmi_device_allocate_client(conn->qmi, QMI_SERVICE_WDS, QMI_CID_NONE,
++					   WDS_TIMEOUT, NULL, wds_alloc_ready, g_object_ref(conn));
++	else
++		wds_start_network(conn);
++}
++
++static void wds_stop_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	QmiMessageWdsStopNetworkOutput *out;
++	GError *err = NULL;
++
++	out = qmi_client_wds_stop_network_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out == NULL || !qmi_message_wds_stop_network_output_get_result(out, &err)) {
++		if (!g_error_matches(err, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_NO_EFFECT))
++			wds_report_error(conn, err, DISCONNECT_ERR);
++		g_clear_error(&err);
++	} else {
++		g_info("WDS sub %u: network stopped\n", conn->wds_sub);
++	}
++	if (out != NULL)
++		qmi_message_wds_stop_network_output_unref(out);
++
++	/* The connection is dropped after a stop; give the CID back. */
++	if (!conn->requested)
++		wds_release_client(conn);
++
++	g_object_unref(conn);
++}
++
++static void wds_stop(QVDConnection *conn)
++{
++	QmiMessageWdsStopNetworkInput *in;
++	guint32 pdh = conn->pdh;
++
++	if (!conn->requested) {
++		g_clear_handle_id(&conn->wds_retry_src, g_source_remove);
++		conn->wds_retry_n = 0;
++	}
++
++	/* Still connecting: wds_start_ready() sees !requested and cleans up. */
++	if (conn->wds_busy)
++		return;
++
++	if (conn->wds == NULL || pdh == 0) {
++		wds_release_client(conn);
++		return;
++	}
++
++	conn->pdh = 0;
++	in = qmi_message_wds_stop_network_input_new();
++	qmi_message_wds_stop_network_input_set_packet_data_handle(in, pdh, NULL);
++	qmi_client_wds_stop_network(conn->wds, in, WDS_TIMEOUT, NULL,
++				    wds_stop_ready, g_object_ref(conn));
++	qmi_message_wds_stop_network_input_unref(in);
++}
++
++QVDConnection *qvd_connection_new_wds(guint32 qmi_sub, const gchar *apn,
++				      MMBearerIpFamily ip_type,
++				      guint16 profile_idx_3gpp)
++{
++	QVDConnection *conn;
++
++	conn = qvd_connection_new(ip_type);
++	conn->is_wds = TRUE;
++	conn->wds_sub = qmi_sub;
++	conn->wds_apn = g_strdup(apn);
++	conn->wds_profile = profile_idx_3gpp;
++
++	return conn;
++}
++
++gboolean qvd_connection_is_wds(QVDConnection *conn)
++{
++	return conn->is_wds;
++}
++
++void qvd_connection_attach_qmi(QVDConnection *conn, QmiDevice *qmi)
++{
++	g_assert(conn->is_wds);
++
++	if (conn->qmi == NULL)
++		conn->qmi = g_object_ref(qmi);
++
++	if (conn->requested)
++		wds_start(conn);
++}
+diff --git a/qvd-connection.h b/qvd-connection.h
+index 2cf7f15..01d0dfa 100644
+--- a/qvd-connection.h
++++ b/qvd-connection.h
+@@ -9,6 +9,7 @@
+ #include <gio/gio.h>
+ #include <glib.h>
+ #include <libmm-glib.h>
++#include <libqmi-glib.h>
+ 
+ G_BEGIN_DECLS
+ 
+@@ -16,6 +17,11 @@ G_BEGIN_DECLS
+ G_DECLARE_FINAL_TYPE(QVDConnection, qvd_connection, QVD, CONNECTION, GObject)
+ 
+ QVDConnection *qvd_connection_new(MMBearerIpFamily ip_type);
++QVDConnection *qvd_connection_new_wds(guint32 qmi_sub, const gchar *apn,
++				      MMBearerIpFamily ip_type,
++				      guint16 profile_idx_3gpp);
++gboolean qvd_connection_is_wds(QVDConnection *conn);
++void qvd_connection_attach_qmi(QVDConnection *conn, QmiDevice *qmi);
+ 
+ const gchar *qvd_connection_get_path(QVDConnection *conn);
+ 
+diff --git a/qvd-modem.c b/qvd-modem.c
+index efee61f..b2dc62e 100644
+--- a/qvd-modem.c
++++ b/qvd-modem.c
+@@ -6,6 +6,8 @@
+ #include <gio/gio.h>
+ #include <glib.h>
+ #include <libmm-glib.h>
++#include <libqmi-glib.h>
++#include <libqrtr-glib.h>
+ #include <ModemManager-enums.h>
+ #include <stdio.h>
+ 
+@@ -27,6 +29,10 @@ struct _QVDModem {
+ 	MMModem *modem;
+ 	GHashTable *bearers;
+ 	GPtrArray *pending_bearers;
++
++	QmiDevice *qmi;
++	GPtrArray *pending_wds;
++	gboolean qmi_opening;
+ };
+ 
+ struct qvd_pending_bearer {
+@@ -36,9 +42,17 @@ struct qvd_pending_bearer {
+ 
+ struct qvd_bearer_config {
+ 	MMBearerIpFamily ip_type;
++	guint32 subscription;
+ 	gchar apn[256];
+ };
+ 
++/*
++ * The IMS data request names its subscription as 1 (primary), 2 (secondary)...
++ * ModemManager only drives the primary one; every other subscription gets a
++ * WDS client bound to it (QmiSubscriptionType uses the same numbering).
++ */
++#define QVD_PRIMARY_SUBSCRIPTION 1
++
+ static void qvd_modem_initable_iface_init(GInitableIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE(QVDModem, qvd_modem, G_TYPE_OBJECT,
+@@ -292,7 +306,7 @@ static guint qvd_bearer_config_hash(gconstpointer key)
+ {
+ 	const struct qvd_bearer_config *conf = key;
+ 
+-	return g_int_hash(&conf->ip_type) ^ g_str_hash(conf->apn);
++	return g_int_hash(&conf->ip_type) ^ g_str_hash(conf->apn) ^ conf->subscription;
+ }
+ 
+ static gboolean qvd_bearer_config_equal(gconstpointer va, gconstpointer vb)
+@@ -300,7 +314,8 @@ static gboolean qvd_bearer_config_equal(gconstpointer va, gconstpointer vb)
+ 	const struct qvd_bearer_config *a = va;
+ 	const struct qvd_bearer_config *b = vb;
+ 
+-	return g_int_equal(&a->ip_type, &b->ip_type) && g_str_equal(a->apn, b->apn);
++	return g_int_equal(&a->ip_type, &b->ip_type) && g_str_equal(a->apn, b->apn)
++	    && a->subscription == b->subscription;
+ }
+ 
+ static gboolean qvd_modem_initable_init(GInitable *initable,
+@@ -340,10 +355,91 @@ static gboolean qvd_modem_initable_init(GInitable *initable,
+ 	ctx->bearers = g_hash_table_new_full(qvd_bearer_config_hash, qvd_bearer_config_equal,
+ 					     g_free, g_object_unref);
+ 	ctx->pending_bearers = g_ptr_array_new_full(0, g_free);
++	ctx->pending_wds = g_ptr_array_new_with_free_func(g_object_unref);
+ 
+ 	return TRUE;
+ }
+ 
++static void qmi_open_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDModem *ctx = QVD_MODEM(data);
++	GError *err = NULL;
++	guint i;
++
++	ctx->qmi_opening = FALSE;
++	if (!qmi_device_open_finish(QMI_DEVICE(obj), res, &err)) {
++		g_printerr("Failed to open QMI device: %s\n", err->message);
++		g_clear_error(&err);
++		g_clear_object(&ctx->qmi);
++		goto out;
++	}
++
++	g_info("QMI device opened for secondary subscriptions\n");
++	for (i = 0; i < ctx->pending_wds->len; i++)
++		qvd_connection_attach_qmi(ctx->pending_wds->pdata[i], ctx->qmi);
++out:
++	g_ptr_array_set_size(ctx->pending_wds, 0);
++	g_object_unref(ctx);
++}
++
++static void qmi_new_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDModem *ctx = QVD_MODEM(data);
++	GError *err = NULL;
++
++	ctx->qmi = qmi_device_new_from_node_finish(res, &err);
++	if (ctx->qmi == NULL) {
++		g_printerr("Failed to create QMI device: %s\n", err->message);
++		g_clear_error(&err);
++		ctx->qmi_opening = FALSE;
++		g_ptr_array_set_size(ctx->pending_wds, 0);
++		g_object_unref(ctx);
++		return;
++	}
++
++	/* Proxy, so ModemManager and other users keep their own clients. */
++	qmi_device_open(ctx->qmi, QMI_DEVICE_OPEN_FLAGS_PROXY, 10, NULL, qmi_open_ready, ctx);
++}
++
++static void qrtr_bus_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDModem *ctx = QVD_MODEM(data);
++	GError *err = NULL;
++	QrtrBus *bus;
++	QrtrNode *node;
++
++	bus = qrtr_bus_new_finish(res, &err);
++	node = bus != NULL ? qrtr_bus_peek_node(bus, 0) : NULL;
++	if (node == NULL) {
++		g_printerr("QRTR modem node 0 not found%s%s\n",
++			   err ? ": " : "", err ? err->message : "");
++		g_clear_error(&err);
++		g_clear_object(&bus);
++		ctx->qmi_opening = FALSE;
++		g_ptr_array_set_size(ctx->pending_wds, 0);
++		g_object_unref(ctx);
++		return;
++	}
++
++	qmi_device_new_from_node(node, NULL, qmi_new_ready, ctx);
++	g_object_unref(bus);
++}
++
++static void ensure_qmi(QVDModem *ctx, QVDConnection *conn)
++{
++	if (ctx->qmi != NULL && !ctx->qmi_opening) {
++		qvd_connection_attach_qmi(conn, ctx->qmi);
++		return;
++	}
++
++	g_ptr_array_add(ctx->pending_wds, g_object_ref(conn));
++	if (ctx->qmi_opening)
++		return;
++
++	ctx->qmi_opening = TRUE;
++	qrtr_bus_new(1000, NULL, qrtr_bus_ready, g_object_ref(ctx));
++}
++
+ static void qvd_modem_dispose(GObject *obj)
+ {
+ 	QVDModem *ctx = QVD_MODEM(obj);
+@@ -354,6 +450,10 @@ static void qvd_modem_dispose(GObject *obj)
+ 	if (ctx->pending_bearers != NULL)
+ 		g_ptr_array_unref(g_steal_pointer(&ctx->pending_bearers));
+ 
++	if (ctx->pending_wds != NULL)
++		g_ptr_array_unref(g_steal_pointer(&ctx->pending_wds));
++
++	g_clear_object(&ctx->qmi);
+ 	g_clear_object(&ctx->manager);
+ 	g_clear_object(&ctx->dbus);
+ }
+@@ -392,10 +492,29 @@ gboolean qvd_modem_get_connection_finish(QVDModem *ctx, GAsyncResult *res, GErro
+ 	return g_task_propagate_boolean(G_TASK(res), err);
+ }
+ 
++void qvd_modem_release_connection(QVDModem *ctx, QVDConnection *conn)
++{
++	GHashTableIter it;
++	gpointer k, v;
++
++	/* WDS connections are per request; forget them once stopped. */
++	if (!qvd_connection_is_wds(conn))
++		return;
++
++	g_hash_table_iter_init(&it, ctx->bearers);
++	while (g_hash_table_iter_next(&it, &k, &v)) {
++		if (v == conn) {
++			g_hash_table_iter_remove(&it);
++			break;
++		}
++	}
++}
++
+ QVDConnection *qvd_modem_get_connection(QVDModem *ctx,
+ 					const gchar *apn,
+ 					MMBearerIpFamily ip_family,
+ 					guint16 profile_idx_3gpp,
++					guint32 subscription,
+ 					GCancellable *cancellable,
+ 					GAsyncReadyCallback cb,
+ 					gpointer data)
+@@ -410,12 +529,31 @@ QVDConnection *qvd_modem_get_connection(QVDModem *ctx,
+ 
+ 	task = g_task_new(ctx, cancellable, cb, data);
+ 
+-	conf = g_malloc(sizeof(struct qvd_bearer_config));
++	conf = g_malloc0(sizeof(struct qvd_bearer_config));
+ 	conf->ip_type = ip_family;
++	/* Anything that isn't a known secondary subscription stays on ModemManager. */
++	conf->subscription = subscription > QVD_PRIMARY_SUBSCRIPTION ? subscription
++								      : QVD_PRIMARY_SUBSCRIPTION;
+ 	strncpy(conf->apn, apn, 255);
+ 	conf->apn[255] = '\0';
+ 
+-	if (!g_hash_table_contains(ctx->bearers, conf)) {
++	if (conf->subscription != QVD_PRIMARY_SUBSCRIPTION
++	 && !g_hash_table_contains(ctx->bearers, conf)) {
++		conn = qvd_connection_new_wds(conf->subscription, apn, ip_family,
++					      profile_idx_3gpp);
++		g_signal_connect(conn, "qvd-address-changed",
++				 G_CALLBACK(on_address_changed), ctx);
++		g_signal_connect(conn, "qvd-connect-error",
++				 G_CALLBACK(on_connect_error), ctx);
++		g_signal_connect(conn, "qvd-disconnect-error",
++				 G_CALLBACK(on_disconnect_error), ctx);
++		g_hash_table_insert(ctx->bearers, conf, conn);
++		g_info("Subscription %u: using a bound WDS client, not ModemManager\n",
++		       conf->subscription);
++		ensure_qmi(ctx, conn);
++		g_task_return_boolean(task, TRUE);
++		g_object_unref(task);
++	} else if (!g_hash_table_contains(ctx->bearers, conf)) {
+ 		conn = qvd_connection_new(ip_family);
+ 		g_signal_connect(conn, "qvd-address-changed",
+ 				 G_CALLBACK(on_address_changed), ctx);
+diff --git a/qvd-modem.h b/qvd-modem.h
+index 75b07da..666ec69 100644
+--- a/qvd-modem.h
++++ b/qvd-modem.h
+@@ -23,9 +23,11 @@ QVDConnection *qvd_modem_get_connection(QVDModem *ctx,
+ 					const gchar *apn,
+ 					MMBearerIpFamily ip_family,
+ 					guint16 profile_idx_3gpp,
++					guint32 subscription,
+ 					GCancellable *cancellable,
+ 					GAsyncReadyCallback cb,
+ 					gpointer data);
++void qvd_modem_release_connection(QVDModem *ctx, QVDConnection *conn);
+ gboolean qvd_modem_get_connection_finish(QVDModem *ctx, GAsyncResult *res, GError **err);
+ 
+ G_END_DECLS
+diff --git a/qvd-server.c b/qvd-server.c
+index ba7500b..82e99ab 100644
+--- a/qvd-server.c
++++ b/qvd-server.c
+@@ -329,6 +329,7 @@ static void process_start_connection(QVDServer *server, QVDMessage *msg)
+ 
+ 	conn = qvd_modem_get_connection(server->modem, req.conn_params.apn, ip_family,
+ 					req.conn_params.profile_idx_3gpp,
++					req.subscription,
+ 					NULL, on_connection_opened, connect_data);
+ 	if (conn == NULL) {
+ 		g_printerr("IMSD Start Connection: modem not present\n");
+@@ -378,6 +379,7 @@ static void process_stop_connection(QVDServer *server, QVDMessage *msg)
+ 
+ 	conn = g_steal_pointer(&server->conns->pdata[req.connection]);
+ 	qvd_connection_disconnect(conn);
++	qvd_modem_release_connection(server->modem, conn);
+ 	g_object_unref(conn);
+ 
+ 	resp.res.err_status = 0;

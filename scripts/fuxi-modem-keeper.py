@@ -23,6 +23,15 @@ STALL_LIMIT = int(os.environ.get("FUXI_STALL_LIMIT", "300"))
 MIN_GAP = 120
 MAX_GAP = 1800
 STABLE_RESET = 600
+# 3. 81voltd 在跑时，注册后 IMS_LIMIT 秒 IMSA 仍未注册，做一次射频循环让基带重新请求 IMS PDN（每个 modem 最多 IMS_MAX_CYCLES 次）
+IMS_TOOL = os.environ.get("FUXI_IMS_TOOL", "/usr/local/sbin/fuxi-qmi-ims.py")
+IMS_LIMIT = int(os.environ.get("FUXI_IMS_LIMIT", "180"))
+IMS_POLL = 30
+IMS_MAX_CYCLES = 2
+# 射频循环会同时打断卡 2 的 IMS PDN 重试（2102 交接 §7.2）：开机 BOOT_HOLDOFF 秒内一律不循环；
+# 81voltd 最近 SUB2_QUIET 秒内还在重试卡 2 时，不为"卡 1 IMS 未注册"做循环
+BOOT_HOLDOFF = int(os.environ.get("FUXI_BOOT_HOLDOFF", "300"))
+SUB2_QUIET = int(os.environ.get("FUXI_SUB2_QUIET", "180"))
 
 # MMModemState
 ST_ENABLED, ST_SEARCHING = 6, 7
@@ -32,9 +41,22 @@ REGISTERED = {1, 5, 6, 7, 9, 10}
 PWR_LOW, PWR_ON = 2, 3
 
 
+def uptime():
+    with open("/proc/uptime") as f:
+        return float(f.read().split()[0])
+
+
 def log(msg):
-    up = open("/proc/uptime").read().split()[0]
-    print(f"[{up}] {msg}", flush=True)
+    print(f"[{uptime():.2f}] {msg}", flush=True)
+
+
+def sub2_retrying():
+    try:
+        out = subprocess.run(["journalctl", "-u", "81voltd", f"--since=-{SUB2_QUIET}s", "-q", "--no-pager"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return "retrying start network" in out.stdout or "wrong PDN" in out.stdout
 
 
 class Keeper:
@@ -47,6 +69,12 @@ class Keeper:
         self.gap = MIN_GAP
         self.reg_since = None
         self.busy = False
+        self.ims_ok = False
+        self.ims_cycles = 0
+        self.ims_checked = 0.0
+        self.ims2_checked = 0.0
+        self.ims2_last = None
+        self.ims_held = False
         self.bus.signal_subscribe(MM, "org.freedesktop.DBus.Properties", "PropertiesChanged",
                                   None, None, Gio.DBusSignalFlags.NONE, self.on_props)
 
@@ -95,7 +123,64 @@ class Keeper:
         self.set_data_centric()
         self.last_cycle = time.monotonic()
         self.unreg_since = self.last_cycle
-        self.reject_at = None
+        self.reject_at = self.reg_since = None
+
+    def ims_registered(self):
+        try:
+            out = subprocess.run([IMS_TOOL, "0"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in out.stdout.splitlines():
+            key, _, value = line.strip().partition(": ")
+            if key == "ims_registration_status":
+                return value == "registered"
+        return None
+
+    def ims2_status(self):
+        try:
+            out = subprocess.run([IMS_TOOL, "1"], capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        for line in out.stdout.splitlines():
+            key, _, value = line.strip().partition(": ")
+            if key == "ims_registration_status":
+                return value
+        return None
+
+    def check_ims2(self, now):
+        # 卡 2 只监测、只记日志；不自动恢复（射频循环会断卡 1，恢复要按 81voltd → MM → 81voltd 的顺序，交给人）
+        if self.busy or now - self.ims2_checked < IMS_POLL:
+            return
+        self.ims2_checked = now
+        if subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode != 0:
+            return
+        st = self.ims2_status()
+        if st is not None and st != self.ims2_last:
+            log(f"sim2 ims: {self.ims2_last or 'unknown'} -> {st}")
+            self.ims2_last = st
+
+    def check_ims(self, now):
+        if self.ims_ok or self.ims_cycles >= IMS_MAX_CYCLES or now - self.ims_checked < IMS_POLL:
+            return
+        self.ims_checked = now
+        if subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode != 0:
+            return
+        ok = self.ims_registered()
+        if ok:
+            self.ims_ok = True
+            log(f"ims registered ({int(now - self.reg_since)}s after network registration)")
+            return
+        if ok is None or now - self.reg_since < IMS_LIMIT:
+            return
+        if uptime() < BOOT_HOLDOFF or sub2_retrying():
+            if not self.ims_held:
+                log("ims trigger held: boot holdoff or 81voltd retrying sim2")
+                self.ims_held = True
+            return
+        self.ims_held = False
+        self.ims_cycles += 1
+        log(f"trigger: ims not registered {int(now - self.reg_since)}s after network registration")
+        self.cycle()
 
     def tick(self):
         if self.busy:
@@ -104,6 +189,7 @@ class Keeper:
         if self.path not in mods:
             self.path = next(iter(sorted(mods)), None)
             self.unreg_since = self.reject_at = self.reg_since = None
+            self.ims_ok, self.ims_cycles = False, 0
             if self.path:
                 log(f"new modem {self.path}")
                 self.set_data_centric()
@@ -119,6 +205,8 @@ class Keeper:
             self.reg_since = self.reg_since or now
             if now - self.reg_since > STABLE_RESET:
                 self.gap = MIN_GAP
+            self.check_ims(now)
+            self.check_ims2(now)
             return True
         self.reg_since = None
         if state not in (ST_ENABLED, ST_SEARCHING):
@@ -130,7 +218,7 @@ class Keeper:
         lost = now - self.unreg_since
         rejected = self.reject_at is not None and now - self.reject_at >= REJECT_GRACE
         if (rejected and lost >= REJECT_GRACE) or lost >= STALL_LIMIT:
-            if now - self.last_cycle < self.gap:
+            if now - self.last_cycle < self.gap or uptime() < BOOT_HOLDOFF:
                 return True
             if self.last_cycle:
                 self.gap = min(self.gap * 2, MAX_GAP)
@@ -141,7 +229,8 @@ class Keeper:
 
 def main():
     k = Keeper()
-    log(f"start: reject_grace={REJECT_GRACE}s stall_limit={STALL_LIMIT}s")
+    log(f"start: reject_grace={REJECT_GRACE}s stall_limit={STALL_LIMIT}s "
+        f"boot_holdoff={BOOT_HOLDOFF}s sub2_quiet={SUB2_QUIET}s")
     GLib.timeout_add_seconds(POLL, k.tick)
     GLib.MainLoop().run()
 

@@ -1,0 +1,90 @@
+diff --git a/sound/soc/qcom/qdsp6/q6apm-dai.c b/sound/soc/qcom/qdsp6/q6apm-dai.c
+index 033197bdd..75f0bfc4e 100644
+--- a/sound/soc/qcom/qdsp6/q6apm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6apm-dai.c
+@@ -1001,8 +1001,46 @@ static const struct snd_compress_ops q6apm_dai_compress_ops = {
+ 	.copy		= q6apm_compr_copy,
+ };
+ 
++/* EXPERIMENTAL voice call trigger, see q6apm-voice.c */
++static const char * const q6apm_voice_texts[] = { "Off", "SIM1", "SIM2" };
++static SOC_ENUM_SINGLE_EXT_DECL(q6apm_voice_enum, q6apm_voice_texts);
++
++static int q6apm_voice_ctl_get(struct snd_kcontrol *kcontrol,
++			       struct snd_ctl_elem_value *ucontrol)
++{
++	ucontrol->value.enumerated.item[0] = q6apm_voice_get_sel();
++	return 0;
++}
++
++static int q6apm_voice_ctl_put(struct snd_kcontrol *kcontrol,
++			       struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
++	unsigned int sel = ucontrol->value.enumerated.item[0];
++	int ret;
++
++	if (sel >= ARRAY_SIZE(q6apm_voice_texts))
++		return -EINVAL;
++	if (sel == q6apm_voice_get_sel())
++		return 0;
++
++	if (sel == 0)
++		ret = q6apm_voice_stop(component->dev);
++	else
++		ret = q6apm_voice_start(component->dev, q6apm_voice_sel_to_vsid(sel));
++
++	return ret ? ret : 1;
++}
++
++static const struct snd_kcontrol_new q6apm_fe_dai_controls[] = {
++	SOC_ENUM_EXT("Voice Call", q6apm_voice_enum,
++		     q6apm_voice_ctl_get, q6apm_voice_ctl_put),
++};
++
+ static const struct snd_soc_component_driver q6apm_fe_dai_component = {
+ 	.name		= DRV_NAME,
++	.controls	= q6apm_fe_dai_controls,
++	.num_controls	= ARRAY_SIZE(q6apm_fe_dai_controls),
+ 	.open		= q6apm_dai_open,
+ 	.close		= q6apm_dai_close,
+ 	.prepare	= q6apm_dai_prepare,
+@@ -1017,6 +1055,11 @@ static const struct snd_soc_component_driver q6apm_fe_dai_component = {
+ 	.remove_order   = SND_SOC_COMP_ORDER_EARLY,
+ };
+ 
++static void q6apm_voice_stop_action(void *data)
++{
++	q6apm_voice_stop(data);
++}
++
+ static int q6apm_dai_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -1037,6 +1080,11 @@ static int q6apm_dai_probe(struct platform_device *pdev)
+ 
+ 	dev_set_drvdata(dev, pdata);
+ 
++	/* Runs after the component is unregistered: close any voice graphs. */
++	rc = devm_add_action_or_reset(dev, q6apm_voice_stop_action, dev);
++	if (rc)
++		return rc;
++
+ 	return devm_snd_soc_register_component(dev, &q6apm_fe_dai_component, NULL, 0);
+ }
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6apm.h b/sound/soc/qcom/qdsp6/q6apm.h
+index 5cb51ca49..130362a7e 100644
+--- a/sound/soc/qcom/qdsp6/q6apm.h
++++ b/sound/soc/qcom/qdsp6/q6apm.h
+@@ -119,6 +119,10 @@ int q6apm_graph_close(struct q6apm_graph *graph);
+ int q6apm_graph_prepare(struct q6apm_graph *graph);
+ int q6apm_graph_start(struct q6apm_graph *graph);
+ int q6apm_graph_stop(struct q6apm_graph *graph);
++int q6apm_voice_start(struct device *dev, u32 vsid);
++int q6apm_voice_stop(struct device *dev);
++u32 q6apm_voice_sel_to_vsid(unsigned int sel);
++unsigned int q6apm_voice_get_sel(void);
+ int q6apm_graph_flush(struct q6apm_graph *graph);
+ 
+ /* Media Format */

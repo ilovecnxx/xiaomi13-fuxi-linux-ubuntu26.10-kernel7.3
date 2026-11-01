@@ -1,0 +1,30 @@
+# TASKS（2026-11-01 20:01）
+
+**完整交接：`docs/交接-新会话-20261101-2001.md`**（上一版 `docs/交接-新会话-20261101-1929.md`；旧 TASKS 全文备份 `docs/TASKS.md.before-handoff-20261101-2001`）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- **手机跑试验镜像 `work/kbuild/abl-fuxi-voice-kctl2.img`（6f824d9f…，#224，boot_id 4de39112），不是基线。** 基线 = modem16 #222（`abl-fuxi-modem16-epmap.img`，20ac7794…）。
+- 卡 1 IMS registered；**卡 2 IMS not-registered**，两次试验启动都这样，heal 单元两次失败；基线上一次启动两卡正常。是否由新内核引起未验证。
+- 卡 2 收发短信、拨出、来电接听已实测，通话无音频。
+- 内核树 5 修改 + 2 新文件（未提交）：语音 TX/RX 图 + `Voice Call` kcontrol（Off/SIM1/SIM2）+ `audioreach.c:469` 连线循环上限。
+- 上机结果：ADSP 对第一条 VCPM SET_CFG（VSID）回 EBADPARAM。推测缺 Android 的第 3 个图；端点配置和启动顺序也还没按 Android 做。
+- Android 抓包已完整解码：`work/state/voice-graph-20261101/android-voice-sequence.txt`（含 INTF_CFG 数值，更正 1929 交接 §6）。
+
+## 下一步
+1. 只读核对 #224 / boot_id / recovery_b 6f824d9f / 两卡 IMS；`git -C build/linux status --short`。
+2. 问用户：(a，推荐) 刷回基线 + fuxi-health + 查卡 2 IMS；或 (b) 离线继续改语音代码（GRAPH_OPEN 返回值、端点配置、Android 顺序、第 3 个图）。
+3. git commit 先问（排除 `work/claude-logs/`）。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b；试验后回基线 #222 并跑 fuxi-health。recovery_b 全分区备份在 `work/backup/recovery_b-before-voice-kctl1-20261101/`。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；重启顺序 stop 81voltd、restart MM、start 81voltd。
+- Android 里拨号只用 `scripts/fuxi-android-dial-sim2.sh`。
+- `build/linux` 里手动 make 必带 `ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-`。
+- 刷机/重启、向 ADSP 发命令、进 Android、费用操作、部署服务、git commit/push 先问用户。
+- 不要原样重试 kctl2 写 SIM2（EBADPARAM 已证实）；不要只改 VCPM 的 GPR 端口。
+- `work/claude-logs/android-voice-20261101/` 含未脱敏号码，别提交。
+- 报告区分实测与推测。

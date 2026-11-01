@@ -1,0 +1,43 @@
+# TASKS（2026-11-01 19:08）
+
+**完整交接：`docs/交接-新会话-20261101-1908.md`**（上一版 `docs/交接-新会话-20261101-1557.md`；旧 TASKS 全文备份 `docs/TASKS.md.before-handoff-20261101-1908`，含 11-01 全天的逐条时间线）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态（19:08 只读）
+- 基线 = modem16 #222（recovery_b 前 10436608 字节 sha256 20ac7794…）；手机在 Linux，boot_id 2d8e767b，up 21 min；fuxi-health 失败 0。
+- 两张卡 IMS 都 registered；81voltd 跑自编副卡补丁 v3（01a06b13…）；蜂窝数据自动连，wifi 优先。
+- 卡 2（电信）收/发短信、拨出、来电接听均已实测通过，但**通话无音频**。
+- 开机自动恢复卡 2 IMS：`fuxi-sub2-ims-heal` 已部署（条件触发，只一次）；真正触发的冷启动**未验证**。
+- 通话音频：Android 抓包 + ACDB 离线解析已完成（`docs/调研-通话音频-Android抓包-20261101.md`、`docs/调研-ACDB语音图-20261101.md`）。卡在内核 q6apm 建语音子图，会向 ADSP 发命令，做前要问用户。
+- Android 当前 24.0-20261019，未更新（可能覆盖 recovery_b，未执行）。
+
+## 下一步
+1. 只读核对 boot_id / recovery_b / 两卡 IMS；若有过重启，看 `journalctl -u fuxi-sub2-ims-heal -b -o cat`，并更新 `work/state/current-device.json` 的 boot_id（现为过期的 7a65a89e）。
+2. 主机离线继续：解析 ACDB 的 MTDE 等块拿 CODEC DMA 接口配置；读内核 qdsp6 现有 API，写语音子图设计。
+3. 内核/ADSP 改动、补抓 Android 数据、commit：先问用户。
+
+## 进展（11-01 晚，用户选「开始改内核源码，不刷机」）
+- 设计草案 `docs/设计-内核语音子图-20261101.md`（来自子 agent 调研，行号未逐条核对）。
+- 已改 `build/linux/sound/soc/qcom/qdsp6/audioreach.{h,c}`：加 VCPM 三个 SET_CFG 参数 id/结构体和 `audioreach_vcpm_set_param()`（目标 miid 固定 0x4）。**尚无调用方**，没有构建镜像，没有刷机，没有向 ADSP 发命令。arm64 交叉编译 audioreach.o / q6apm.o 通过。
+- 失误已修复：误用默认 `make`（x86）编译，覆盖了树内 `.config` 和 `include/generated/*`。已用 `work/kbuild/abl-fuxi-modem16-epmap.config`（基线 #222 配置）还原并用 arm64 重编；x86 误生成的 .config 备份在 /tmp/x86-config-by-mistake-20261101。**以后在 build/linux 里必须带 `ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-`**。
+- 内核树回滚点：`git -C build/linux checkout -- sound/soc/qcom/qdsp6/audioreach.c sound/soc/qcom/qdsp6/audioreach.h`（HEAD 18e74dc1d）。
+
+- 11-01 晚 ACDB 续解：MTDE 结构已解（412 条 `[count][(miid,param_id)×count]`，只有参数 id 没有值），MTDO 是变长结构、对应关系未解，**INTF_CFG 的数值离线拿不到**（抓包和日志里也没有 0x08001063）。详见 `docs/调研-ACDB语音图-20261101.md` §(f)。不要再按定宽读 MTDO。
+- 11-01 晚 语音子图框架（用户选「写 q6apm_voice_start/stop 框架」）：
+  - 新增 `build/linux/sound/soc/qcom/qdsp6/q6apm-voice.c`（Makefile 并入 snd-q6apm）、`q6voice-graphs.h`（由 `scripts/fuxi-voice-graph-gen.py` 从 ACDB 别名 224/272 的 JSON 生成：TX 3 SG/4 容器/32 模块/34 连线，RX 5 SG/6 容器/30 模块/24 连线；中间文件 `work/state/voice-graph-20261101/`）。
+  - `audioreach_graph_info` 加了可选的 `flat_conns`（支持扇出连线），`audioreach_alloc_graph_pkt/populate_graph` 在非空时多发；tplg 图该字段为 0，原行为不变。
+  - `q6apm_voice_start(dev, vsid)` / `q6apm_voice_stop(dev)` 已导出，**没有任何调用方**，且默认返回 -EOPNOTSUPP（需 `voice_experimental=1`）。arm64 W=1 编译整个 qdsp6 目录通过，未链接完整内核，未构建镜像，未刷机，未向 ADSP 发命令。
+  - **已知缺口，现状不可能真通话**：① CODEC_DMA 端点的 HW_EP_MF_CFG/INTF_CFG 没发（数值拿不到）；RX 端点 mid 700100e 内核不认识；② VCPM 三个 SET_CFG 与 prepare/start 的相对顺序是猜的（抓包只证实了参数内容）；③ 10 条图外连线（回声参考等）没发；④ Android 实际开了 3 个图（含硬件端点图），这里只建了 TX/RX 两个；⑤ GRAPH_OPEN 大小可能超 GPR intent 512 字节（未验证）；⑥ 没有触发入口（kcontrol/守护进程）。
+  - 内核树回滚：`git -C build/linux checkout -- sound/soc/qcom/qdsp6/{Makefile,audioreach.c,audioreach.h,q6apm.h}` 并删 `q6apm-voice.c`、`q6voice-graphs.h`。
+- 下一步要么补缺口①（需要新的数据来源，如再抓一次 Android 的 INTF_CFG，要问用户），要么先做入口 kcontrol，再上机试验（向 ADSP 发命令，先问用户）。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b，写前备份；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`。重启顺序：stop 81voltd、restart ModemManager、start 81voltd。
+- Android 里拨号只用 `scripts/fuxi-android-dial-sim2.sh`，不用 `am start -a CALL`（会误拨卡 1）。
+- 部署服务、费用操作、物理操作、进 Android、向 ADSP 发命令、git commit/push 先问用户。
+- 全部 34 项改动未 commit；`work/claude-logs/android-voice-20261101/` 含未脱敏号码，别提交。
+- 日志过滤 password/psk/pin/IMSI/ICCID/IMEI/号码；报告区分实测与推测。

@@ -1,14 +1,14 @@
 {
-  "as_of": "2026-10-30T23:10+08:00",
+  "as_of": "2026-11-01T14:12+08:00",
   "timezone": "Asia/Shanghai",
   "device": "Xiaomi 13 fuxi",
-  "state": "2026-10-30 23:03 CST：modem13 试验后刷回 s2idle2（7.3.0+ #207），boot_id 6d7ab8b3-711f-4ec7-b0af-078890540e8d，recovery_b = s2idle2 已回读校验；health-20261030-230707.log 失败 0。",
-  "active_image": "work/kbuild/abl-fuxi-s2idle2.img",
-  "image_sha256": "186e102f905dd2bbb5c3636e7f393aedb77191bbcc6b04010344d56290a4cd69",
-  "kernel": "7.3.0+ #207 s2idle2",
+  "state": "2026-11-01：modem16 #222 升为基线。recovery_b = abl-fuxi-modem16-epmap.img；fuxi-health --require-wifi --require-sensors 失败 0；蜂窝数据、注册稳定（1500 s 146/146）、IMS 注册（81voltd）、收短信、来电振铃已实测。",
+  "active_image": "work/kbuild/abl-fuxi-modem16-epmap.img",
+  "image_sha256": "20ac77941ddbad7d283c3681e16a31eadef71cb1486f6ffb7f0276cf03fe76ef",
+  "kernel": "7.3.0+ #222 modem16-epmap",
   "classification": "Running Linux candidate with physically accepted native display and working GPU acceleration; not yet promoted to daily baseline (needs cold-boot/long-run regression).",
-  "boot_id": "6d7ab8b3-711f-4ec7-b0af-078890540e8d",
-  "fallback_image": "work/kbuild/abl-fuxi-audio-probe4.img",
+  "boot_id": "b9326dd2-b840-412b-ac58-8e8f5808120a",
+  "fallback_image": "work/kbuild/abl-fuxi-s2idle2.img",
   "recovery_backup": "work/backup/display-install-20261029-104150/recovery_b-before.img",
   "health_with_sensors_failures": 0,
   "phosh_restarts": 0,
@@ -170,7 +170,7 @@
     "Second microphone (AMIC mapping), headset path (MBHC/USB-C mux), speaker protection/calibration."
   ],
   "regression_tests_passed": 57,
-  "previous_boot_id": "1a08e704 (modem13 run2)",
+  "previous_boot_id": "1c3a57e4-39e3-4352-a0a9-b74a3afe5d29",
   "priority": "计划第 1 项 M5.2 已复验完成；计划第 2 项通话/基带继续采集 tms/servreg domain-list 响应，并区分 qcom_scm_pas_init_image 的 -12 来源；每次设备试验后恢复 s2idle2。源码复核：PDR -6 对应无匹配域的 -ENXIO，非事务超时；现有 QRTR 服务公告错误不足以证明 modem 因果。",
   "modem": {
     "pd_mapper_userspace_package": "protection-domain-mapper 1.0-4ubuntu6 installed/enabled during modem8 #214; IPA SMEM assertion still reproduced",
@@ -296,7 +296,7 @@
       "ui_acceptance": "not tested"
     }
   },
-  "updated_at": "2026-10-30T23:10+08:00",
+  "updated_at": "2026-11-01 22:53 CST",
   "secondary_fallback_image": "work/kbuild/abl-fuxi-daily-pm1.img",
   "validation_scope": "s2idle2 #207: WiFi+sensor health check, 5 GHz association, CN regulatory domain, Bluetooth powered, Phosh restart count, and 57 host regression tests verified 2026-10-30; cold-boot and long-run regression remain pending.",
   "health_with_sensors_current_image_verified": true,
@@ -344,24 +344,7 @@
     "device_mutations_during_check": false
   },
   "last_linux_candidate_image": "work/kbuild/abl-fuxi-screen-audio9-host-bindingfix.img",
-  "latest_host_observation": {
-    "checked_at": "2026-10-29T15:35:00+08:00",
-    "adb_transport": "USB ADB online",
-    "reported_product": "Xiaomi 13 fuxi",
-    "reported_build": "Xiaomi OS 3.0.307.0.WMCCNXM / Android 16",
-    "reported_kernel": "5.15.211-g9d5787a9b37e",
-    "reported_slot": "_b",
-    "display": {
-      "resolution": "1080x2400",
-      "reported_modes_hz": [
-        60,
-        90,
-        120
-      ],
-      "physical_acceptance": false
-    },
-    "operations": "read-only; no reboot, flash, settings change, or network credential access"
-  },
+  "latest_host_observation": "2026-11-01 22:53 baseline #222 (recovery_b 20ac7794), boot b9326dd2 (rebooted 22:32 via Android->adb reboot recovery); 81voltd-sub2 v5 (77460da0); ModemManager = mm-netlink UAF fix fe35ae9f (sha 863c42bd; old c6b20435 backup d42cc108); SIM1+SIM2 IMS registered (SIM2 at uptime 173 s, held 10 min). See docs/交接-新会话-20261101-2253.md",
   "last_linux_kernel": "7.3.0+ #207",
   "gpu": {
     "initialized": true,
@@ -503,5 +486,23 @@
   "recovery_b_sha256": "186e102f905dd2bbb5c3636e7f393aedb77191bbcc6b04010344d56290a4cd69",
   "last_health_failures": 0,
   "updated": "2026-10-30T23:10+08:00",
-  "last_modem_trial": "modem13-smemmap #219：SMEM 整段 1:1 映射进 IPA IOMMU，两轮共约 2580 s SMMU fault 0；第一轮 1312 s 0 崩溃、注册 CHN-UNICOM 5G NR 但不稳定；第二轮 593 s 基带 rf_nr5g_low_1 崩溃后恢复失败循环（GSI CHID 0 EPID 12 errval 7 + -110）；rmnet 下行无数据；23:03 已刷回 #207，健康检查失败 0。下一步 modem14-ssrhalt（崩溃时 HALT modem GSI 通道）"
+  "last_modem_trial": "modem13-smemmap #219：SMEM 整段 1:1 映射进 IPA IOMMU，两轮共约 2580 s SMMU fault 0；第一轮 1312 s 0 崩溃、注册 CHN-UNICOM 5G NR 但不稳定；第二轮 593 s 基带 rf_nr5g_low_1 崩溃后恢复失败循环（GSI CHID 0 EPID 12 errval 7 + -110）；rmnet 下行无数据；23:03 已刷回 #207，健康检查失败 0。下一步 modem14-ssrhalt（崩溃时 HALT modem GSI 通道）",
+  "health_log": "work/claude-logs/health-20261101-140857.log",
+  "cellular": {
+    "data": true,
+    "registration_stable_1500s": true,
+    "ims_registered": true,
+    "ims_daemon": "81voltd 1.2.0-2",
+    "sms_receive": true,
+    "incoming_call_ring": true,
+    "sms_send": null,
+    "call_audio": false,
+    "sim2": null,
+    "evidence": [
+      "work/claude-logs/modem16-keeper-run1-20261101/",
+      "work/claude-logs/ims-81voltd-run1-20261101/",
+      "docs/目标-M5.md 11-01 节"
+    ]
+  },
+  "recovery_b_previous_backup": "work/backup/recovery_b-228-camera-20261101-132414/recovery_b.img"
 }

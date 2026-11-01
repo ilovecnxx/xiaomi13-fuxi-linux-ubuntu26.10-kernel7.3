@@ -1,0 +1,25 @@
+# TASKS（2026-11-01 14:21）
+
+**完整交接：`docs/交接-新会话-20261101-1421.md`**（上一版 `docs/交接-新会话-20261101-1406.md`）
+
+## 目标（用户 2026-11-01 13:30：自主推进，自选最优路线）
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持（显示/GPU/音频/WiFi/BT/传感器）。
+
+## 当前状态
+- 基线 = modem16 #222（recovery_b sha256 20ac7794…），fuxi-health 失败 0；实机 boot_id 7a65a89e（14:18 重启）。
+- 已实测：数据、注册稳定（1500 s 146/146）、IMS registered（81voltd，78/78）、开机 28 s 自动 IMS、收短信、来电振铃。
+- keeper 已加 IMS 未注册兜底循环（已部署，未触发过）。
+- 未做：发短信、接听/拨出、通话音频（主线无语音通路，需新写）、卡 2。
+- 工作树有未提交改动（见交接 §4）；current-device.json 的 boot_id 待改为 7a65a89e。
+
+## 下一步
+1. 只读确认：`uname -v`、boot_id、`fuxi-qmi-ims.py 0`。
+2. 修 current-device.json 的 boot_id（先备份）。
+3. 等用户：给号码测发短信/拨出/接听（费用）；选通话音频（先在 Android 抓包）还是卡 2。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b，写前备份；试验后回基线 #222 并跑 fuxi-health。
+- 桌面回退：`work/kbuild/abl-fuxi-s2idle2.img`（186e102f…）。
+- 费用操作、物理操作、进 Android 抓包、恢复 #228、git commit/push 先问用户。
+- 日志过滤 password/psk/pin/号码；报告区分实测与推测。

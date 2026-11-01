@@ -1,0 +1,29 @@
+# TASKS（2026-11-01 21:02）
+
+**完整交接：`docs/交接-新会话-20261101-2102.md`**（上一版是 `docs/交接-新会话-20261101-2001.md`；旧 TASKS 全文备份在 `docs/TASKS.md.before-handoff-20261101-2102`）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- 手机在**基线 #222**（recovery_b 20ac7794…），boot_id 1c3a57e4，fuxi-health 在 20:05 是 0 项失败。
+- `/usr/local/sbin/81voltd-sub2` = **v5**（77460da0…）。卡 1、卡 2 的 IMS 都是 registered（21:02 只读核对）。
+- 卡 2 IMS 根因【已证实】：开机早期基带把卡 2 的 IMS 请求接到 ctnet PDN（`240e:469:`、IMCN 0、没有 P-CSCF）。约 165 s 后才能拿到真正的 IMS PDN（`240e:569:`）。
+- v4 加了连上后校验和退避重试，已上机两次，都有效。v5 加了 MM 崩溃后重开 QMI 设备；**这条重连路径没在机器上触发过**。
+- heal 在 125 s 的顺序重启，以及 keeper 的射频循环，会打断 81voltd 的重试；射频循环时出现过 MM 段错误。
+- 通话无音频、VCPM EBADPARAM：本会话没处理。
+- 主仓库、81voltd 树、内核树都未 commit。
+
+## 下一步
+1. 只读核对 #222、boot_id、20ac7794、77460da0、两卡 IMS（命令见交接 §9.1）。
+2. 问用户：只 `systemctl restart ModemManager`，验证 v5 能否让卡 2 自己回来（交接 §9.2）。
+3. 问用户：调 heal 宽限期和触发条件，调 keeper 的射频循环条件（交接 §9.3–9.4）。
+4. git commit 先问（排除 `work/claude-logs/`）。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；顺序重启是 stop 81voltd、restart MM、start 81voltd。
+- 刷机/重启、部署、建 PDN 试验、向 ADSP 发命令、进 Android、费用操作、git commit/push 都要先问用户。
+- 不要重试：改 Start Network 参数（已证实无关）；不先 Bind Mux 就 Start Network；heal 在约 125 s 重启。
+- `work/claude-logs/android-voice-20261101/` 含未脱敏号码，别提交。报告区分实测与推测。
