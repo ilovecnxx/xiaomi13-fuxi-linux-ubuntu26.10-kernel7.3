@@ -11,6 +11,8 @@
 # 无线 adb：先在主机 adb pair/connect；adb root 重启 adbd 后端口会变，脚本按 mDNS 自动重连
 # 当前已知好镜像：work/patches/abl-recovery-dualboot-20261027/recovery-linux.img
 set -u
+# 手机同时连着 USB 和无线 adb 时必须指定序列号，否则 adb 报 more than one device；可用环境变量覆盖
+export ANDROID_SERIAL="${ANDROID_SERIAL:-f8286c82}"
 B="$(cd "$(dirname "$0")/.." && pwd)"
 ADB="$B/tools/platform-tools/adb"
 IMG="${1:?用法: fuxi-test-recovery.sh <abl 镜像> [命令 ...]}"; shift
