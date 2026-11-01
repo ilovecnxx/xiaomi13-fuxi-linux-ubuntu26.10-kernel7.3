@@ -6,14 +6,15 @@
 小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
 
 ## 当前状态
-- 基线 #222（recovery_b 前缀 20ac7794）；boot_id 50ac895b（11-02 05:53 刷回）；两卡 IMS registered；fuxi-health 失败 0。
+- 基线 #222（recovery_b 前缀 20ac7794）；boot_id 35f7efc4（11-02 06:20 刷回）；两卡 IMS registered；fuxi-health 失败 0。
 - 81voltd-sub2 = v5（77460da0）；ModemManager = mm-netlink UAF 修复版（863c42bd）。
-- 【已实测，#236，设计文档 §7o】模式 0 里给 TX 补 SG/容器额外属性（`voice_extra` bit0）后 VSID 通过；只补 2 条图内连线（`voice_extra`=2）仍被拒、modem 崩溃。bit0 的作用与 mask 2 的失败各只观测一次。
-- 现在卡点与 Android 块模式一样：`start(TX)`（GRAPH_START）回 status 1。【推测】缺图外的东西：端点配置（0x2012 SET_CFG、tx_ep）、校准块 0x01001008。
-- 主仓库 HEAD 8d223b1（已提交）；内核树 HEAD 7f3051fe4（只提交了 `audioreach.c/.h`；`q6apm-voice.c`、`q6apm.c/.h`、`q6voice-{ctrl,oob,agraph}.h` 仍未提交，因依赖不提交的厂商头文件）。试验镜像 `work/kbuild/abl-fuxi-voice-extra.img`（前缀 ffbd37d2）。
+- 【已实测，#236，设计文档 §7o】模式 0 里给 TX 补 SG/容器额外属性（`voice_extra` bit0）后 VSID 通过；只补 2 条图内连线（`voice_extra`=2）仍被拒、modem 崩溃。
+- 【已实测，#237，§7p】再加 TX 端点 SET_CFG（bit3，0x08001017 + 0x08001063，缺的两个字是猜的）：两条都返回 0，`start(TX)` 仍回 status 1。
+- 卡点：`start(TX)`（GRAPH_START）status 1。【推测】缺 0x01001008 校准块或 VCPM 的 0x080011bc/0x08001310/0x0800116b；抓包只存了每包前 40 字节，要全长得重新抓（进 Android，要问用户）。
+- 主仓库 HEAD 见 `git log`（已提交）；内核树 `7f3051fe4` 之后的 `audioreach.c/.h`（`audioreach_apm_set_param`）、`q6apm-voice.c`（`voice_extra` bit3）、`q6apm.c/.h` 和 `q6voice-{ctrl,oob,agraph}.h` 未提交。试验镜像 `work/kbuild/abl-fuxi-voice-extra2.img`（前缀 2174a2cb）。
 
 ## 下一步
-1. 离线研究 `start(TX)` status 1（已发现：Android 在 TX 的 START 前给 0x43af 发 SET_CFG 0x08001017 与 0x08001063，包日志只存了前 40 字节，各缺最后一个字；见对话）：对比 Android 抓包里 START 之前发的命令（0x01001008 在 pkt0111/0114/0117/0141/0147，0x2012 SET_CFG、端点配置），设计方案写入设计文档 §7p。
+1. 问用户：是否进 Android 重新抓包并存全长载荷（`fuxi-gpr-shmdump`，要附着 HAL、打电话有费用）；或先离线读 0x01001008 的 shm 块（pkt0141/0147 的 map 文件）看能否推出校准块内容。
 2. 方案定了再问用户批准上机；失败的先跑，通过的最后跑。试验后回基线 #222 并跑 fuxi-health。
 3. 问用户：上游 #1110 留言（用户自己贴，N 要核对）；内核树剩余文件怎么提交。
 
