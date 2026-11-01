@@ -1,0 +1,28 @@
+# TASKS（2026-11-02 05:40）
+
+**完整交接：`docs/交接-新会话-20261102-0237.md`**（上一版 `docs/交接-新会话-20261102-0117.md`）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- 基线 #222（recovery_b 前缀 20ac7794）；boot_id c74b4361（11-02 05:34 刷回）；两卡 IMS 都 registered；fuxi-health 失败 0（上一次的 Phosh 重试 1 次没有复现）。
+- 81voltd-sub2 = v5（77460da0）；ModemManager = mm-netlink UAF 修复版（863c42bd）。
+- 语音：用 Android GRAPH_OPEN 块开图后 VSID/STATE/PATH/prepare 全通过，卡在 `start(TX)` 回 status 1（#232 mode 1/2）。我们的图 VSID 仍被拒（#232 mode 0）→ **原因在我们的图里**。失败路径发 STOP 后 mode 1/2 不再崩溃，mode 0 单独跑仍崩溃（#234，`vs.c:1336`，约 0.17 s 后）。
+- 二分（#235，§7l/§7m）：模式 3（我们的 TX + Android RX）、4（Android TX + 我们的 RX）VSID 都通过，只有两边都用我们的（模式 0）才被拒；四种混合模式都卡 start(TX)。TX↔RX 之间没有跨图连线（推翻旧候选）。剩余候选：容器/SG 额外属性（0x80010cb/0x8001174/0x800124d/0x80010cc）、TX 缺 2 条图内连线（4167:15>4448:2、4456:1>47b8:2）。
+- 主仓库 HEAD 79f6e48，2 项修改 + 9 项未跟踪（新脚本、回滚点）；内核树 HEAD 1915bcc92，4 项修改 + 3 项未跟踪（`q6voice-ctrl.h`、`q6voice-oob.h`、`q6voice-agraph.h`，后两者含厂商数据不提交）。
+
+## 下一步
+1. 只读核对（交接 §9.1）。
+2. (b) 已做（#232，§7j）；(1) 已做（#234，§7k）：在失败路径也发 GRAPH_STOP，mode 1/2 不再触发 modem 崩溃，但 mode 0 单独跑仍会崩溃 → 说明 mode 1/2 已把 VCPM 状态设为 PRE_START，mode 0 失败后残留，使 modem 语音服务崩溃。撤状态的手段未找到（Android 挂断时不发）。
+3. 问用户选：(2) Android 块 + START 前补端点块；(3) 二分我们的图与 Android 图差异；(4) 换 modem 侧绕 VCPM（上游建议用 modem 侧语音，附件 attach-to-modem-voice.diff，未验证可行性）。
+4. 试验后回基线 #222 并跑 fuxi-health。
+5. 问用户：git commit（重放、VCPM 注册、agraph 与 stop 改动依赖不提交的 `q6voice-oob.h`、`q6voice-agraph.h`）；上游 #1110 留言。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b（现在默认带 `ANDROID_SERIAL=f8286c82`）；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；顺序重启是 stop 81voltd、restart MM、start 81voltd。
+- 刷机/重启、替换二进制、restart MM、kill qmi-proxy、建 PDN 试验、ADSP 命令、进 Android（含附着 HAL）、打电话、费用操作、git commit/push、对外留言都要先问用户。
+- 不要重试：原样重放这批 5 个块；补 0x08001162/0x08001061（#230 已证实仍被拒）；图端口作 VCPM 源端口；kctl 原样再写 SIM2；卡 2 卡在 ctnet 时再做顺序重启或换 MM 版本；连续 kill qmi-proxy；改 Start Network 参数；按「默认校准块」写 0x01001008 发送代码。
+- adb 用 `tools/platform-tools/adb -s f8286c82`。不要用 `pkill -f`。不提交 `work/claude-logs/android-voice-*`、`q6voice-oob.h`、`q6voice-agraph.h`。一次启动里不要先跑 agraph=1/2 再跑 agraph=0（会触发 modem 崩溃，§7j）。报告区分实测与推测。

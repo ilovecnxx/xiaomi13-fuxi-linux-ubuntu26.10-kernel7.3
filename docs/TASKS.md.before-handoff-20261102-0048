@@ -1,0 +1,31 @@
+# TASKS（2026-11-01 23:51）
+
+**完整交接：`docs/交接-新会话-20261101-2351.md`**（上一版 `docs/交接-新会话-20261101-2329.md`；旧 TASKS 备份 `docs/TASKS.md.before-handoff-20261101-2351`）
+
+## 目标
+小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
+
+## 当前状态
+- 基线 #222（recovery_b 20ac7794）；boot_id 332a2ca9；fuxi-health 失败 0；两卡 IMS 都 registered。
+- 81voltd-sub2 = v5（77460da0）；ModemManager = mm-netlink UAF 修复版（863c42bd）。
+- 语音：GRAPH_OPEN 两图成功，VCPM VSID 仍 EBADPARAM。图端口作源已上机（#227）无效，**已回滚**（内核树 audioreach.c/.h 与 q6apm-voice.c 回到源端口之前；`q6apm_voice_start()` 保留每步失败日志）。
+- 步骤日志已上机（#228，2026-11-01 23:56）：`voice start failed at step VSID: -22`，即第一条 VCPM 命令 VSID 就被拒，STATE/PATH 没发出（`work/claude-logs/voice-graphopen-20261101/test-stepinfo.txt`）。之后已刷回基线 #222，fuxi-health 失败 0（`health-after-stepinfo.log`）；开机 2 分钟时卡 2 IMS 为 not-registered，5 分钟时两卡都 registered（只读核对）。
+- 0x01001008 已抓到内容（2026-11-02 Android 上机，卡 2 拨出，`work/claude-logs/android-voice-shmdump2-20261102/`）：共 7 个，每个是共享内存里一个带外 SET_CFG `{miid 4, param 0x08001163}`，内容是按 SG 组装的语音校准（格式 `[1][sg][len][record]` + 一串 `{len,n,param...}`），**不是 ACDB 原样拷贝**（设计文档 §7e）。它是不是 VSID 的前提仍未证实。第 3 个图（SG 0xb0000193）多半只做回声参考。
+- 新工具 `scripts/fuxi-gpr-shmdump.c`、`scripts/fuxi-voice-oob-gen.py`（未提交）：Android 里附着音频 HAL 转存 GPR 包和 dmabuf；把抓到的块生成 `q6voice-oob.h`。
+- **重放实验已上机（#229，2026-11-02 00:38）**：MAP 成功，5 个块（rx_cal1/rx_cal2/tx_ep/tx_cal1/tx_cal2）全部被 ADSP 回 status 1，VSID 仍 EBADPARAM，UNMAP 超时（设计文档 §7f，`work/claude-logs/voice-replay-20261102/test.txt`）。已刷回基线 #222，fuxi-health 失败 0。**不要再原样重放这批块**；被拒原因没查清。
+- 主仓库 HEAD 5b533d5，3 项修改 + 5 项未跟踪；内核树 6 项修改 + 2 项未跟踪（含本会话的源端口改动，副本在 `work/state/voice-graph-20261101/before-srcport/`）。
+
+## 下一步
+1. 只读核对（交接 §9.1）。
+2. （已完成）基线两卡 IMS 5 分钟内都注册。
+3. VSID 被拒的原因仍未知；重放抓到的块也被拒（status 1）。候选（都要先问用户）：(a) 查 status 1 的原因：对比 Android 的 MAP（地址格式、flag 4）与我们的，或让图与 Android 的 GRAPH_OPEN 完全一致（抓包里 0x2012 是 4 个 SG：0xb0000045、0xb00001d9、0xb0000041、0xb0000040，我们只有 RX 别名 272 的 5 个 SG）；(b) ADSP ftrace 看 APM 为何拒绝（用户已同意，尚未做）；(c) 逐字节重放 Android 的整条 GRAPH_OPEN（从共享内存取）而不是用 ACDB 自建图。
+4. 试验后回基线 #222 并跑 fuxi-health。
+5. 已完成：内核树提交 1915bcc92（分支 fuxi/20261031）；`fuxi-test-recovery.sh` 默认带序列号（250d153）。待做：上游 #1110 留言（草稿等用户确认，本机没有 glab）。
+
+## 红线
+- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg、fsc、persist、efs；Android 分区只读。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b，**必须带 `ANDROID_SERIAL=f8286c82`**；试验后回基线 #222 并跑 fuxi-health。
+- 不要单独重启 81voltd；不要带参数运行 81voltd；不要用 `--set-primary-sim-slot`；顺序重启是 stop 81voltd、restart MM、start 81voltd。
+- 刷机/重启、替换二进制、restart MM、kill qmi-proxy、建 PDN 试验、ADSP 命令、进 Android、打电话、费用操作、git commit/push、对外留言都要先问用户。
+- 不要重试：图端口作 VCPM 源端口；kctl 原样再写 SIM2；卡 2 卡在 ctnet 时再做顺序重启或换 MM 版本；连续 kill qmi-proxy；改 Start Network 参数；按“默认校准块”写 0x01001008 发送代码。
+- adb 用 `tools/platform-tools/adb -s f8286c82`。不要用 `pkill -f`。`work/claude-logs/android-voice-20261101/` 别提交。报告区分实测与推测。
