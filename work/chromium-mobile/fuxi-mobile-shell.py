@@ -64,12 +64,44 @@ def cdp_call(method, params=None):
             return _cdp.call(method, params)
 
 
+PROFILE = os.path.expanduser("~/.config/chromium-fuxi-mobile")
+
+
+def clear_stale_profile_lock():
+    """Chromium writes Singleton{,Lock,Cookie,Socket} into the profile and refuses to
+    start when the recorded host/PID no longer exists (exit 21, "profile appears to be
+    in use ... on another computer"). After a reboot the hostname can change, so the
+    check never matches; clear the lock ourselves when its PID is gone."""
+    lock = os.path.join(PROFILE, "SingletonLock")
+    if not os.path.islink(lock):
+        return
+    try:
+        pid = int(os.readlink(lock).rsplit("-", 1)[-1])
+    except (OSError, ValueError):
+        pid = -1
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            return  # owner still alive: a real lock, leave it alone
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            os.unlink(os.path.join(PROFILE, name))
+        except FileNotFoundError:
+            pass
+    log("cleared stale chromium profile lock")
+
+
 def launch():
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = PRIVLIB + (":" + env["LD_LIBRARY_PATH"] if env.get("LD_LIBRARY_PATH") else "")
+    clear_stale_profile_lock()
     args = [
         CHROME,
-        "--user-data-dir=" + os.path.expanduser("~/.config/chromium-fuxi-mobile"),
+        "--user-data-dir=" + PROFILE,
         "--no-sandbox", "--test-type", "--disable-dev-shm-usage",
         "--ozone-platform=wayland", "--enable-features=UseOzonePlatform",
         "--disable-features=Vulkan", "--use-angle=gl", "--use-gl=angle",
