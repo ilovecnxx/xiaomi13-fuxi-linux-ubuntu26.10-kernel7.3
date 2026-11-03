@@ -1,0 +1,26 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development harness. `build/linux/` contains the kernel source; `scripts/` holds build, device, deployment, and diagnostic tools, with host-side unit tests in `scripts/tests/`. `work/rootfs-overlay/` contains Linux userspace configuration and services. `docs/` records design, test results, and handoffs; `work/` stores generated builds, logs, device state, and experiments. `tools/` contains supporting utilities. Check `README.md` and `TASKS.md` for current project status before starting device work.
+
+## Build, Test, and Development Commands
+
+- `python3 -m unittest discover -s scripts/tests -v` runs the host-side regression suite.
+- `FUXI_DTB=<variant> scripts/fuxi-build-abl.sh <name>` builds a tracked ABL image and its config, DTB, and JSON metadata under `work/kbuild/`.
+- For a focused kernel check, run `make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 sound/soc/qcom/qdsp6/` from `build/linux/`.
+- `scripts/fuxi-health.sh` performs read-only checks against the connected Linux device.
+
+Image deployment through `scripts/fuxi-test-recovery.sh` reboots the phone and writes `recovery_b`. Confirm the target image and current recovery instructions in `README.md` before running it. Do not write Android or firmware partitions; follow the explicit safety boundaries in `TASKS.md`.
+
+## Coding Style & Naming Conventions
+
+Use four spaces for Python indentation, descriptive `snake_case` names, and standard-library modules where practical. Shell scripts should use Bash, quote expansions, and keep safety checks explicit. Match nearby code and preserve the scripts' existing executable bits. Name tests `test_*.py`; keep test classes descriptive and use `unittest`.
+
+## Testing Guidelines
+
+Run the full unittest command above after changing scripts or build logic. For kernel changes, run the focused `W=1` build and report the exact target. Device checks are hardware-dependent; record the image name, relevant configuration, and observed result in the appropriate `docs/` or `work/` log. Never treat a successful build as device validation.
+
+## Commit & Pull Request Guidelines
+
+Recent commits use a short subsystem prefix, a colon, and a concrete summary (for example, `语音：...` or `脚本名：...`). Commit each completed update in a focused commit; stage only files belonging to that change. Push larger updates (kernel, feature, multi-file, or operational changes) to GitHub after verification. Pull requests should describe the behavior change, list tests and device checks performed, identify any untested hardware path, and link relevant task or design notes. Include logs or screenshots when they clarify a user-visible or device result; do not commit generated images, logs, or sensitive device data unless explicitly required.
