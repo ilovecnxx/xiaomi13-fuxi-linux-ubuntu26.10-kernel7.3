@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>SuperTerm</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top bar -->
+    <header id="topbar">
+      <button id="btn-menu" class="icon-btn" aria-label="会话列表">☰</button>
+      <div id="title-wrap">
+        <div id="title">SuperTerm</div>
+        <div id="subtitle"></div>
+      </div>
+      <button id="btn-settings" class="icon-btn" aria-label="设置">⚙</button>
+    </header>
+
+    <!-- Drawer: sessions -->
+    <aside id="drawer" class="drawer hidden">
+      <div class="drawer-head">
+        <span>会话</span>
+        <button id="btn-new-session" class="pill-btn">+ 新建</button>
+      </div>
+      <ul id="session-list"></ul>
+    </aside>
+    <div id="scrim" class="scrim hidden"></div>
+
+    <!-- Message area -->
+    <main id="messages"></main>
+
+    <!-- Composer -->
+    <footer id="composer">
+      <div class="composer-inner">
+        <button id="btn-agent" class="agent-chip" title="切换 agent">codex</button>
+        <textarea id="input" rows="1" placeholder="给 SuperTerm 发消息…" ></textarea>
+        <button id="btn-send" class="send-btn" aria-label="发送">➤</button>
+        <button id="btn-stop" class="send-btn stop hidden" aria-label="停止">■</button>
+      </div>
+    </footer>
+
+    <!-- Settings panel -->
+    <section id="settings" class="panel hidden">
+      <div class="panel-head">
+        <button id="btn-settings-close" class="icon-btn">✕</button>
+        <span>设置</span>
+      </div>
+      <div class="panel-tabs">
+        <button data-tab="providers" class="tab active">模型/供应商</button>
+        <button data-tab="logs" class="tab">日志</button>
+        <button data-tab="about" class="tab">关于</button>
+      </div>
+      <div id="tab-providers" class="tab-pane">
+        <div id="bindings"></div>
+        <div class="section-title">供应商档案</div>
+        <ul id="profile-list"></ul>
+        <div class="row">
+          <button id="btn-import-cc" class="pill-btn">从 CCSwitch 导入</button>
+        </div>
+        <details>
+          <summary>新建档案</summary>
+          <form id="profile-form" class="form">
+            <select name="app_type"><option value="codex">codex</option><option value="claude">claude</option><option value="dsh">dsh</option></select>
+            <input name="display_name" placeholder="名称" required />
+            <input name="base_url" placeholder="https://…/v1" />
+            <input name="wire_api" placeholder="responses / anthropic" />
+            <input name="model" placeholder="默认模型（可选）" />
+            <input name="token" placeholder="API Key / Token" type="password" />
+            <button type="submit" class="pill-btn">保存</button>
+          </form>
+        </details>
+      </div>
+      <div id="tab-logs" class="tab-pane hidden">
+        <div class="row"><input id="log-filter" placeholder="按类型过滤，如 tool_call"/><button id="btn-log-load" class="pill-btn">刷新</button></div>
+        <ul id="log-list"></ul>
+      </div>
+      <div id="tab-about" class="tab-pane hidden">
+        <p>SuperTerm 0.1.0 — 原生超级终端</p>
+        <p class="muted">驱动 codex / claude / dsh 的结构化 JSON 流，接管终端显示。</p>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

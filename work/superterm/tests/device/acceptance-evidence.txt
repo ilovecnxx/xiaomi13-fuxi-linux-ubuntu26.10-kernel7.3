@@ -1,0 +1,33 @@
+== 1. install layout ==
+PASS: current symlink present: /home/fuxi/.local/share/superterm/versions/20261030-144952
+PASS: desktop entry
+PASS: icon
+PASS: launcher executable
+== 2. prerequisites ==
+PASS: arm64
+PASS: GTK4+Adw+WebKit6 python bindings
+PASS: CLI codex (codex-cli 0.165.0)
+PASS: CLI claude (2.1.312 (Claude Code))
+PASS: CLI dsh (0.2.1-rc.5)
+== 3. module import + doctor ==
+PASS: superterm modules import, HAVE_GI True
+PASS: headless doctor runs
+== 4. backend unit/integration tests inside install ==
+PASS: embedded unit tests pass (Ran 65 tests)
+== 5. config subsystem (isolated temp state) ==
+ok
+PASS: config store round-trip + token masking
+== 6. drivers normalize contract (fake) ==
+ok
+PASS: codex/claude normalizers produce shared event model
+== 7. secret-leak audit (real turn end-to-end, then scan every persisted byte) ==
+ok: scanned 8 paths, no leak
+PASS: no plaintext secret in DB/events/raw logs
+== 8. invariants audit: exactly-one done + workspace escape + push version ==
+ok
+PASS: done-exactly-once / path-escape / push-version invariants
+== 9. finalize durability audit: persistent DB write failure must never strand a turn ==
+ok
+PASS: failed finalize journaled then healed at boot (no permanently-running turn)
+== SUMMARY: PASS=17 FAIL=0 ==
+ACCEPTANCE_OK

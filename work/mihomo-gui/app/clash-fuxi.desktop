@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Clash Fuxi
+Comment=Mihomo/Clash 代理客户端
+Exec=/usr/local/bin/clash-fuxi
+Icon=network-vpn-symbolic
+Terminal=false
+Type=Application
+Categories=Network;Utility;
+StartupNotify=true

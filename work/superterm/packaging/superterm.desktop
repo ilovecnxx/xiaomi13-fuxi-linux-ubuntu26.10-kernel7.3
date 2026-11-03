@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SuperTerm
+Comment=原生超级终端 — 驱动 codex/claude/dsh
+Exec=superterm-launch
+Icon=superterm
+Terminal=false
+Categories=Development;Utility;
+StartupNotify=true
+X-GNOME-Autostart-enabled=false
