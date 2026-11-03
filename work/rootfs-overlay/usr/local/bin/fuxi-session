@@ -1,8 +1,26 @@
 #!/bin/sh
 # 切换图形会话：fuxi-session plasma | phosh
+# 停会话后要清掉残留的 kwin_wayland / plasmashell：它们不随 service 退出，
+# 会继续占着 wayland-0 和 DRM，导致新会话黑屏（2026-11-04）。
 set -e
+stop_plasma() {
+  systemctl stop fuxi-autorotate.service 2>/dev/null || true
+  systemctl stop plasmamobile.service 2>/dev/null || true
+  pkill -u fuxi -x kwin_wayland 2>/dev/null || true
+  pkill -u fuxi -x plasmashell 2>/dev/null || true
+}
 case "${1:-}" in
-  plasma|plasmamobile) systemctl stop phosh.service 2>/dev/null || true; systemctl start plasmamobile.service ;;
-  phosh) systemctl stop plasmamobile.service 2>/dev/null || true; systemctl start phosh.service ;;
+  plasma|plasmamobile)
+    systemctl stop phosh.service 2>/dev/null || true
+    stop_plasma
+    sleep 1
+    systemctl start plasmamobile.service
+    systemctl start fuxi-autorotate.service 2>/dev/null || true
+    ;;
+  phosh)
+    stop_plasma
+    sleep 1
+    systemctl start phosh.service
+    ;;
   *) echo "用法: fuxi-session plasma|phosh" >&2; exit 2 ;;
 esac

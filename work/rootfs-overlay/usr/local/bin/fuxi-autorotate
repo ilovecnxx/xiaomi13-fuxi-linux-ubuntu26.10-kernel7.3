@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Plasma Mobile auto-rotate bridge.
+
+Ubuntu 的 kwin_wayland 没有链接 QtSensors，不会自己跟随传感器旋转；
+这里订阅 iio-sensor-proxy 的方向，用 kscreen-doctor 转输出。
+会话内锁定：存在 ~/.local/state/fuxi/orientation-lock 时不转。
+"""
+import os
+import pathlib
+import subprocess
+import time
+
+MAP = {
+    "normal": "normal",
+    "bottom-up": "inverted",
+    "left-up": "left",
+    "right-up": "right",
+}
+LOCK = pathlib.Path.home() / ".local/state/fuxi/orientation-lock"
+OUTPUT = os.environ.get("FUXI_ROTATE_OUTPUT", "DSI-1")
+
+
+def orientation():
+    r = subprocess.run(
+        ["busctl", "--system", "get-property",
+         "net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+         "net.hadess.SensorProxy", "AccelerometerOrientation"],
+        capture_output=True, text=True)
+    parts = r.stdout.strip().split('"')
+    return parts[1] if len(parts) > 2 else "undefined"
+
+
+def main():
+    last = None
+    while True:
+        o = orientation()
+        if o in MAP and o != last:
+            last = o
+            if not LOCK.exists():
+                subprocess.run(
+                    ["kscreen-doctor", "output.%s.rotation.%s" % (OUTPUT, MAP[o])],
+                    capture_output=True)
+        time.sleep(0.5)
+
+
+if __name__ == "__main__":
+    main()
