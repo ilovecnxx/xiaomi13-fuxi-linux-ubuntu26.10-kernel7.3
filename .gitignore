@@ -18,6 +18,14 @@
 !/work/rootfs-overlay/
 !/work/device-info/
 !/work/chromium-mobile/
+# 自有应用与小工具源码（2026-11-04 公开）
+!/work/superterm/
+!/work/mihomo-gui/
+!/work/dsh-phone/
+!/work/denial-arm64/
+!/work/scripts-tmp/
+!/work/wdt-test/
+!/work/tools-host/
 
 # ---- 白名单目录内仍排除：产物/二进制/密钥 ----
 *.img
@@ -55,7 +63,13 @@ __pycache__/
 /research/src-mm/
 /tools/platform-tools/
 /tools/stub-lib/
-/tools/stub-include/
+
+# ---- 公开目录内不入库的文件 ----
+/work/superterm/tests/unit/test_config.py
+/work/superterm/codex-plan-run.jsonl
+/work/superterm/brief-in.txt
+/work/mihomo-gui/host-dl/
+/work/wdt-test/wdt_test
 
 # ---- 其它 ----
 .checkpatch-camelcase.date.0
