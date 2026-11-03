@@ -11,7 +11,7 @@ This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development h
 - For a focused kernel check, run `make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 sound/soc/qcom/qdsp6/` from `build/linux/`.
 - `scripts/fuxi-health.sh` performs read-only checks against the connected Linux device.
 
-Image deployment through `scripts/fuxi-test-recovery.sh` reboots the phone and writes `recovery_b`. Confirm the target image and current recovery instructions in `README.md` before running it. Do not write Android or firmware partitions; follow the explicit safety boundaries in `TASKS.md`.
+Routine Android/Linux system switching may be performed automatically with the documented `adb reboot recovery`, Linux `systemctl reboot`, and test scripts when the task requires it. Image deployment through `scripts/fuxi-test-recovery.sh` reboots the phone and writes `recovery_b`; verify the target image and current recovery instructions in `README.md` before running it. Do not write Android or firmware partitions; follow the explicit safety boundaries in `TASKS.md`.
 
 ## Coding Style & Naming Conventions
 
