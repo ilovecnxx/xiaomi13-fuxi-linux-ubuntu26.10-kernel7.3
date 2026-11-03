@@ -1,0 +1,15 @@
+[Unit]
+Description=Fuxi: make tty7 the active VT before the graphical session
+# 没有这一步，开机时活跃 VT 是 tty1，KWin 拿不到 DRM master，
+# 会话起来却是黑屏（2026-11-04）。
+Before=plasmamobile.service phosh.service
+After=systemd-vconsole-setup.service
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/chvt 7
+
+[Install]
+WantedBy=graphical.target
