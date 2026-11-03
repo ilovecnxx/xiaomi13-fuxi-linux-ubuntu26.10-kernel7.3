@@ -1,0 +1,8 @@
+#!/bin/sh
+# 切换图形会话：fuxi-session plasma | phosh
+set -e
+case "${1:-}" in
+  plasma|plasmamobile) systemctl stop phosh.service 2>/dev/null || true; systemctl start plasmamobile.service ;;
+  phosh) systemctl stop plasmamobile.service 2>/dev/null || true; systemctl start phosh.service ;;
+  *) echo "用法: fuxi-session plasma|phosh" >&2; exit 2 ;;
+esac
