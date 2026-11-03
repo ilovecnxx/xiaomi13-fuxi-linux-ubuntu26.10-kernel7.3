@@ -2,42 +2,62 @@
 """fuxi-voice-oob-gen.py - 把 Android 抓到的带外配置块生成 C 头文件 (q6voice-oob.h)。
 
 用法: python3 -I scripts/fuxi-voice-oob-gen.py <抓包目录> <输出 .h>
-抓包目录 = fuxi-gpr-shmdump 的输出 (work/claude-logs/android-voice-shmdump2-20261102)。
+抓包目录 = fuxi-gpr-shmdump 的输出 (work/claude-logs/voice-shmdump3-20261102/voice-shmdump3)。
 
-每个块 = 共享内存里从 off 开始的 size 字节, 即一串 {miid, param_id, size, err, data(8 对齐)}。
-生成时逐条核对: 记录链恰好吃完 size 字节, 否则报错退出 (宁可不生成)。
+每个块 = 共享内存里从 off 开始的 size 字节。
+  - SET_CAL (0x01001008) 块：一个 container {miid=4, pid=0x08001163, sz, err=0} + sz 字节校准负载，
+    内层布局为 ACDB cal records（err 字段含义不同，不做链校验，仅校验 container err=0）。
+  - SET_CFG (0x01001006) tx_ep 块：标准 {miid, pid, sz, err=0, data} 记录链，恰好吃完 size 字节。
 块里有校准数据, 仅用于本机语音实验, 不要提交抓包目录。
 """
 import os
 import struct
 import sys
 
-# (名字, 抓包序号, 来源文件, 偏移, 大小, 说明)
+# (名字, 抓包序号, 来源文件, 偏移, 大小, 类型, 说明)
+# 来源：work/claude-logs/voice-shmdump3-20261102/voice-shmdump3/（2026-11-02 抓取，-s 65536 全长）
+# 第一通通话（#113–#186）：RX src=0x2012，TX src=0x2013。
+# 顺序：MAP→SET_CFG→SET_MEDIA_FORMAT→SET_CAL(rx)→MAP→SET_CFG→SET_CAL(tx)→SET_CFG(VSID)→GRAPH_OPEN(rx)→GRAPH_OPEN(tx)
+# rx_cal0 是旧抓包（shmdump2）缺失的第一条 RX cal（sz=0x5e34），补上后 TX START 才有完整前置。
 # 没有 0x2012 的端点块 #104：它引用的模块 0x41df/0x465b/0x465c 不在我们的 RX 图里（图取自别名 272 扬声器），重放只会被拒。
 BLOBS = [
-    ("rx_cal1", 114, "pkt0114-op01001008-map1-7703003000.bin", 0x2008, 0x3a8, "0x2012 SG 0xb0000041 校准"),
-    ("rx_cal2", 117, "pkt0117-op01001008-map1-7703003000.bin", 0x2408, 0x480, "0x2012 SG 0xb0000040 校准"),
-    ("tx_ep", 138, "pkt0138-op01001006-map1-7703003000.bin", 0x2c00, 0xb8, "0x2013 SET_CFG 端点块"),
-    ("tx_cal1", 141, "pkt0141-op01001008-map1-7703003000.bin", 0x2c08, 0xe70, "0x2013 SG 0xb000003f 校准"),
-    ("tx_cal2", 147, "pkt0147-op01001008-map1-7702f2d000.bin", 0x8, 0x4528, "0x2013 SG 0xb00000b1 校准"),
+    ("rx_cal0", 122, "pkt0122-op01001008-map0-7d8ddf0000.bin", 0x8,    0x5e48, "cal", "0x2012 RX cal #0 (新, sz=0x5e34)"),
+    ("rx_cal1", 125, "pkt0125-op01001008-map1-7d8dfbe000.bin", 0x2008, 0x3a8,  "cal", "0x2012 SG 0xb0000041 校准"),
+    ("rx_cal2", 128, "pkt0128-op01001008-map1-7d8dfbe000.bin", 0x2408, 0x480,  "cal", "0x2012 SG 0xb0000040 校准"),
+    ("tx_ep",   151, "pkt0151-op01001006-map1-7d8dfbe000.bin", 0x2c00, 0xb8,   "cfg", "0x2013 SET_CFG 端点块"),
+    ("tx_cal1", 154, "pkt0154-op01001008-map1-7d8dfbe000.bin", 0x2c08, 0xe70,  "cal", "0x2013 SG 0xb000003f 校准"),
+    ("tx_cal2", 161, "pkt0161-op01001008-map0-7d8dc9c000.bin", 0x8,    0x4528, "cal", "0x2013 SG 0xb00000b1 校准"),
 ]
 
 
-def check_chain(name, data):
-    """记录链必须恰好吃完 data; 返回记录数。"""
-    o = n = 0
-    while o < len(data):
-        if o + 16 > len(data):
-            raise SystemExit(f"{name}: 尾部不足 16 字节 (offset {o:#x})")
-        _miid, _pid, sz, err = struct.unpack_from("<IIII", data, o)
-        if err != 0:
-            raise SystemExit(f"{name}: offset {o:#x} err={err:#x}")
-        nxt = o + 16 + ((sz + 7) & ~7)
-        if nxt > len(data):
-            raise SystemExit(f"{name}: offset {o:#x} size={sz:#x} 超出块长 {len(data):#x}")
-        o = nxt
-        n += 1
-    return n
+def check_chain(name, data, kind):
+    """SET_CFG 块：标准记录链恰好吃完 data，返回记录数。
+       SET_CAL 块：校验 container {miid,pid,sz,err} 的 err=0，内层 ACDB cal 不做链校验。"""
+    if kind == "cfg":
+        o = n = 0
+        while o < len(data):
+            if o + 16 > len(data):
+                raise SystemExit(f"{name}: 尾部不足 16 字节 (offset {o:#x})")
+            _miid, _pid, sz, err = struct.unpack_from("<IIII", data, o)
+            if err != 0:
+                raise SystemExit(f"{name}: offset {o:#x} err={err:#x}")
+            nxt = o + 16 + ((sz + 7) & ~7)
+            if nxt > len(data):
+                raise SystemExit(f"{name}: offset {o:#x} size={sz:#x} 超出块长 {len(data):#x}")
+            o = nxt
+            n += 1
+        return n
+    # kind == "cal": 第一条记录是 container，校验 err=0
+    if len(data) < 16:
+        raise SystemExit(f"{name}: 块长 {len(data):#x} < 16")
+    _miid, pid, sz, err = struct.unpack_from("<IIII", data, 0)
+    if err != 0:
+        raise SystemExit(f"{name}: container err={err:#x}")
+    if pid != 0x08001163:
+        raise SystemExit(f"{name}: container pid={pid:#010x} (期望 0x08001163)")
+    if 16 + ((sz + 7) & ~7) != len(data):
+        raise SystemExit(f"{name}: container sz={sz:#x}+16 不等于块长 {len(data):#x}")
+    return 1
 
 
 def main():
@@ -50,13 +70,13 @@ def main():
         " * Contains vendor calibration data; for the fuxi voice experiment only. */",
         "",
     ]
-    for name, pkt, fn, off, size, desc in BLOBS:
+    for name, pkt, fn, off, size, kind, desc in BLOBS:
         with open(os.path.join(src, fn), "rb") as f:
             buf = f.read()
         data = buf[off:off + size]
         if len(data) != size:
             raise SystemExit(f"{name}: {fn} 只有 {len(buf):#x} 字节, 取不到 {off:#x}+{size:#x}")
-        nrec = check_chain(name, data)
+        nrec = check_chain(name, data, kind)
         print(f"{name}: pkt #{pkt} off={off:#x} size={size:#x} records={nrec} ok")
         lines.append(f"/* #{pkt}: {desc}, {nrec} records */")
         lines.append(f"static const u8 q6voice_oob_{name}[] = {{")
