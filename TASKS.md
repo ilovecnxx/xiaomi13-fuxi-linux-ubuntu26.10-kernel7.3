@@ -1,6 +1,14 @@
-# TASKS（2026-11-04 01:15）
+# TASKS（2026-11-04 03:20）
 
-**完整交接：`docs/交接-新会话-20261103-1940.md`**
+**完整交接：`docs/交接-新会话-20261103-1940.md`；桌面侧验收：`docs/验收-20261104-上机.md`**
+
+## 桌面线（当前主线，通信暂停）
+- 设备现在跑在 Linux（Plasma Mobile），不是 Android。
+- 已装 KDE Plasma Mobile 6.7.5，`plasmamobile.service` 为开机默认会话，中文界面；`fuxi-session plasma|phosh` 切换。
+- 已修：Chromium 重启退出 21（清理残留 SingletonLock）、自动旋转方向（mount matrix）、
+  Plasma 自动旋转（kwin 未链 QtSensors → `fuxi-autorotate` 调 `kscreen-doctor`，提交 32535d2）。
+- 待做：在 Plasma 会话下重跑日用验收（熄屏唤醒、软键盘、Chromium、文件选择器、亮度）；
+  90 Hz / 动态刷新（`kscreen-doctor -o` 显示 DSI-1 有 120/90/60 三档）；拔线开机、蓝牙 A2DP。
 
 ## 目标
 小米 13 主线 Linux 成为可日用完整手机：数据 → 短信 → 通话（VoLTE + 通话音频）→ 双卡；桌面功能保持。
