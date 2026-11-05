@@ -1,6 +1,35 @@
-# TASKS（2026-11-04 03:20）
+# TASKS（2026-11-05 22:45）
 
 **完整交接：`docs/交接-新会话-20261103-1940.md`；桌面侧验收：`docs/验收-20261104-上机.md`**
+
+## 充电线（2026-11-05，用户叫停，未完成）
+- 设备现状：recovery_b 已回基线 `abl-fuxi-modem16-epmap.img`（SHA `20ac7794`，内核 #222），设备在 Android。
+- 原厂数据来源：官方包 `work/stock/fuxi_images_OS3.0.309.0.WMCCNXM_16.0/`（不再从手机上的第三方 307 ROM 取）。
+- 已提交：`build/linux` 7412b8bc3 battmgr 单位修正（mAh→µAh、分钟→秒）。
+- 【✅ 已修，已提交 `578c1b897`】UCSI 一直 defer 的根因：`&i2c_master_hub_0`（geniqup@9c0000）没开，
+  i2c_hub_2 / fsa4480@42 不 probe。改动在 `build/linux` 工作树：
+  `sm8550-xiaomi-fuxi-usbc.dtsi` 加 `&i2c_master_hub_0 { status = "okay"; }`、
+  新 dts `sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc.dts` + Makefile 条目、
+  `scripts/fuxi-build-abl.sh` 加 `*-audio-disp-usbc` 变体（DISP+AUDIO+USBC，-d DRM_MSM_DP）。
+  测试镜像 `work/kbuild/abl-fuxi-ucsi-chg2.img`：UCSI 正常，但充电仍 5 V。
+- 【❌ 未解决】PD 快充：ADSP 识别到 33 W PPS（XM APDO_MAX/POWER_MAX=33），但 PD_VERIFED=0、
+  QUICK_CHARGE_TYPE=0、CURRENT_STATE=31，一直 5 V / 2 A。用户确认刷官方包同一充电器能快充 → 驱动/用户态问题。
+  - 原厂 XM_PROP 下标（0 起）：AUTHENTIC=3、BAP_MATCH=4、VERIFY_PROCESS=12、CURRENT_STATE=21、
+    PD_VERIFED=24、BQ2597X_BUS_VOLTAGE=32、QUICK_CHARGE_TYPE=49、APDO_MAX=50、POWER_MAX=51
+    （第三方 307 的模块整体偏 4，别混用）。XM opcode GET 0x50 / SET 0x51，owner 0x800A。
+  - 假设（按可能性）：
+    1. 原厂 `batterysecret` 守护进程在 Linux 上不存在（`/vendor/etc/init/hw/init.batterysecret.rc`，
+       boot_completed 启动，监听 usb uevent → 读 real_type/authentic → 写 request_vdm_cmd（XM 13–20）
+       做 UVDM 认证 → 写 verify_process（XM 12）、pd_verifed（XM 24））。
+       下一步测：0x51 写 XM12=1、XM24=1，看 bq2597x bus 电压是否抬升。
+    2. 没有热输入：主线不写 connector_temp（XM 2）和 CHG_CTRL_LIM（BATT 0x31 prop 10），
+       原厂 mi_thermald 会写；原厂 thermal-mitigation 表 `<3000000 1500000 1000000 500000>`。
+    3. UCSI 下 PD data_role 与 ADSP 期望不一致。
+    4. 已排除：notify-enable（主线已发同样消息，厂商驱动无额外 init 消息）。
+  - 诊断补丁（XM 读写实验）已撤，留档 `work/patches/battmgr-units-20261105/diag-xm-authentic-experiment.patch`。
+- 手机 rootfs 已换成官方包的 ADSP 固件；第三方 ROM 原固件备份在手机 `/root/adsp-thirdparty-bak/`。
+- 刷机注意：无线 adb 时必须 `ANDROID_SERIAL=<WiFi 端点>`（`adb mdns services` 查 _adb-tls-connect，
+  重启和 `adb root` 后端口会变），留空会默认 USB 序列号 f8286c82 并卡在「先重启回 Android」。
 
 ## 桌面线（当前主线，通信暂停）
 - 设备现在跑在 Linux（Plasma Mobile），不是 Android。
@@ -20,7 +49,7 @@
   两条 TX EP SET_CFG ret=0，但 start(TX) 仍 -22。镜像 `abl-fuxi-voice-tx-43ad.img`（SHA `55f2471f`），
   日志 `work/claude-logs/rtest-20261104-005609/ssh.txt`。改动在 `build/linux` 工作树，未提交。
 - 【已恢复】recovery_b = `abl-fuxi-modem16-epmap.img`（SHA `20ac7794`），设备在 Android
-- 内核 HEAD：`e93bbc190`（+ 未提交的 0x43ad/1 声道改动）；harness HEAD：`3188fc3`
+- 内核 HEAD：`578c1b897`（11-05 UCSI DT 修复；+ 未提交的 0x43ad/1 声道改动、面板换档改动）；harness HEAD：`7c118f4`
 
 ## 下一步
 1. 【⚠️ 无结论·11-04 01:07】`voice-tx-43ad` + `voice_replay=1` + extra=57：`amixer cset` 卡住，ssh 120 s 超时，
