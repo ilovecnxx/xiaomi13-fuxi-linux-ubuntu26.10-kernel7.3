@@ -1,6 +1,8 @@
 #!/bin/sh
-# fuxi 内核条目管理（手机上运行，装到 /usr/local/sbin/）。引导层 shim 从 /boot/fuxi 选条目 kexec，
-# 布局见 scripts/fuxi-shim/init。Debian 内核包（make bindeb-pkg）装/卸时由 /etc/kernel/post{inst,rm}.d/zz-fuxi 调用。
+# fuxi 内核条目管理（手机上运行，装到 /usr/local/sbin/）。条目在 /boot/fuxi/<条目>/{Image,<dtb>,cmdline}，两种引导层都用：
+#   - shim（kexec）：读 /boot/fuxi/{default,fallback,tries}，布局见 scripts/fuxi-shim/init
+#   - 主线 U-Boot：读本脚本生成的 /boot/extlinux/extlinux.conf（default 第一、fallback 第二、其余按名字），
+#     U-Boot 不能写 ext4 → 没有自动回退，靠 extlinux 菜单（音量键选、电源键确认）手动选回退条目Debian 内核包（make bindeb-pkg）装/卸时由 /etc/kernel/post{inst,rm}.d/zz-fuxi 调用。
 #
 # 用法:
 #   fuxi-kernel-install add <条目> <Image|Image.gz|vmlinuz> [<dtb>]（Image.gz 会解压）
@@ -10,6 +12,7 @@
 #   fuxi-kernel-install remove [--force] <条目>     默认/回退条目要 --force
 #   fuxi-kernel-install set-default <条目> | set-fallback <条目>
 #   fuxi-kernel-install list
+#   fuxi-kernel-install extlinux                   只重写 /boot/extlinux/extlinux.conf
 # 配置 /etc/fuxi/kernel.conf（sh 语法，可选）：FUXI_DTB=<DTB 名，不带 .dtb>  FUXI_CMDLINE_FILE=<路径>
 set -eu
 B=/boot/fuxi
@@ -27,6 +30,36 @@ put() { printf '%s\n' "$2" > "$B/.$1.tmp" && mv -f "$B/.$1.tmp" "$B/$1"; }
 get() { cat "$B/$1" 2>/dev/null || true; }
 # 本次启动的条目：shim 在 cmdline 里加 fuxi.entry=<条目>（shim6 起；更老的 shim 没有 → 空）
 running_entry() { tr ' ' '\n' < /proc/cmdline | sed -n 's/^fuxi\.entry=//p' | tail -1; }
+
+# 按 /boot/fuxi 的条目重写 /boot/extlinux/extlinux.conf（路径用绝对路径，U-Boot sysboot 在 sda33 根上解析）
+gen_extlinux() {
+  def=$(get default); fb=$(get fallback)
+  [ -n "$def" ] && [ -d "$B/$def" ] || { say "没有默认条目，不生成 extlinux.conf"; return 0; }
+  x=/boot/extlinux; seen=
+  mkdir -p "$x"
+  {
+    echo "# 由 fuxi-kernel-install 生成，别手改（改 /etc/fuxi/cmdline 后重新 add，或 set-default）"
+    echo "menu title fuxi Linux (default=$def fallback=${fb:--})"
+    echo "timeout 30"
+    echo "default $def"
+    for e in "$def" "$fb" $(ls "$B"); do
+      [ -n "$e" ] && [ -f "$B/$e/Image" ] && [ -s "$B/$e/cmdline" ] || continue
+      case " $seen " in *" $e "*) continue ;; esac
+      seen="$seen $e"
+      d=$(ls "$B/$e" | grep -m1 '\.dtb$' || true)
+      [ -n "$d" ] || continue
+      t=; [ "$e" = "$def" ] && t=" (default)"; [ "$e" = "$fb" ] && t=" (fallback)"
+      echo
+      echo "label $e"
+      echo "	menu label Linux $e$t"
+      echo "	linux $B/$e/Image"
+      echo "	fdt $B/$e/$d"
+      echo "	append $(head -1 "$B/$e/cmdline") fuxi.entry=$e fuxi.boot=extlinux"
+    done
+  } > "$x/.extlinux.conf.tmp"
+  mv -f "$x/.extlinux.conf.tmp" "$x/extlinux.conf"
+  sync
+}
 
 cmd_add() {
   e=$1; img=$2; dtb=${3:-/usr/lib/linux-image-$1/qcom/$FUXI_DTB.dtb}
@@ -62,6 +95,7 @@ cmd_add() {
   rm -f "$B/tries"
   [ "$(get default.failed)" != "$e" ] || rm -f "$B/default.failed"
   sync
+  gen_extlinux
   say "已装 $e（$kn + ${dtb##*/}），默认=$e 回退=$(get fallback)"
 }
 
@@ -78,6 +112,7 @@ cmd_remove() {
   fi
   rm -rf "$B/$e"
   sync
+  gen_extlinux
   say "已删 $e"
 }
 
@@ -90,6 +125,7 @@ cmd_set() {
     [ "$(get default.failed)" != "$2" ] || rm -f "$B/default.failed"
   fi
   sync
+  gen_extlinux
   say "$1=$2"
 }
 
@@ -117,5 +153,6 @@ case "${1:-}" in
   set-default) cmd_set default "${2:?}" ;;
   set-fallback) cmd_set fallback "${2:?}" ;;
   list|'') cmd_list ;;
+  extlinux) gen_extlinux; say "已重写 /boot/extlinux/extlinux.conf" ;;
   *) die "未知命令 $1（add/remove/set-default/set-fallback/list）" ;;
 esac

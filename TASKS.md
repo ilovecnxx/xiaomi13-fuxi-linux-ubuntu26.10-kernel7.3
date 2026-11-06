@@ -25,6 +25,10 @@
 - shim DTS 约束见 `sm8550-xiaomi-fuxi-shim.dts` 头注释（nolpi、无 ADSP、无基带 PAS、rmtfs 只删 compatible、不碰触摸 QUP0/GPI）。
 - 测试刷机：手机进 Android 后 `FUXI_KEEP=1 FUXI_SSH_WAIT=240 scripts/fuxi-test-recovery.sh <镜像>`；本机 fastboot 枚举不稳。
 - 待做：initramfs 从内核拆成条目 initrd；`~/.cache/fuxi-split`（2.3 GB）可清。
+- **11-07 深夜：recovery_b = 主线 U-Boot `work/kbuild/abl-fuxi-uboot3.img`（57da97c5…）**，取代 shim：
+  ABL → U-Boot（`scripts/fuxi-build-uboot.sh`，env `scripts/fuxi-uboot/fuxi.env`）→ 自动 sysboot `/boot/extlinux/extlinux.conf`
+  （fuxi-kernel-install 生成）→ 内核。按住音量下 = U-Boot 菜单；extlinux 菜单 3 s 可选回退条目。无自动回退。
+  回滚 shim：`scripts/fuxi-test-recovery.sh work/kbuild/abl-fuxi-shim7.img`。详情 `docs/计划-标准化启动-20261107.md` ③。
 
 ## 下一步
 1. 只读查卡 2 IMS（交接 §9.1–9.2）。
@@ -35,7 +39,7 @@
 
 ## 红线
 - 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
-- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b；试验后回基线（SHA `20ac7794`）。
+- 只用 `scripts/fuxi-test-recovery.sh` 写 recovery_b；试验间不刷回基线，直接刷修正版（用户 11-07）。
 - 音频镜像必须用 `FUXI_DTB=sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp`；ABL 镜像必须用 `fuxi-build-abl.sh`。
 - 不提交：`q6voice-oob.h`、`q6voice-agraph.h`、`android-voice-*`、`voice-shmdump*`、`scripts/fuxi-shmdump3-analyze.py`、MM 源码。
 - 需用户确认：进 Android；git commit/push；刷机/重启；物理操作。
