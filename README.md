@@ -12,6 +12,7 @@
 |---|---|
 | 启动、UFS 根文件系统、双系统切换 | ✅ 实机稳定（Linux 在 `/dev/sda33`） |
 | 显示、触摸、Phosh 桌面 | ✅ 原生 MSM DSI、120 Hz、Adreno 740 GPU 渲染，用户现场确认 |
+| Denial 桌面（mobile shell） | ✅ 0.6.2 官方 arm64 预编译包已安装运行，开机默认（2026-11-07）；`fuxi-session phosh` 回退 |
 | WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
 | 传感器 | ✅ 加速度、光线、距离、磁场、指南针接入 SensorProxy |
 | 音频（非通话） | ✅ 双扬声器、主麦克风；⚠️ 保护/标定未做，蓝牙耳机 A2DP 未验收 |

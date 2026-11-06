@@ -71,5 +71,9 @@ __pycache__/
 /work/mihomo-gui/host-dl/
 /work/wdt-test/wdt_test
 
+# ---- Denial 安装产物与截图（2026-11-07）----
+/work/denial-arm64/artifacts/
+/work/denial-arm64/*.png
+
 # ---- 其它 ----
 .checkpatch-camelcase.date.0

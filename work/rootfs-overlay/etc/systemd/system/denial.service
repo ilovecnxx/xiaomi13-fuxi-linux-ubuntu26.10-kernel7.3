@@ -1,0 +1,47 @@
+[Unit]
+Description=Denial mobile session (Xiaomi 13 fuxi)
+Documentation=https://github.com/denialwm/denial
+# 与 Phosh / Plasma Mobile 互斥：同一时刻只允许一个 DRM 会话占用 tty7。
+Conflicts=phosh.service plasmamobile.service getty@tty7.service
+After=systemd-user-sessions.service dbus.socket systemd-logind.service user@1000.service
+Wants=dbus.socket user@1000.service
+ConditionPathExists=/dev/tty0
+
+[Service]
+Environment=LANG=zh_CN.UTF-8
+Environment=LANGUAGE=zh_CN:zh
+Environment=XDG_CURRENT_DESKTOP=Denial
+Environment=XDG_SESSION_DESKTOP=denial
+Environment=XDG_SESSION_TYPE=wayland
+# 手机形态：使用 Denial 的 mobile shell（PC 包默认 desktop）。
+Environment=DENIAL_SHELL_PROFILE=mobile
+Environment=LIBSEAT_BACKEND=logind
+# 注意：不能设 WAYLAND_DISPLAY。denial-session 以它判断“已有 Wayland 合成器在跑”
+# 而拒绝启动（实测 2026-11-07）；Denial 会自己创建 wayland-0 给客户端。
+UnsetEnvironment=WAYLAND_DISPLAY DISPLAY
+# 和 phosh.service 的 drop-in 一样：同步拉起用户的 bus，再把 tty7 切为前台。
+ExecStartPre=+/usr/bin/systemctl --user --machine=fuxi@.host start dbus.socket
+ExecStartPre=+/usr/bin/chvt 7
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/denial-session
+TimeoutStartSec=90
+User=1000
+PAMName=login
+WorkingDirectory=~
+Restart=on-failure
+RestartSec=5s
+
+# 和 phosh.service 一致：需要一个虚拟终端来取得 DRM master。
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+
+# utmp 记录，方便 who/w。
+UtmpIdentifier=tty7
+UtmpMode=user
+
+[Install]
+WantedBy=graphical.target

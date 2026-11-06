@@ -33,6 +33,18 @@
   待做：①initramfs-tools + `/etc/kernel/cmdline`（root=PARTUUID）；deb 改用 fuxi_defconfig + 新 DTB 名。
   回滚 shim：`scripts/fuxi-test-recovery.sh work/kbuild/abl-fuxi-shim7.img`。详情 `docs/计划-标准化启动-20261107.md` ③。
 
+## Denial 桌面（2026-11-07）
+- 【已实测】手机装官方预编译 `denial 0.6.2-1` + `denial-flutter-engine 0.6.2-1`（arm64 签名包，
+  按 SHA256SUMS 校验），mobile shell 正常运行：DSI-1 1080×2400@120 Hz、scale 1.75，
+  应用网格/设置/终端可交互；`deniald` 约 17 % CPU，37–42 °C。
+- 2026-10-31 的“手机上从源码编 Flutter engine”方案放弃（ninja 648/4525 被 OOM 杀掉）；
+  手机 `/home/fuxi/denial-cache`（15 GB）+ `denial-src` 已于 11-07 删除（根分区 30→16 GB）。
+- 2026-11-07 04:03 起默认图形会话改为 Denial（disable phosh / enable denial，回退相反）。切换：`fuxi-session denial` / `fuxi-session phosh`（实测 17 s；
+  phoc 偶尔对 SIGTERM 不退出，systemd 90 s 超时后 SIGKILL）。unit `denial.service`、
+  切换脚本在 `work/rootfs-overlay/`；安装脚本 `work/denial-arm64/install-prebuilt.sh`。
+- 待办：下次真实重启确认冷启动路径；退出 Denial 后自动回 Phosh；双屏/旋转/休眠/输入法验收。
+  详情 `docs/Denial桌面安装-20261107.md`。
+
 ## 下一步
 1. 只读查卡 2 IMS（交接 §9.1–9.2）。
 2. 5G 按信号自动回切（只有设计，交接 §9.3；会断网约 3 s，先问用户）。
