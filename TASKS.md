@@ -71,6 +71,22 @@
   - 注意：重启 Linux 必须 `systemctl reboot --reboot-argument=recovery`（普通 reboot 进 Android）；initramfs 放行用 `python3 scripts/fuxi_sh.py --send 'touch /tmp/do_switch; exit'`。**严禁远程重启 phosh.service**。
   - ath12k 0.98 s 的 `-110`：首探无固件，之后正常，不用管。
   - 下一项：双卡上网卡/拨号卡设置（QMI DSD 切换 DDS；默认拨号卡）。
+- **双卡设置（11-06 18:4x 实测，用户已允许发 QMI Set）**：
+  - 工具 `scripts/fuxi-sim-pref.py`（手机 `/usr/local/sbin/fuxi-sim-pref`）：`get` / `voice 1|2` / `data 1|2 [temp]`。注意 NAS Get 0x005C 的 TLV 比 Set 0x004B 多一个 active_subs（Get 0x14=语音、0x13=数据；Set 0x13=语音）；Set 带 0x10 会 InvalidArgument。
+  - 拨号卡：NAS default_voice 能设（已恢复为卡槽 1），**但 MM 拨号不跟随**——MM 的 VOICE 客户端没绑订阅，10010 实测仍走 sub0 VoLTE。要让 gnome-calls 走卡槽 2 只能改 MM（VOICE 绑订阅）或另做 oFono 层。
+  - 上网卡：DSD Switch DDS 能切（临时/永久都可，已恢复为卡槽 1 永久）。光切 DDS 卡槽 1 的 ctnet 照样通，数据不会自己搬。卡槽 2 上网实测**通**（`work/sub2-data-test.py`）：DDS→2，`nmcli con down fuxi-mobile-ct`（卡槽 1 internet 不断会报 call-already-present），WDS bind_subscription SECONDARY + bind_mux_data_port EMBEDDED/1 mux 5 + start_network profile 1（3GNET），`ip link add link rmnet_ipa0 name qmapmux0.5 type rmnet mux_id 5 ingress-deaggregation on ingress-mapv5-checksum on egress-mapv5-checksum on`（不加 csum 标志会只发不收），ping 4/4。
+  - 测试时要停 fuxi-modem-keeper，测完再起。
+  - **上网卡服务（11-06 20:2x 实测）**：`work/rootfs-overlay/usr/local/sbin/fuxi-datacard`（`status` / `set 1|2` / `run`）+ `etc/systemd/system/fuxi-datacard.service`，已部署。`set 2`：关 fuxi-mobile-ct autoconnect 并断开，DDS→2 永久，服务拨 sub1（mux 8，`qmapmux0.8`，默认路由 metric 710——用 700 会把 usb0 的默认路由 replace 掉），DNS 写 `/etc/NetworkManager/conf.d/90-fuxi-datacard-dns.conf`（global-dns）+ 运营商 DNS 主机路由。实测 ping、DNS（运营商 58.20.x）、curl 都通。`set 1` 恢复正常。
+  - **阻塞：DDS=2 时两张卡的 IMS 都掉。** 根因：MM 的 WDS 客户端没绑订阅，跟着 DDS 走——81voltd 让 MM 为卡 1 起的 IMS bearer 实际起在联通上（拿到联通 DNS，IPv6 `pdn-ipv6-call-disallowed`），还占了卡 2 的 IMS APN，81voltd 自己的 sub2 IMS 报 `PolicyMismatch`。每次切数据，卡 1 IMS PDN 也会断一次（81voltd 会重连）。
+  - 恢复方法（20:4x 实测）：`fuxi-datacard set 1` → 停 81voltd → MM disable / 低功耗 / enable（重启 MM 没用）→ 起 81voltd；sub2 IMS 要重试几次（v6 的"wrong PDN"逻辑）约 4 min 才注册。
+  - 修法：给 MM 打补丁，bearer 的 WDS 客户端 bind_subscription PRIMARY；和拨号卡方案 (a)（第二个 VOICE 客户端绑 sub1）一起做。手机上有 gcc/meson/ninja，MM 1.25.95-1ubuntu1，libqmi 1.38.0。
+- **MM 订阅绑定补丁（11-06 21:xx 已上机，未提交）**：`work/patches/mm-sub-bind-20261106/0001-fuxi-dual-sim-subscription-bind.patch`（mm-port-qmi.[ch]、mm-broadband-modem-qmi.c、mm-call-qmi.c；本地源码 `work/src-untrusted/mm-1.25.95/`，不提交）。手机：`/usr/local/lib/fuxi-mm/src/ModemManager`（sha 5c37c96d46fb2eb0，旧版 `.863c42bd`/`.c6b20435` 在同目录），开关 `/etc/fuxi/mm-sub-bind`（删掉 + 重启 MM = 原版行为）。
+  - 实测：WDS（控制 + 每个 bearer）、WMS、VOICE 绑 PRIMARY，第二个 VOICE 客户端绑 SECONDARY；sub2 通话 index = qmi_id + 100。MM 默认日志级别是 warn，看绑定/拨号行要 `mmcli -G INFO`（用完 `-G WARN`）。
+  - ✅ 拨号卡：`fuxi-sim-pref voice 2` 现在同时写 NAS default_voice 和 `/var/lib/fuxi/dialcard`（MM 每次拨号时读）。21:55 MM 拨 10010：`starting call on secondary subscription`，dialing→ringing-out→active→挂断正常。已恢复为卡槽 1。
+  - ✅ 上网卡 2：`fuxi-datacard set 2` 后卡 2 上网通，卡 2 IMS 保持注册（补丁前两张卡都会掉）。
+  - ❌ **限制：DDS=2 时卡 1（电信）VoLTE 起不来**。modem 拒绝卡 1 上的任何 PDN：profile 2 + IPv6 → 210 pdn-ipv6-call-disallowed；APN "IMS"/"ims"、IPv4、只用 LTE（NAS 模式偏好 power-cycle）、DSD Set APN Info（0x0032，DSD bind 0x0027/0x0028 可用）一律 CM 2001 no-service；NAS 显示卡 1 已注册、PS 已附着。电信 LTE 没有 CS，所以卡槽 2 上网时卡 1 打不了也接不到电话。卡 2 当非 DDS 卡时 IMS 正常（81voltd 走 APN），不对称原因未知；可能是 Android 侧某条 QMI 配置我们没有做。`fuxi-datacard set 2` 会打印警告；`nm_slot1(False)` 同时关掉旧连接 `fuxi-mobile`（apn 3gnet，11-04 的残留，会自己起来占 internet 呼叫）。测试改过的模式偏好和 DSD APN 信息都已恢复（0x50 = LTE|NR5G）。
+  - 卡 2 的 IMS 在恢复流程后约 3 min 注册（81voltd v6 的 wrong-PDN 重试，第 4 次成功），和补丁前一样。
+  - 未测：两张卡来电经 MM/gnome-calls 接听（需要用户打进来）——补丁后卡 2 来电的 accept 应走 SECONDARY VOICE 客户端，之前是"not ringing"。
 
 ## 下一步（USB 线，细节见交接 §9）
 1. 插 U 盘/SSD 复测枚举稳定性（等用户物理操作）：`lsusb -t`、`lsblk`、`dmesg | grep -iE 'uas|scsi|usb [12]-'`；确认 repeater host 调参是否解决 #274 的 EPROTO/掉线。

@@ -1,0 +1,515 @@
+--- a/src/mm-port-qmi.h
++++ b/src/mm-port-qmi.h
+@@ -95,8 +95,14 @@
+     MM_PORT_QMI_FLAG_DEFAULT  = 0,
+     MM_PORT_QMI_FLAG_WDS_IPV4 = 1,
+     MM_PORT_QMI_FLAG_WDS_IPV6 = 2,
++    /* fuxi: client bound to the secondary subscription (SIM slot 2) */
++    MM_PORT_QMI_FLAG_SUB2     = 3,
+ } MMPortQmiFlag;
+ 
++/* fuxi: when this file exists, WDS/VOICE/WMS clients are bound to a subscription
++ * right after allocation (PRIMARY, or SECONDARY for MM_PORT_QMI_FLAG_SUB2) */
++#define MM_PORT_QMI_SUB_BIND_FILE "/etc/fuxi/mm-sub-bind"
++
+ void     mm_port_qmi_allocate_client        (MMPortQmi            *self,
+                                              QmiService            service,
+                                              guint                 flag,
+--- a/src/mm-port-qmi.c
++++ b/src/mm-port-qmi.c
+@@ -291,6 +291,138 @@
+ }
+ 
+ static void
++allocate_client_done (GTask *task)
++{
++    MMPortQmi             *self;
++    AllocateClientContext *ctx;
++
++    self = g_task_get_source_object (task);
++    ctx = g_task_get_task_data (task);
++
++    /* Move the service info to our internal list */
++    self->priv->services = g_list_prepend (self->priv->services, ctx->info);
++    ctx->info = NULL;
++    g_task_return_boolean (task, TRUE);
++    g_object_unref (task);
++}
++
++static void
++bind_subscription_wds_ready (QmiClientWds *client,
++                             GAsyncResult *res,
++                             GTask        *task)
++{
++    g_autoptr(QmiMessageWdsBindSubscriptionOutput) output = NULL;
++    g_autoptr(GError)                              error = NULL;
++
++    output = qmi_client_wds_bind_subscription_finish (client, res, &error);
++    if (output && qmi_message_wds_bind_subscription_output_get_result (output, &error))
++        mm_obj_info (g_task_get_source_object (task), "WDS client %u bound to subscription",
++                     qmi_client_get_cid (QMI_CLIENT (client)));
++    else
++        mm_obj_warn (g_task_get_source_object (task), "couldn't bind WDS client %u to subscription: %s",
++                     qmi_client_get_cid (QMI_CLIENT (client)), error->message);
++    allocate_client_done (task);
++}
++
++static void
++bind_subscription_raw_ready (QmiDevice    *device,
++                             GAsyncResult *res,
++                             GTask        *task)
++{
++    AllocateClientContext *ctx;
++    g_autoptr(QmiMessage)  response = NULL;
++    g_autoptr(GError)      error = NULL;
++    guint16                result = 1;
++    guint16                qmi_error = 0;
++
++    ctx = g_task_get_task_data (task);
++    response = qmi_device_command_full_finish (device, res, &error);
++    if (response) {
++        gsize    tlv;
++        gsize    offset = 0;
++        guint16  len = 0;
++
++        tlv = qmi_message_tlv_read_init (response, 0x02, &len, &error);
++        if (!error &&
++            qmi_message_tlv_read_guint16 (response, tlv, &offset, QMI_ENDIAN_LITTLE, &result, &error))
++            qmi_message_tlv_read_guint16 (response, tlv, &offset, QMI_ENDIAN_LITTLE, &qmi_error, &error);
++    }
++
++    if (error)
++        mm_obj_warn (g_task_get_source_object (task), "couldn't bind %s client %u to subscription: %s",
++                     qmi_service_get_string (ctx->info->service),
++                     qmi_client_get_cid (ctx->info->client), error->message);
++    else if (result)
++        mm_obj_warn (g_task_get_source_object (task), "couldn't bind %s client %u to subscription: QMI error 0x%04x",
++                     qmi_service_get_string (ctx->info->service),
++                     qmi_client_get_cid (ctx->info->client), qmi_error);
++    else
++        mm_obj_info (g_task_get_source_object (task), "%s client %u bound to subscription",
++                     qmi_service_get_string (ctx->info->service),
++                     qmi_client_get_cid (ctx->info->client));
++    allocate_client_done (task);
++}
++
++/* fuxi: returns TRUE if a bind request was sent (completion via allocate_client_done) */
++static gboolean
++bind_subscription (MMPortQmi *self,
++                   GTask     *task)
++{
++    AllocateClientContext *ctx;
++    gboolean               secondary;
++    guint16                msg_id;
++
++    ctx = g_task_get_task_data (task);
++    if (!g_file_test (MM_PORT_QMI_SUB_BIND_FILE, G_FILE_TEST_EXISTS))
++        return FALSE;
++
++    secondary = (ctx->info->service == QMI_SERVICE_VOICE && ctx->info->flag == MM_PORT_QMI_FLAG_SUB2);
++
++    switch (ctx->info->service) {
++    case QMI_SERVICE_WDS: {
++        g_autoptr(QmiMessageWdsBindSubscriptionInput) input = NULL;
++
++        input = qmi_message_wds_bind_subscription_input_new ();
++        qmi_message_wds_bind_subscription_input_set_subscription_id (input, QMI_SUBSCRIPTION_TYPE_PRIMARY, NULL);
++        qmi_client_wds_bind_subscription (QMI_CLIENT_WDS (ctx->info->client), input, 10, NULL,
++                                          (GAsyncReadyCallback) bind_subscription_wds_ready, task);
++        return TRUE;
++    }
++    case QMI_SERVICE_VOICE:
++        msg_id = 0x0044;
++        break;
++    case QMI_SERVICE_WMS:
++        msg_id = 0x004C;
++        break;
++    default:
++        return FALSE;
++    }
++
++    {
++        g_autoptr(QmiMessage)        message = NULL;
++        g_autoptr(QmiMessageContext) context = NULL;
++        gsize                        init;
++
++        /* No libqmi API for these: TLV 0x01 u8 subscription (0 primary, 1 secondary) */
++        message = qmi_message_new (ctx->info->service,
++                                   qmi_client_get_cid (ctx->info->client),
++                                   qmi_client_get_next_transaction_id (ctx->info->client),
++                                   msg_id);
++        init = qmi_message_tlv_write_init (message, 0x01, NULL);
++        qmi_message_tlv_write_guint8 (message, secondary ? 1 : 0, NULL);
++        qmi_message_tlv_write_complete (message, init, NULL);
++        context = qmi_message_context_new ();
++        mm_obj_dbg (self, "binding %s client %u to %s subscription",
++                    qmi_service_get_string (ctx->info->service),
++                    qmi_client_get_cid (ctx->info->client),
++                    secondary ? "secondary" : "primary");
++        qmi_device_command_full (self->priv->qmi_device, message, context, 10, NULL,
++                                 (GAsyncReadyCallback) bind_subscription_raw_ready, task);
++    }
++    return TRUE;
++}
++
++static void
+ allocate_client_ready (QmiDevice *qmi_device,
+                        GAsyncResult *res,
+                        GTask *task)
+@@ -307,14 +439,14 @@
+                         "Couldn't create client for service '%s': ",
+                         qmi_service_get_string (ctx->info->service));
+         g_task_return_error (task, error);
+-    } else {
+-        /* Move the service info to our internal list */
+-        self->priv->services = g_list_prepend (self->priv->services, ctx->info);
+-        ctx->info = NULL;
+-        g_task_return_boolean (task, TRUE);
++        g_object_unref (task);
++        return;
+     }
+ 
+-    g_object_unref (task);
++    if (bind_subscription (self, task))
++        return;
++
++    allocate_client_done (task);
+ }
+ 
+ void
+--- a/src/mm-broadband-modem-qmi.c
++++ b/src/mm-broadband-modem-qmi.c
+@@ -166,6 +166,9 @@
+     gboolean all_call_status_unsolicited_events_setup;
+     guint supplementary_service_indication_id;
+     gboolean supplementary_service_unsolicited_events_setup;
++    /* fuxi: second VOICE client bound to the secondary subscription */
++    guint sub2_all_call_status_indication_id;
++    GList *sub_call_info[2]; /* live (non-terminated) calls per subscription */
+ 
+     /* Firmware helpers */
+     gboolean firmware_list_preloaded;
+@@ -11596,10 +11599,53 @@
+ /*****************************************************************************/
+ /* All Call Status indications */
+ 
++/* fuxi dual-SIM: calls on the secondary subscription use index qmi_id + 100.
++ * Each subscription only reports its own calls, but MM wants the full list, so
++ * keep the live calls of each subscription and report the union. */
++static MMCallInfo *
++fuxi_call_info_copy (const MMCallInfo *src)
++{
++    MMCallInfo *dst;
++
++    dst = g_slice_new0 (MMCallInfo);
++    dst->index = src->index;
++    dst->direction = src->direction;
++    dst->state = src->state;
++    dst->number = g_strdup (src->number);
++    return dst;
++}
++
++static GList *
++fuxi_call_info_list_append_copies (GList *list,
++                                   GList *src,
++                                   gboolean live_only)
++{
++    for (; src; src = g_list_next (src)) {
++        MMCallInfo *ci = src->data;
++
++        if (live_only && ci->state == MM_CALL_STATE_TERMINATED)
++            continue;
++        list = g_list_append (list, fuxi_call_info_copy (ci));
++    }
++    return list;
++}
++
+ static void
+-all_call_status_indication_cb (QmiClientVoice                        *client,
+-                               QmiIndicationVoiceAllCallStatusOutput *output,
+-                               MMBroadbandModemQmi                   *self)
++fuxi_report_merged_calls (MMBroadbandModemQmi *self,
++                          guint                sub,
++                          GList               *call_info_list)
++{
++    mm_3gpp_call_info_list_free (self->priv->sub_call_info[sub]);
++    self->priv->sub_call_info[sub] = fuxi_call_info_list_append_copies (NULL, call_info_list, TRUE);
++    call_info_list = fuxi_call_info_list_append_copies (call_info_list, self->priv->sub_call_info[sub ? 0 : 1], FALSE);
++    mm_iface_modem_voice_report_all_calls (MM_IFACE_MODEM_VOICE (self), call_info_list);
++    mm_3gpp_call_info_list_free (call_info_list);
++}
++
++static void
++all_call_status_indication_process (MMBroadbandModemQmi                   *self,
++                                    QmiIndicationVoiceAllCallStatusOutput *output,
++                                    guint                                  sub)
+ {
+     GArray *qmi_remote_party_number_list = NULL;
+     GArray *qmi_call_information_list = NULL;
+@@ -11631,7 +11677,7 @@
+                 MMCallInfo *call_info;
+ 
+                 call_info = g_slice_new0 (MMCallInfo);
+-                call_info->index = qmi_call_information.id;
++                call_info->index = qmi_call_information.id + 100 * sub;
+                 call_info->number = g_strdup (qmi_remote_party_number.type);
+ 
+                 switch (qmi_call_information.state) {
+@@ -11687,8 +11733,23 @@
+         }
+     }
+ 
+-    mm_iface_modem_voice_report_all_calls (MM_IFACE_MODEM_VOICE (self), call_info_list);
+-    mm_3gpp_call_info_list_free (call_info_list);
++    fuxi_report_merged_calls (self, sub, call_info_list);
++}
++
++static void
++all_call_status_indication_cb (QmiClientVoice                        *client,
++                               QmiIndicationVoiceAllCallStatusOutput *output,
++                               MMBroadbandModemQmi                   *self)
++{
++    all_call_status_indication_process (self, output, 0);
++}
++
++static void
++sub2_all_call_status_indication_cb (QmiClientVoice                        *client,
++                                    QmiIndicationVoiceAllCallStatusOutput *output,
++                                    MMBroadbandModemQmi                   *self)
++{
++    all_call_status_indication_process (self, output, 1);
+ }
+ 
+ /*****************************************************************************/
+@@ -11810,6 +11871,17 @@
+                               "all-call-status",
+                               G_CALLBACK (all_call_status_indication_cb),
+                               self);
++        {
++            QmiClient *sub2;
++
++            sub2 = mm_shared_qmi_peek_client (MM_SHARED_QMI (self), QMI_SERVICE_VOICE, MM_PORT_QMI_FLAG_SUB2, NULL);
++            if (sub2 && !self->priv->sub2_all_call_status_indication_id)
++                self->priv->sub2_all_call_status_indication_id =
++                    g_signal_connect (sub2,
++                                      "all-call-status",
++                                      G_CALLBACK (sub2_all_call_status_indication_cb),
++                                      self);
++        }
+ 
+         /* Setup AT URCs as fall back for calls */
+         if (iface_modem_voice_parent->setup_unsolicited_events) {
+@@ -11825,6 +11897,16 @@
+         g_assert (self->priv->all_call_status_indication_id != 0);
+         g_signal_handler_disconnect (client, self->priv->all_call_status_indication_id);
+         self->priv->all_call_status_indication_id = 0;
++        if (self->priv->sub2_all_call_status_indication_id) {
++            QmiClient *sub2;
++
++            sub2 = mm_shared_qmi_peek_client (MM_SHARED_QMI (self), QMI_SERVICE_VOICE, MM_PORT_QMI_FLAG_SUB2, NULL);
++            if (sub2)
++                g_signal_handler_disconnect (sub2, self->priv->sub2_all_call_status_indication_id);
++            self->priv->sub2_all_call_status_indication_id = 0;
++        }
++        g_clear_pointer (&self->priv->sub_call_info[0], mm_3gpp_call_info_list_free);
++        g_clear_pointer (&self->priv->sub_call_info[1], mm_3gpp_call_info_list_free);
+ 
+         /* Cleanup AT URCs as fall back for calls */
+         if (iface_modem_voice_parent->cleanup_unsolicited_events) {
+@@ -11888,6 +11970,22 @@
+ }
+ 
+ static void
++sub2_call_indication_register_ready (QmiClientVoice      *client,
++                                     GAsyncResult        *res,
++                                     MMBroadbandModemQmi *self)
++{
++    g_autoptr(QmiMessageVoiceIndicationRegisterOutput) output = NULL;
++    g_autoptr(GError) error = NULL;
++
++    output = qmi_client_voice_indication_register_finish (client, res, &error);
++    if (!output || !qmi_message_voice_indication_register_output_get_result (output, &error))
++        mm_obj_warn (self, "couldn't register secondary subscription voice call indications: %s", error->message);
++    else
++        mm_obj_info (self, "secondary subscription voice call indications registered");
++    g_object_unref (self);
++}
++
++static void
+ common_voice_enable_disable_unsolicited_events (MMBroadbandModemQmi *self,
+                                                 gboolean             enable,
+                                                 GAsyncReadyCallback  callback,
+@@ -11916,6 +12014,18 @@
+     input = qmi_message_voice_indication_register_input_new ();
+     qmi_message_voice_indication_register_input_set_call_notification_events (input, enable, NULL);
+     qmi_message_voice_indication_register_input_set_supplementary_service_notification_events (input, enable, NULL);
++    {
++        QmiClient *sub2;
++
++        sub2 = mm_shared_qmi_peek_client (MM_SHARED_QMI (self), QMI_SERVICE_VOICE, MM_PORT_QMI_FLAG_SUB2, NULL);
++        if (sub2)
++            qmi_client_voice_indication_register (QMI_CLIENT_VOICE (sub2),
++                                                  input,
++                                                  10,
++                                                  NULL,
++                                                  (GAsyncReadyCallback) sub2_call_indication_register_ready,
++                                                  g_object_ref (self));
++    }
+     qmi_client_voice_indication_register (QMI_CLIENT_VOICE (client),
+                                           input,
+                                           10,
+@@ -12155,8 +12265,12 @@
+     } else if (!process_get_all_call_info (client, output, &call_info_list, &error)) {
+         g_prefix_error (&error, "Couldn't process Get All Call Info action: ");
+         g_task_return_error (task, error);
+-    } else
++    } else {
++        MMBroadbandModemQmi *self = g_task_get_source_object (task);
++
++        call_info_list = fuxi_call_info_list_append_copies (call_info_list, self->priv->sub_call_info[1], TRUE);
+         g_task_return_pointer (task, call_info_list, (GDestroyNotify)mm_3gpp_call_info_list_free);
++    }
+ 
+     g_object_unref (task);
+ }
+@@ -14804,7 +14918,8 @@
+ 
+     if (!mm_port_qmi_allocate_client_finish (qmi, res, &error)) {
+         mm_obj_dbg (self, "couldn't allocate client for service '%s': %s",
+-                    qmi_service_get_string (qmi_services[ctx->service_index]),
++                    ctx->service_index < G_N_ELEMENTS (qmi_services) ?
++                        qmi_service_get_string (qmi_services[ctx->service_index]) : "voice (secondary subscription)",
+                     error->message);
+         g_error_free (error);
+     }
+@@ -14820,7 +14935,19 @@
+ 
+     ctx = g_task_get_task_data (task);
+ 
+-    if (ctx->service_index == G_N_ELEMENTS (qmi_services)) {
++    /* fuxi: one extra VOICE client, bound to the secondary subscription */
++    if (ctx->service_index == G_N_ELEMENTS (qmi_services) &&
++        g_file_test (MM_PORT_QMI_SUB_BIND_FILE, G_FILE_TEST_EXISTS)) {
++        mm_port_qmi_allocate_client (ctx->qmi,
++                                     QMI_SERVICE_VOICE,
++                                     MM_PORT_QMI_FLAG_SUB2,
++                                     NULL,
++                                     (GAsyncReadyCallback)qmi_port_allocate_client_ready,
++                                     task);
++        return;
++    }
++
++    if (ctx->service_index >= G_N_ELEMENTS (qmi_services)) {
+         parent_initialization_started (task);
+         return;
+     }
+@@ -15007,6 +15134,8 @@
+     g_free (self->priv->current_operator_description);
+     if (self->priv->supported_bands)
+         g_array_unref (self->priv->supported_bands);
++    mm_3gpp_call_info_list_free (self->priv->sub_call_info[0]);
++    mm_3gpp_call_info_list_free (self->priv->sub_call_info[1]);
+ 
+     G_OBJECT_CLASS (mm_broadband_modem_qmi_parent_class)->finalize (object);
+ }
+--- a/src/mm-call-qmi.c
++++ b/src/mm-call-qmi.c
+@@ -38,8 +38,15 @@
+ struct _MMCallQmiPrivate {
+     /* The modem which owns this call */
+     MMBaseModem *modem;
++    /* fuxi dual-SIM: 0 = primary, 1 = secondary subscription */
++    guint sub;
+ };
+ 
++/* fuxi dual-SIM: secondary subscription calls use index qmi_id + 100
++ * (see mm-broadband-modem-qmi.c); outgoing calls go to the card in this file */
++#define FUXI_DIALCARD_FILE "/var/lib/fuxi/dialcard"
++#define FUXI_CALL_ID(idx) ((idx) % 100)
++
+ /*****************************************************************************/
+ 
+ static gboolean
+@@ -67,9 +74,21 @@
+         return FALSE;
+     }
+ 
+-    client = mm_port_qmi_peek_client (port,
+-                                      service,
+-                                      MM_PORT_QMI_FLAG_DEFAULT);
++    if (mm_base_call_get_index (MM_BASE_CALL (self)) >= 100)
++        self->priv->sub = 1;
++    client = NULL;
++    if (self->priv->sub) {
++        client = mm_port_qmi_peek_client (port, service, MM_PORT_QMI_FLAG_SUB2);
++        if (!client) {
++            mm_obj_warn (self, "no secondary subscription '%s' client; using primary",
++                         qmi_service_get_string (service));
++            self->priv->sub = 0;
++        }
++    }
++    if (!client)
++        client = mm_port_qmi_peek_client (port,
++                                          service,
++                                          MM_PORT_QMI_FLAG_DEFAULT);
+     if (!client) {
+         g_task_report_new_error (self,
+                                  callback,
+@@ -125,7 +144,7 @@
+                                      MM_CORE_ERROR_INVALID_ARGS,
+                                      "Invalid call index");
+         } else {
+-            mm_base_call_set_index (self, call_id);
++            mm_base_call_set_index (self, call_id + 100 * MM_CALL_QMI (self)->priv->sub);
+             g_task_return_boolean (task, TRUE);
+         }
+     }
+@@ -145,6 +164,11 @@
+     QmiClient                    *client = NULL;
+     GTask                        *task;
+     QmiMessageVoiceDialCallInput *input;
++    g_autofree gchar             *dialcard = NULL;
++
++    /* fuxi: pick the subscription from the dial card setting */
++    if (g_file_get_contents (FUXI_DIALCARD_FILE, &dialcard, NULL, NULL))
++        MM_CALL_QMI (self)->priv->sub = (g_strstrip (dialcard)[0] == '2') ? 1 : 0;
+ 
+     /* Ensure Voice client */
+     if (!ensure_qmi_client (MM_CALL_QMI (self),
+@@ -160,7 +184,8 @@
+         mm_gdbus_call_get_number (MM_GDBUS_CALL (self)),
+         NULL);
+ 
+-    mm_obj_dbg (self, "starting call");
++    mm_obj_info (self, "starting call on %s subscription",
++                 MM_CALL_QMI (self)->priv->sub ? "secondary" : "primary");
+     qmi_client_voice_dial_call (QMI_CLIENT_VOICE (client),
+                                 input,
+                                 90,
+@@ -224,7 +249,7 @@
+ 
+     task = g_task_new (self, NULL, callback, user_data);
+ 
+-    call_id = mm_base_call_get_index (self);
++    call_id = FUXI_CALL_ID (mm_base_call_get_index (self));
+     if (call_id == 0) {
+         g_task_return_new_error (task,
+                                  MM_CORE_ERROR,
+@@ -304,7 +329,7 @@
+ 
+     task = g_task_new (self, NULL, callback, user_data);
+ 
+-    call_id = mm_base_call_get_index (self);
++    call_id = FUXI_CALL_ID (mm_base_call_get_index (self));
+     if (call_id == 0) {
+         g_task_return_new_error (task,
+                                  MM_CORE_ERROR,
+@@ -349,7 +374,7 @@
+                             callback, user_data))
+         return FALSE;
+ 
+-    *call_id = mm_base_call_get_index (MM_BASE_CALL (self));
++    *call_id = FUXI_CALL_ID (mm_base_call_get_index (MM_BASE_CALL (self)));
+     if (*call_id == 0) {
+         g_task_report_new_error (self,
+                                  callback,

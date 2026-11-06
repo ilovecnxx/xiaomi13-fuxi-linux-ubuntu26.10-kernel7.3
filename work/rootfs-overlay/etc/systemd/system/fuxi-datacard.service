@@ -1,0 +1,12 @@
+[Unit]
+Description=fuxi data card on SIM slot 2 (QMI WDS secondary subscription)
+After=ModemManager.service NetworkManager.service fuxi-qmi-proxy.service
+Wants=fuxi-qmi-proxy.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/sbin/fuxi-datacard run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

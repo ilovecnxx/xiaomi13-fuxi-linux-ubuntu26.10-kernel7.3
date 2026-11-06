@@ -1,0 +1,348 @@
+#!/usr/bin/python3
+# 上网卡切换。卡槽 1 走 ModemManager + NM（fuxi-mobile-ct）；MM 只管主订阅，
+# 卡槽 2 上网由本程序自己拨：DSD DDS→2，WDS 客户端绑 SECONDARY，bind mux，start network，
+# 建 rmnet 接口、默认路由（metric 710，WiFi 600 优先），DNS 走 NM 全局 DNS 配置。
+# 同一时间只能一张卡上 internet（卡槽 1 不断会报 call-already-present），所以选卡槽 2 时
+# 关掉 fuxi-mobile-ct 的 autoconnect 并断开它，切回卡槽 1 时恢复。
+# 依赖 MM 订阅绑定补丁（work/patches/mm-sub-bind-20261106，开关 /etc/fuxi/mm-sub-bind）：未打补丁的 MM 的
+# WDS 客户端跟 DDS 走，DDS=2 时卡 1 IMS bearer 会起到卡 2 上，两张卡 IMS 都掉。没有开关文件时 set 2 需要 --force。
+# 已知限制（11-06 21:4x 实测）：DDS=2 时 modem 拒绝卡 1（电信）上的任何 PDN（CM 2001 no-service，
+# NAS 显示已注册、PS 已附着；profile/APN、v4/v6、只用 LTE、DSD Set APN Info 都试过），电信 LTE 没有 CS，
+# 所以卡槽 2 上网时卡 1 打不了电话、收不到电话。卡 2 当非 DDS 卡时 IMS 正常，不对称原因未知。
+# 用法（root）：
+#   fuxi-datacard status
+#   fuxi-datacard set 1|2      切换并持久化（卡槽 2 = 启用 fuxi-datacard.service）
+#   fuxi-datacard run          服务入口：卡槽 2 拨号守护
+import ipaddress
+import os
+import signal
+import subprocess
+import sys
+import time
+import gi
+gi.require_version("Qmi", "1.0")
+gi.require_version("Qrtr", "1.0")
+from gi.repository import GLib, Qmi, Qrtr
+
+STATE = "/var/lib/fuxi/datacard"
+NM_CON = "fuxi-mobile-ct"
+STALE_NM_CON = "fuxi-mobile"
+DNS_CONF = "/etc/NetworkManager/conf.d/90-fuxi-datacard-dns.conf"
+FALLBACK_DNS = "223.5.5.5"
+MUX = 8
+IF = f"qmapmux0.{MUX}"
+PROFILE = int(os.environ.get("FUXI_DATACARD_PROFILE", "1"))  # 卡槽 2 profile 1 = 3GNET
+METRIC = 710  # usb0 默认路由是 700，同 metric 会被 replace 掉
+ctx = GLib.MainContext.default()
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def sh(cmd, check=False):
+    r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if r.returncode and check:
+        raise RuntimeError(f"{cmd}: {(r.stdout + r.stderr).strip()}")
+    return r
+
+
+def wait(start, *args):
+    box = []
+    start(*args, lambda s, r: box.append(r))
+    while not box:
+        ctx.iteration(True)
+    return box[0]
+
+
+def call(fn, obj, *args):
+    return getattr(obj, fn + "_finish")(wait(getattr(obj, fn), *args))
+
+
+def last(v):
+    return v[-1] if isinstance(v, tuple) else v
+
+
+class Modem:
+    def __init__(self):
+        bus = Qrtr.Bus.new_finish(wait(Qrtr.Bus.new, 1000, None))
+        node = bus.peek_node(0)
+        if node is None:
+            raise RuntimeError("qrtr node 0 not found")
+        self.dev = Qmi.Device.new_from_node_finish(wait(Qmi.Device.new_from_node, node, None))
+        call("open", self.dev, Qmi.DeviceOpenFlags.PROXY, 10, None)
+        self.dsd = self.alloc(Qmi.Service.DSD)
+
+    def alloc(self, service):
+        return call("allocate_client", self.dev, service, Qmi.CID_NONE, 10, None)
+
+    def release(self, c):
+        try:
+            call("release_client", self.dev, c, Qmi.DeviceReleaseClientFlags.RELEASE_CID, 10, None)
+        except GLib.Error:
+            pass
+
+    def raw(self, c, service, msg_id, u32s=()):
+        msg = Qmi.message_new(service, c.get_cid(), c.get_next_transaction_id(), msg_id)
+        for t, v in u32s:
+            off = Qmi.message_tlv_write_init(msg, t)
+            Qmi.message_tlv_write_guint32(msg, Qmi.Endian.LITTLE, v)
+            Qmi.message_tlv_write_complete(msg, off)
+        resp = self.dev.command_full_finish(
+            wait(self.dev.command_full, msg, Qmi.MessageContext.new(), 10, None))
+        off = Qmi.message_tlv_read_init(resp, 0x02)[0]
+        _, o, result = Qmi.message_tlv_read_guint16(resp, off, 0, Qmi.Endian.LITTLE)
+        _, o, error = Qmi.message_tlv_read_guint16(resp, off, o, Qmi.Endian.LITTLE)
+        if result:
+            raise RuntimeError(f"{service.value_nick} 0x{msg_id:04x}: error 0x{error:04x}")
+        return resp
+
+    def get_dds(self):
+        resp = self.raw(self.dsd, Qmi.Service.DSD, 0x004F)
+        off = Qmi.message_tlv_read_init(resp, 0x10)[0]
+        return Qmi.message_tlv_read_guint32(resp, off, 0, Qmi.Endian.LITTLE)[-1]
+
+    def set_dds(self, slot):
+        # DSD Switch DDS：0x01 订阅（1/2），0x10 类型 0 = 永久
+        if self.get_dds() == slot:
+            return
+        self.raw(self.dsd, Qmi.Service.DSD, 0x004E, [(0x01, slot), (0x10, 0)])
+        for _ in range(20):
+            time.sleep(0.5)
+            if self.get_dds() == slot:
+                log(f"DDS -> slot {slot}")
+                return
+        raise RuntimeError(f"DDS did not switch to slot {slot}")
+
+    def close(self):
+        self.release(self.dsd)
+
+
+def conn_status(o):
+    # 输出是 (ok, status) 或指示里的 (ok, status, reconfiguration_required)
+    v = o.get_connection_status()
+    return v[1] if isinstance(v, tuple) else v
+
+
+def ip4(v):
+    return str(ipaddress.IPv4Address(last(v))) if v is not None else None
+
+
+class Session:
+    """卡槽 2 的一次 internet 连接：WDS 客户端 + rmnet 接口 + 路由 + DNS。"""
+
+    def __init__(self, modem):
+        self.m = modem
+        self.wds = None
+        self.pdh = None
+        self.dns = []
+        self.down = False
+
+    def up(self):
+        self.wds = self.m.alloc(Qmi.Service.WDS)
+        i = Qmi.MessageWdsBindSubscriptionInput.new()
+        i.set_subscription_id(Qmi.SubscriptionType.SECONDARY)
+        call("bind_subscription", self.wds, i, 10, None).get_result()
+        i = Qmi.MessageWdsBindMuxDataPortInput.new()
+        i.set_endpoint_info(Qmi.DataEndpointType.EMBEDDED, 1)
+        i.set_mux_id(MUX)
+        i.set_client_type(Qmi.WdsClientType.TETHERED)
+        call("bind_mux_data_port", self.wds, i, 10, None).get_result()
+        i = Qmi.MessageWdsSetIpFamilyInput.new()
+        i.set_preference(Qmi.WdsIpFamily.IPV4)
+        call("set_ip_family", self.wds, i, 10, None).get_result()
+
+        i = Qmi.MessageWdsStartNetworkInput.new()
+        i.set_profile_index_3gpp(PROFILE)
+        i.set_ip_family_preference(Qmi.WdsIpFamily.IPV4)
+        try:
+            o = call("start_network", self.wds, i, 60, None)
+            o.get_result()
+        except GLib.Error as e:
+            why = ""
+            try:
+                why = " " + str(last(o.get_verbose_call_end_reason()))
+            except Exception:
+                pass
+            raise RuntimeError(f"start_network: {e.message}{why}")
+        self.pdh = last(o.get_packet_data_handle())
+
+        i = Qmi.MessageWdsGetCurrentSettingsInput.new()
+        R = Qmi.WdsRequestedSettings
+        i.set_requested_settings(R.IP_ADDRESS | R.GATEWAY_INFO | R.DNS_ADDRESS | R.MTU)
+        o = call("get_current_settings", self.wds, i, 10, None)
+
+        def get(fn):
+            try:
+                return getattr(o, fn)()
+            except (GLib.Error, AttributeError):
+                return None
+
+        addr = ip4(get("get_ipv4_address"))
+        mask = ip4(get("get_ipv4_gateway_subnet_mask")) or "255.255.255.255"
+        self.dns = [d for d in (ip4(get("get_primary_ipv4_dns_address")),
+                                ip4(get("get_secondary_ipv4_dns_address"))) if d]
+        mtu = last(get("get_mtu")) or 1500
+        prefix = ipaddress.IPv4Network(f"0.0.0.0/{mask}").prefixlen
+        log(f"connected: {addr}/{prefix} dns {' '.join(self.dns)} mtu {mtu}")
+
+        sh(f"ip link del {IF}")
+        sh(f"ip link add link rmnet_ipa0 name {IF} type rmnet mux_id {MUX} "
+           "ingress-deaggregation on ingress-mapv5-checksum on egress-mapv5-checksum on", True)
+        sh(f"ip addr add {addr}/{prefix} dev {IF}", True)
+        sh(f"ip link set {IF} mtu {min(mtu, 1496)} up", True)
+        sh(f"ip route replace default dev {IF} metric {METRIC}", True)
+        for d in self.dns:
+            sh(f"ip route replace {d}/32 dev {IF}")
+        with open(DNS_CONF, "w") as f:
+            f.write("# fuxi-datacard：卡槽 2 上网时的 DNS（运营商 DNS 有走卡槽 2 的主机路由）\n"
+                    "[global-dns-domain-*]\n"
+                    f"servers={','.join(self.dns + [FALLBACK_DNS])}\n")
+        sh("nmcli general reload conf,dns-rc")
+        self.wds.connect("packet-service-status", self.on_status)
+
+    def on_status(self, _c, out):
+        try:
+            st = conn_status(out)
+        except (GLib.Error, TypeError, IndexError):
+            return
+        log(f"packet service status: {st.value_nick if hasattr(st, 'value_nick') else st}")
+        if st != Qmi.WdsConnectionStatus.CONNECTED:
+            self.down = True
+
+    def alive(self):
+        if self.down:
+            return False
+        try:
+            o = call("get_packet_service_status", self.wds, None, 10, None)
+            return conn_status(o) == Qmi.WdsConnectionStatus.CONNECTED
+        except GLib.Error as e:
+            log(f"status poll failed: {e.message}")
+            return False
+
+    def teardown(self):
+        if os.path.exists(DNS_CONF):
+            os.unlink(DNS_CONF)
+            sh("nmcli general reload conf,dns-rc")
+        sh(f"ip link del {IF}")  # 连带删掉路由
+        if self.wds is not None:
+            if self.pdh is not None:
+                try:
+                    i = Qmi.MessageWdsStopNetworkInput.new()
+                    i.set_packet_data_handle(self.pdh)
+                    call("stop_network", self.wds, i, 10, None).get_result()
+                except GLib.Error as e:
+                    log(f"stop_network: {e.message}")
+            self.m.release(self.wds)
+        self.wds = self.pdh = None
+
+
+def nm_slot1(enable):
+    sh(f"nmcli con mod {NM_CON} connection.autoconnect {'yes' if enable else 'no'}")
+    if not enable:
+        # 11-04 留下的旧连接（apn 3gnet，autoconnect yes）：fuxi-mobile-ct 一断它就会自己起来，
+        # 在卡 1 上拨 3gnet，占住 internet 呼叫导致卡槽 2 call-already-present
+        sh(f"nmcli con mod {STALE_NM_CON} connection.autoconnect no")
+        sh(f"nmcli con down {STALE_NM_CON}")
+    sh(f"nmcli con {'up' if enable else 'down'} {NM_CON}")
+
+
+def run():
+    stop = []
+    import warnings
+    warnings.simplefilter("ignore", DeprecationWarning)
+    for s in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, s, lambda: stop.append(1) or False)
+    nm_slot1(False)
+    m = Modem()
+    backoff = [5, 10, 30, 60]
+    fails = 0
+    try:
+        while not stop:
+            s = Session(m)
+            try:
+                m.set_dds(2)
+                s.up()
+                fails = 0
+                next_poll = time.monotonic() + 20
+                while not stop and not s.down:
+                    ctx.iteration(False) or time.sleep(0.2)
+                    if time.monotonic() >= next_poll:
+                        if not s.alive():
+                            break
+                        next_poll = time.monotonic() + 20
+                if not stop:
+                    log("connection lost, reconnecting")
+            except (GLib.Error, RuntimeError) as e:
+                log(f"error: {getattr(e, 'message', e)}")
+                if "call-already-present" in str(e) or "CALL_ALREADY" in str(e).upper():
+                    nm_slot1(False)
+                fails += 1
+            finally:
+                s.teardown()
+            delay = backoff[min(fails, len(backoff)) - 1] if fails else 2
+            end = time.monotonic() + delay
+            while not stop and time.monotonic() < end:
+                ctx.iteration(False) or time.sleep(0.2)
+    finally:
+        m.close()
+    log("stopped")
+
+
+def status():
+    slot = open(STATE).read().strip() if os.path.exists(STATE) else "1"
+    m = Modem()
+    try:
+        dds = m.get_dds()
+    finally:
+        m.close()
+    svc = sh("systemctl is-active fuxi-datacard").stdout.strip()
+    a2 = sh(f"ip -4 -br addr show {IF} 2>/dev/null").stdout.split()
+    a1 = sh(f"nmcli -g GENERAL.STATE con show {NM_CON}").stdout.strip()
+    print(f"上网卡设置: 卡槽 {slot}   modem DDS: 卡槽 {dds}")
+    print(f"卡槽 1 ({NM_CON}): {a1 or 'inactive'}")
+    print(f"卡槽 2 ({IF}): service {svc}, {a2[2] if len(a2) > 2 else 'no address'}")
+
+
+def set_slot(slot):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    with open(STATE, "w") as f:
+        f.write(f"{slot}\n")
+    if slot == 2:
+        sh("systemctl enable --now fuxi-datacard.service", True)
+    else:
+        sh("systemctl disable --now fuxi-datacard.service")
+        m = Modem()
+        try:
+            m.set_dds(1)
+        finally:
+            m.close()
+        nm_slot1(True)
+    for _ in range(30):
+        time.sleep(1)
+        ok = (sh(f"ip -4 -br addr show {IF}").stdout.strip() if slot == 2 else
+              "activated" in sh(f"nmcli -g GENERAL.STATE con show {NM_CON}").stdout)
+        if ok:
+            break
+    status()
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if cmd == "run":
+        run()
+    elif cmd == "status":
+        status()
+    elif cmd == "set" and len(sys.argv) > 2 and sys.argv[2] in ("1", "2"):
+        if sys.argv[2] == "2" and "--force" not in sys.argv and not os.path.exists("/etc/fuxi/mm-sub-bind"):
+            sys.exit("卡槽 2 上网会让两张卡的 VoLTE 掉线（MM 没打订阅绑定补丁）；确实要用请加 --force")
+        if sys.argv[2] == "2":
+            print("注意：卡槽 2 上网期间卡槽 1（电信）VoLTE 不可用（modem 不允许非上网卡的电信起 IMS），"
+                  "卡槽 1 打不了也接不到电话", file=sys.stderr)
+        set_slot(int(sys.argv[2]))
+    else:
+        sys.exit("usage: fuxi-datacard status | set 1|2 [--force] | run")
+
+
+if __name__ == "__main__":
+    main()
