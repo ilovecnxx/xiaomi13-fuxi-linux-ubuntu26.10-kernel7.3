@@ -30,7 +30,9 @@
   （fuxi-kernel-install 生成）→ 内核。按住音量下 = U-Boot 菜单；extlinux 菜单 3 s 可选回退条目。
   **现 recovery_b = uboot4（b30bfcb3…）**：带自动回退（`fuxi-bootcount` 计数块，2 次未确认 → fallback.conf），三种情况实测通过。
   内核树收敛：分支 `fuxi/consolidate-7.4`（单文件 `sm8550-xiaomi-fuxi.dts`，dtc 只差 bootargs；`fuxi_defconfig` 与 deb2 零差异）。
-  待做：①initramfs-tools + `/etc/kernel/cmdline`（root=PARTUUID）；deb 改用 fuxi_defconfig + 新 DTB 名。
+  **①完成（11-07）：默认 `7.4.0-rc1-fuxi-deb3`** = `scripts/fuxi-build-deb.sh deb3`（fuxi_defconfig，无内建 initramfs/cmdline，
+  DTB `qcom/sm8550-xiaomi-fuxi.dtb`）+ initramfs-tools initrd + `/etc/kernel/cmdline`（root=UUID=，不能用 PARTUUID=：wait-for-root 等 30 s）。
+  以后升级内核：`scripts/fuxi-build-deb.sh <名字>` → 手机 `dpkg -i` 即可（自动生成 initrd、条目、extlinux、arm 计数）。回退 deb2。
   回滚 shim：`scripts/fuxi-test-recovery.sh work/kbuild/abl-fuxi-shim7.img`。详情 `docs/计划-标准化启动-20261107.md` ③。
 
 ## Denial 桌面（2026-11-07）

@@ -1,11 +1,14 @@
 #!/bin/sh
-# Debian 内核包钩子，装成 /etc/kernel/postinst.d/zz-fuxi 和 /etc/kernel/postrm.d/zz-fuxi（同一个文件）。
-# 参数（run-parts 传入）：$1=内核版本  $2=/boot/vmlinuz-<版本>
+# Debian 内核包钩子，装成 /etc/kernel/postinst.d/zz-fuxi、/etc/kernel/postrm.d/zz-fuxi
+# 和 /etc/initramfs/post-update.d/zz-fuxi（同一个文件）。
+# 参数（run-parts 传入）：$1=内核版本  $2=/boot/vmlinuz-<版本>（post-update.d 里是 /boot/initrd.img-<版本>）
+#   post-update.d：update-initramfs 之后把新 initrd 复制进已有条目（fuxi-kernel-install initrd）
 #   postinst：生成 /boot/fuxi/<版本> 条目并设为默认（fuxi-kernel-install add）
 #   postrm：删掉条目；它若还是默认/回退，只警告不删（fuxi-kernel-install remove 会拒绝）
 set -e
 ver=${1:?}
 case "$0" in
+  */post-update.d/*) /usr/local/sbin/fuxi-kernel-install initrd "$ver" "${2:-/boot/initrd.img-$ver}" ;;
   */postrm.d/*) /usr/local/sbin/fuxi-kernel-install remove "$ver" || echo "zz-fuxi: 保留 /boot/fuxi/$ver" >&2 ;;
   *) /usr/local/sbin/fuxi-kernel-install add "$ver" "${2:-/boot/vmlinuz-$ver}" ;;
 esac
