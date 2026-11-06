@@ -1,4 +1,4 @@
-# TASKS（2026-11-05 22:45）
+# TASKS（2026-11-06 00:05）
 
 **完整交接：`docs/交接-新会话-20261103-1940.md`；桌面侧验收：`docs/验收-20261104-上机.md`**
 
@@ -30,6 +30,21 @@
 - 手机 rootfs 已换成官方包的 ADSP 固件；第三方 ROM 原固件备份在手机 `/root/adsp-thirdparty-bak/`。
 - 刷机注意：无线 adb 时必须 `ANDROID_SERIAL=<WiFi 端点>`（`adb mdns services` 查 _adb-tls-connect，
   重启和 `adb root` 后端口会变），留空会默认 USB 序列号 f8286c82 并卡在「先重启回 Android」。
+
+## UFS HS-G5（2026-11-05 复测，仍搁置）
+- 补丁 `ufs_qcom_freq_to_gear_speed`：300 MHz 在 HW v5 上映射 G5，在 `build/linux` 工作树未提交（`work/patches/pending/ufs-qcom-sm8550-g5.patch`）。
+- 测试镜像 `work/kbuild/abl-fuxi-ufs-g5.img`（#271，SHA `f9056587`）：负载下 HS_GEAR5、约 2.8 GB/s 正常。
+- 【❌】负载中 `reboot -f` 第 1 轮黑屏卡死：不是 EDL（USB 无设备），4 分钟不自恢复，需长按电源。已回基线 20ac7794。
+- 【❌ 11-05 23:20】关机降档补丁 `ufshcd_shutdown_downshift()`（`ufshcd_wl_shutdown` 里先停 devfreq、
+  `ufshcd_devfreq_scale` 到最低频 → HS-G1，失败再 `ufshcd_scale_gear(G1)`，再走 `__ufshcd_wl_suspend`）：
+  `build/linux` 工作树未提交，留档 `work/patches/pending/ufs-shutdown-downshift.patch`。
+  镜像 `work/kbuild/abl-fuxi-abl-fuxi-ufs-g5-ds.img`（#272，SHA `693b6f92`，G5+降档）：
+  负载中 `reboot -f` 第 1 轮 22 s 回 Android，第 2 轮又黑屏卡死（同 #271），长按电源恢复。已回基线 20ac7794。
+  没法确认降档那行 `dev_info` 是否执行（pstore 空、journal 不持久）。
+- 下一步候选：① 先让关机日志可见（initramfs 串口/ramoops 或 `reboot -f` 前 `echo 8 > printk` + 关机时
+  dmesg 写到 /dev/kmsg 以外的地方）再判断降档是否生效；② 降到 HS-G4 而非 G1；③ 关机完全跳过 `ufshcd_suspend`；
+  ④ 补测 `systemctl reboot`（负载）和空闲 `reboot -f`（看 G5 一次都没到时是否也挂，排除与 G5 无关）。
+  脚本 `work/claude-logs/ufs-g5-reboot/loop.sh f|s|i`，结果 `result.txt`。
 
 ## 桌面线（当前主线，通信暂停）
 - 设备现在跑在 Linux（Plasma Mobile），不是 Android。

@@ -1,0 +1,56 @@
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+index ca8329052..a32317103 100644
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -10861,6 +10861,43 @@ int ufshcd_runtime_resume(struct device *dev)
+ EXPORT_SYMBOL(ufshcd_runtime_resume);
+ #endif /* CONFIG_PM */
+ 
++/*
++ * Drop the link to the lowest clock-scaling gear before shutdown. On SM8550
++ * (UFS HW v5) powering the link down or asserting device reset while it runs
++ * at HS-G5 leaves the next boot hung in the bootloader.
++ */
++static void ufshcd_shutdown_downshift(struct ufs_hba *hba)
++{
++	u32 old_gear = hba->pwr_info.gear_rx;
++	unsigned long freq = 0;
++	struct dev_pm_opp *opp;
++	int ret;
++
++	if (!ufshcd_is_clkscaling_supported(hba) || !hba->devfreq ||
++	    !ufshcd_is_link_active(hba) || old_gear <= UFS_HS_G1)
++		return;
++
++	/* Stop devfreq so nothing scales back up; is_allowed stays true. */
++	if (hba->clk_scaling.is_enabled)
++		ufshcd_suspend_clkscaling(hba);
++
++	opp = dev_pm_opp_find_freq_ceil(hba->dev, &freq);
++	if (IS_ERR(opp)) {
++		ret = PTR_ERR(opp);
++	} else {
++		dev_pm_opp_put(opp);
++		ret = ufshcd_devfreq_scale(hba, freq, false);
++		if (!ret)
++			hba->clk_scaling.target_freq = freq;
++	}
++
++	if (ret)
++		ret = ufshcd_scale_gear(hba, UFS_HS_G1, false);
++
++	dev_info(hba->dev, "shutdown: gear %u -> %u (freq %lu, ret %d)\n",
++		 old_gear, hba->pwr_info.gear_rx, freq, ret);
++}
++
+ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
+ {
+ 	struct ufs_hba *hba = shost_priv(sdev->host);
+@@ -10882,6 +10919,7 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
+ 		scsi_device_set_state(sdev, SDEV_OFFLINE);
+ 		mutex_unlock(&sdev->state_mutex);
+ 	}
++	ufshcd_shutdown_downshift(hba);
+ 	__ufshcd_wl_suspend(hba, UFS_SHUTDOWN_PM);
+ 
+ 	/*
