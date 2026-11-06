@@ -1,0 +1,18 @@
+#!/bin/sh
+# 81voltd 启动前清掉上一个 81voltd 留在 ModemManager 里的 IMS bearer。
+# 81voltd 退出（含崩溃/kill）不会删它建的 MM bearer，旧 bearer 仍占着卡 1 的 IMS PDN，
+# 新进程再建 bearer 连接时 MM 报 call-already-present，卡 1 IMS 掉注册且不重试（11-06 实测）。
+# 只删 APN 为 ims（不分大小写）的 bearer；数据 bearer（ctnet 等）不碰。没有 modem 时什么都不做。
+command -v mmcli >/dev/null 2>&1 || exit 0
+mmcli -m any --output-keyvalue 2>/dev/null |
+	sed -n 's|^modem\.generic\.bearers\.value\[[0-9]*\] *: */org/freedesktop/ModemManager1/Bearer/\([0-9]*\)$|\1|p' |
+while read -r b; do
+	apn=$(mmcli -b "$b" --output-keyvalue 2>/dev/null | sed -n 's/^bearer\.properties\.apn *: *//p')
+	case "$apn" in
+	[Ii][Mm][Ss])
+		echo "deleting stale IMS bearer $b"
+		mmcli -m any --delete-bearer="$b" >/dev/null 2>&1 || echo "delete bearer $b failed"
+		;;
+	esac
+done
+exit 0

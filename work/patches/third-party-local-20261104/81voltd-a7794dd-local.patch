@@ -20,7 +20,7 @@ index 4000c6f..596441b 100644
  
  install_man('81voltd.1')
 diff --git a/qvd-connection.c b/qvd-connection.c
-index 1147409..9d35f2d 100644
+index 1147409..d2c18ed 100644
 --- a/qvd-connection.c
 +++ b/qvd-connection.c
 @@ -4,10 +4,24 @@
@@ -124,10 +124,13 @@ index 1147409..9d35f2d 100644
  		mm_bearer_disconnect(conn->bearer, NULL, on_disconnect, g_object_ref(conn));
  }
  
-@@ -219,3 +266,518 @@ void qvd_connection_set_bearer(QVDConnection *conn, MMBearer *bearer)
+@@ -217,5 +264,533 @@ void qvd_connection_set_bearer(QVDConnection *conn, MMBearer *bearer)
+ 			 G_CALLBACK(on_bearer_properties_changed), conn);
+ 
  	if (conn->requested)
- 		mm_bearer_connect(conn->bearer, NULL, on_connect, conn);
- }
+-		mm_bearer_connect(conn->bearer, NULL, on_connect, conn);
++		mm_bearer_connect(conn->bearer, NULL, on_connect, g_object_ref(conn));
++}
 +
 +static void wds_release_client(QVDConnection *conn)
 +{
@@ -161,15 +164,16 @@ index 1147409..9d35f2d 100644
 +}
 +
 +/*
-+ * The PDN is wrong when the modem reports a different APN than requested, or
-+ * reports the IMCN flag as unset. Fields the modem leaves out are not judged.
++ * The PDN is wrong when the modem reports a different APN than requested
++ * (early boot can land the IMS request on the internet PDN). A matching APN
++ * is trusted even with IMCN unset: some networks (China Unicom) do not signal
++ * IMCN for their IMS PDN. IMCN only decides when no APN is reported.
 + */
 +static gboolean wds_wrong_pdn(QVDConnection *conn, const gchar *apn,
 +			      gboolean has_imcn, gboolean imcn)
 +{
-+	if (conn->wds_apn != NULL && conn->wds_apn[0] && apn != NULL && apn[0]
-+	 && g_ascii_strcasecmp(apn, conn->wds_apn) != 0)
-+		return TRUE;
++	if (conn->wds_apn != NULL && conn->wds_apn[0] && apn != NULL && apn[0])
++		return g_ascii_strcasecmp(apn, conn->wds_apn) != 0;
 +
 +	return has_imcn && !imcn;
 +}
@@ -267,9 +271,19 @@ index 1147409..9d35f2d 100644
 +
 +	has_apn = qmi_message_wds_get_current_settings_output_get_apn_name(out, &apn, NULL);
 +	has_imcn = qmi_message_wds_get_current_settings_output_get_imcn_flag(out, &imcn, NULL);
-+	g_info("WDS sub %u: connected, pdh 0x%08x, addr %s, apn %s, imcn %s\n",
-+	       conn->wds_sub, conn->pdh, addr ? addr : "(none)",
-+	       has_apn && apn ? apn : "?", has_imcn ? (imcn ? "1" : "0") : "?");
++	{
++		GArray *pd = NULL, *ps = NULL;
++		guint npd = 0, nps = 0;
++
++		if (qmi_message_wds_get_current_settings_output_get_pcscf_domain_name_list(out, &pd, NULL) && pd)
++			npd = pd->len;
++		if (qmi_message_wds_get_current_settings_output_get_pcscf_server_address_list(out, &ps, NULL) && ps)
++			nps = ps->len;
++		g_info("WDS sub %u: connected, pdh 0x%08x, addr %s, apn %s, imcn %s, pcscf v4 %u domains %u\n",
++		       conn->wds_sub, conn->pdh, addr ? addr : "(none)",
++		       has_apn && apn ? apn : "?", has_imcn ? (imcn ? "1" : "0") : "?",
++		       nps, npd);
++	}
 +
 +	if (wds_wrong_pdn(conn, has_apn ? apn : NULL, has_imcn, imcn)) {
 +		g_free(addr);
@@ -293,7 +307,9 @@ index 1147409..9d35f2d 100644
 +	in = qmi_message_wds_get_current_settings_input_new();
 +	qmi_message_wds_get_current_settings_input_set_requested_settings(in,
 +		QMI_WDS_REQUESTED_SETTINGS_IP_ADDRESS | QMI_WDS_REQUESTED_SETTINGS_IP_FAMILY
-+		| QMI_WDS_REQUESTED_SETTINGS_APN_NAME | QMI_WDS_REQUESTED_SETTINGS_IMCN_FLAG,
++		| QMI_WDS_REQUESTED_SETTINGS_APN_NAME | QMI_WDS_REQUESTED_SETTINGS_IMCN_FLAG
++		| QMI_WDS_REQUESTED_SETTINGS_PCSCF_SERVER_ADDRESS_LIST
++		| QMI_WDS_REQUESTED_SETTINGS_PCSCF_DOMAIN_NAME_LIST,
 +		NULL);
 +	qmi_client_wds_get_current_settings(conn->wds, in, WDS_TIMEOUT, NULL,
 +					    wds_settings_ready, g_object_ref(conn));
@@ -642,7 +658,7 @@ index 1147409..9d35f2d 100644
 +
 +	if (conn->requested)
 +		wds_start(conn);
-+}
+ }
 diff --git a/qvd-connection.h b/qvd-connection.h
 index 2cf7f15..f656ff2 100644
 --- a/qvd-connection.h

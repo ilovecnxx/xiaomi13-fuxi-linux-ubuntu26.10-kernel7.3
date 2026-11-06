@@ -1,0 +1,42 @@
+[Unit]
+# 覆盖上游 /usr/lib/systemd/system/hexagonrpcd.service，唯一差别：去掉 After=multi-user.target。
+# 原因：fuxi-bt-address.service 是 WantedBy=multi-user.target，target 会补一条 After=，
+# 蓝牙慢（曾经 120 s）时 multi-user 被拖后，hexagonrpcd 跟着晚起，fuxi-wait-ssc 40 s 先超时，
+# 传感器整个起不来。systemd 261 上 drop-in 里写 `After=` 并不能清掉 fragment 里的依赖（已实测），
+# 所以只能用整份 unit 覆盖。上游 unit 更新时记得同步。
+Description=Hexagon DSP sensors daemon
+Documentation=man:hexagonrpcd(1) file:///usr/share/doc/hexagonrpcd/README.Debian
+ConditionKernelVersion=>=6.12
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+NoNewPrivileges=yes
+PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/fastrpc-adsp
+DeviceAllow=/dev/fastrpc-sdsp
+DeviceAllow=/dev/fastrpc-cdsp
+DeviceAllow=/dev/fastrpc-adsp-secure
+DeviceAllow=/dev/fastrpc-sdsp-secure
+DeviceAllow=/dev/fastrpc-cdsp-secure
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=none
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+ExecStart=/usr/bin/hexagonrpcd
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=default.target

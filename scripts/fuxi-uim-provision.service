@@ -1,0 +1,14 @@
+[Unit]
+Description=fuxi UIM provisioning sessions (activate GW sessions before ModemManager)
+After=rmtfs.service qrtr-ns.service pd-mapper.service
+Wants=rmtfs.service
+Before=ModemManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/fuxi-uim-provision.py
+TimeoutStartSec=120
+RemainAfterExit=yes
+
+[Install]
+WantedBy=ModemManager.service
