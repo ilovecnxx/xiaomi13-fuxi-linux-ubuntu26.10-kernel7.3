@@ -1,0 +1,121 @@
+#!/bin/sh
+# fuxi 内核条目管理（手机上运行，装到 /usr/local/sbin/）。引导层 shim 从 /boot/fuxi 选条目 kexec，
+# 布局见 scripts/fuxi-shim/init。Debian 内核包（make bindeb-pkg）装/卸时由 /etc/kernel/post{inst,rm}.d/zz-fuxi 调用。
+#
+# 用法:
+#   fuxi-kernel-install add <条目> <Image|Image.gz|vmlinuz> [<dtb>]（Image.gz 会解压）
+#       装条目并设为默认；当前已确认的条目（本次启动、tries 已被清掉）成为回退。
+#       dtb 省略时用 /usr/lib/linux-image-<条目>/qcom/$FUXI_DTB.dtb（deb 装的位置）。
+#       cmdline 取 /etc/fuxi/cmdline。
+#   fuxi-kernel-install remove [--force] <条目>     默认/回退条目要 --force
+#   fuxi-kernel-install set-default <条目> | set-fallback <条目>
+#   fuxi-kernel-install list
+# 配置 /etc/fuxi/kernel.conf（sh 语法，可选）：FUXI_DTB=<DTB 名，不带 .dtb>  FUXI_CMDLINE_FILE=<路径>
+set -eu
+B=/boot/fuxi
+FUXI_DTB=sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc-dp
+FUXI_CMDLINE_FILE=/etc/fuxi/cmdline
+[ -f /etc/fuxi/kernel.conf ] && . /etc/fuxi/kernel.conf
+
+die() { echo "fuxi-kernel-install: $*" >&2; exit 1; }
+say() { echo "fuxi-kernel-install: $*"; }
+check_name() {
+  case "$1" in ''|.*|*/*|*[!A-Za-z0-9._+-]*) die "条目名不合法: '$1'" ;; esac
+}
+# 原子写一行
+put() { printf '%s\n' "$2" > "$B/.$1.tmp" && mv -f "$B/.$1.tmp" "$B/$1"; }
+get() { cat "$B/$1" 2>/dev/null || true; }
+# 本次启动的条目：shim 在 cmdline 里加 fuxi.entry=<条目>（shim6 起；更老的 shim 没有 → 空）
+running_entry() { tr ' ' '\n' < /proc/cmdline | sed -n 's/^fuxi\.entry=//p' | tail -1; }
+
+cmd_add() {
+  e=$1; img=$2; dtb=${3:-/usr/lib/linux-image-$1/qcom/$FUXI_DTB.dtb}
+  check_name "$e"
+  [ -f "$img" ] || die "没有内核镜像 $img"
+  [ -f "$dtb" ] || die "没有 DTB $dtb"
+  [ -s "$FUXI_CMDLINE_FILE" ] || die "没有 cmdline 文件 $FUXI_CMDLINE_FILE"
+  mkdir -p "$B"
+  t=$B/.$e.new
+  rm -rf "$t"; mkdir "$t"
+  # deb 的 vmlinuz 在 arm64 上是 Image.gz。shim 里的静态 kexec（经典 kexec_load，-c）不解压，
+  # 报 "Bad arm64 image header"（11-07 实测）→ 安装时解压成 Image
+  kn=Image
+  if [ "$(head -c 2 "$img" | od -An -tx1 | tr -d ' ')" = 1f8b ]; then
+    gzip -dc "$img" > "$t/Image"
+  else
+    cp "$img" "$t/Image"
+  fi
+  cp "$dtb" "$t/"
+  tr '\n' ' ' < "$FUXI_CMDLINE_FILE" | sed 's/ *$//' > "$t/cmdline"
+  echo >> "$t/cmdline"
+  (cd "$t" && sha256sum ./* > SHA256SUMS)
+  sync
+  rm -rf "$B/$e"
+  mv "$t" "$B/$e"
+  cur=$(running_entry)
+  # 老 shim 没传 fuxi.entry：本次启动的就是改之前的 default（应急模式 fuxi.shim 除外）
+  [ -n "$cur" ] || grep -qw fuxi.shim /proc/cmdline || cur=$(get default)
+  if [ ! -e "$B/tries" ] && [ -n "$cur" ] && [ "$cur" != "$e" ] && [ -d "$B/$cur" ]; then
+    put fallback "$cur"
+  fi
+  put default "$e"
+  rm -f "$B/tries"
+  [ "$(get default.failed)" != "$e" ] || rm -f "$B/default.failed"
+  sync
+  say "已装 $e（$kn + ${dtb##*/}），默认=$e 回退=$(get fallback)"
+}
+
+cmd_remove() {
+  force=0
+  [ "${1:-}" = --force ] && { force=1; shift; }
+  e=${1:?}
+  check_name "$e"
+  [ -d "$B/$e" ] || { say "没有条目 $e"; return 0; }
+  if [ "$force" = 0 ]; then
+    [ "$e" != "$(get default)" ] || die "$e 是默认条目，先 set-default 别的（或 --force）"
+    [ "$e" != "$(get fallback)" ] || die "$e 是回退条目，先 set-fallback 别的（或 --force）"
+    [ "$e" != "$(running_entry)" ] || die "$e 是正在运行的条目（或 --force）"
+  fi
+  rm -rf "$B/$e"
+  sync
+  say "已删 $e"
+}
+
+cmd_set() {
+  check_name "$2"
+  [ -d "$B/$2" ] || die "没有条目 $2"
+  put "$1" "$2"
+  if [ "$1" = default ]; then
+    rm -f "$B/tries"
+    [ "$(get default.failed)" != "$2" ] || rm -f "$B/default.failed"
+  fi
+  sync
+  say "$1=$2"
+}
+
+cmd_list() {
+  def=$(get default); fb=$(get fallback); run=$(running_entry)
+  for d in "$B"/*/; do
+    [ -d "$d" ] || continue
+    e=$(basename "$d")
+    m=
+    [ "$e" = "$def" ] && m="$m default"
+    [ "$e" = "$fb" ] && m="$m fallback"
+    [ "$e" = "$run" ] && m="$m running"
+    k=$(ls "$d" | grep -m1 -E '^Image(\.gz)?$' || true)
+    printf '%-24s %-10s %s\n' "$e" "${k:--}" "${m# }"
+  done
+  [ -e "$B/tries" ] && echo "tries=$(get tries)（默认条目还没确认）"
+  [ -e "$B/default.failed" ] && echo "default.failed=$(get default.failed)"
+  return 0
+}
+
+[ "$(id -u)" = 0 ] || die "要 root"
+case "${1:-}" in
+  add) shift; [ $# -ge 2 ] || die "用法: add <条目> <Image> [<dtb>]"; cmd_add "$@" ;;
+  remove) shift; cmd_remove "$@" ;;
+  set-default) cmd_set default "${2:?}" ;;
+  set-fallback) cmd_set fallback "${2:?}" ;;
+  list|'') cmd_list ;;
+  *) die "未知命令 $1（add/remove/set-default/set-fallback/list）" ;;
+esac

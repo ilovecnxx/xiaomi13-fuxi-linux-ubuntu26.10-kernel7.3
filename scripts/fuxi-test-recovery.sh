@@ -7,6 +7,7 @@
 # 用法: scripts/fuxi-test-recovery.sh <abl 镜像> [ssh 命令 ...]
 #       FUXI_STAY=1 scripts/fuxi-test-recovery.sh <镜像> [initramfs 命令 ...]
 #       FUXI_KEEP=1 …：测试后不回 Android
+#       FUXI_SSH_WAIT=180 …：等 ssh 的秒数（默认 90；shim→kexec 链要更久）
 #       FUXI_HOST=<手机无线 IP> …：没接 USB 数据（充电头/无线 adb）时，ssh 检查走 WiFi
 # 无线 adb：先在主机 adb pair/connect；adb root 重启 adbd 后端口会变，脚本按 mDNS 自动重连
 # 当前已知好镜像：work/patches/abl-recovery-dualboot-20261027/recovery-linux.img
@@ -63,7 +64,7 @@ if [ "${FUXI_STAY:-0}" = 1 ]; then
   [ "${FUXI_KEEP:-0}" = 1 ] && { log "FUXI_KEEP=1：留在 initramfs"; exit 0; }
   printf 'reboot -f\n' > /dev/fuxi-acm 2>/dev/null
 else
-  wait_for 90 ssh_up || { notify "90s 内 ssh 不可用：测试镜像可能没起来，长按电源 20 秒回 Android"; exit 3; }
+  wait_for "${FUXI_SSH_WAIT:-90}" ssh_up || { notify "${FUXI_SSH_WAIT:-90}s 内 ssh 不可用：测试镜像可能没起来，长按电源 20 秒回 Android"; exit 3; }
   log "Ubuntu ssh 可用"
   for c in "$@"; do echo "\$ $c"; timeout 120 "$B/scripts/fuxi-ssh.sh" "$c"; done 2>&1 | tee "$RUN/ssh.txt"
   [ "${FUXI_KEEP:-0}" = 1 ] && { log "FUXI_KEEP=1：留在 Ubuntu"; exit 0; }

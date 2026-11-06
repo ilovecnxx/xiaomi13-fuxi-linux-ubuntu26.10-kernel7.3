@@ -12,7 +12,8 @@ set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${1:?用法: fuxi-build-abl.sh <名字> [--no-kernel]}"
 L="$B/work/claude-logs"; mkdir -p "$L"
-K="$B/build/linux"
+# FUXI_KTREE=<内核源码树>：换一棵树构建（例如新版本的 git worktree），默认 build/linux
+K="${FUXI_KTREE:-$B/build/linux}"
 FUXI_DTB="${FUXI_DTB:-sm8550-xiaomi-fuxi-min}"   # 例：FUXI_DTB=sm8550-xiaomi-fuxi-disp（原生显示驱动变体）
 # pm2 已实机验证；日常镜像默认带 CPU 调频/温控。FUXI_PM=0 仅用于对照诊断。
 FUXI_PM="${FUXI_PM:-1}"
@@ -30,6 +31,8 @@ cleanup() {
     touch "$K/.config"
   fi
   rm -rf "$W"
+  # 改过 bootargs 的 DTB 不能留在树里（kbuild 只比命令行不比内容，下次构建会沿用）
+  [ -z "${FUXI_BOOTARGS_EXTRA:-}" ] || rm -f "$DTB"
 }
 trap cleanup EXIT
 
@@ -78,6 +81,9 @@ if [ "${2:-}" != "--no-kernel" ]; then
             -e NF_TABLES -e NF_TABLES_INET -e NF_TABLES_NETDEV -e NFT_NAT -e NFT_MASQ -e NFT_REDIR
             -e NFT_SOCKET -e NFT_TPROXY -e NETFILTER_XT_MARK -e NET_CLS_ACT -e NET_SCHED
             -e NF_CONNTRACK -e NF_NAT)
+  # FUXI_EXTRA_CFG="-e KEXEC_FILE -d FOO"：额外的 scripts/config 参数，任意变体可叠加（-e 项同样校验必须生效）
+  # shellcheck disable=SC2206
+  [ -n "${FUXI_EXTRA_CFG:-}" ] && VARIANT_CFG+=(${FUXI_EXTRA_CFG})
   if [ "${#VARIANT_CFG[@]}" -gt 0 ]; then
     ./scripts/config "${VARIANT_CFG[@]}"
     "${MAKE[@]}" olddefconfig >/dev/null
@@ -91,16 +97,85 @@ if [ "${2:-}" != "--no-kernel" ]; then
     done
     [ ${#miss[@]} -eq 0 ] || { echo "[config] 这些选项没能打开（依赖不满足）：${miss[*]}"; exit 1; }
   fi
+  # FUXI_INITRAMFS=<cpio 清单文件>：换掉内建 initramfs（引导层 shim 用自己的 init + kexec，见 fuxi-build-shim.sh）
+  if [ -n "${FUXI_INITRAMFS:-}" ]; then
+    ./scripts/config --set-str INITRAMFS_SOURCE "$FUXI_INITRAMFS"
+  fi
   # 每次都按当前 .config 重新生成 auto.conf：olddefconfig 在配置没变时不改 .config 的时间戳，
   # 所以先 touch，强制 make 重跑 syncconfig，保证普通构建不会沿用上一个变体的 auto.conf
   touch .config
   "${MAKE[@]}" olddefconfig >/dev/null
   # initramfs 改动不会触发重新打包，每次都强制重建
   rm -f usr/initramfs_data.cpio usr/initramfs_data.cpio.gz
+  # FUXI_DEB=1：标准内核 Debian 包（make bindeb-pkg），配 FUXI_EXTRA_CFG="-d FUXI_FORCE_BUILTIN_DTB"
+  # （DTB 由 shim 从 /boot/fuxi/<条目>/ 传入）。内核版本 = <kernelversion>-fuxi-<名字>，
+  # 产物 work/kbuild/<名字>/linux-image-*.deb；DTB 随包装在 /usr/lib/linux-image-<版本>/qcom/，
+  # 手机上 dpkg -i 后由 /etc/kernel/postinst.d/zz-fuxi → fuxi-kernel-install 生成条目（scripts/fuxi-boot/）
+  if [ "${FUXI_DEB:-0}" = 1 ]; then
+    case "$NAME" in *[!a-z0-9.]*) echo "FUXI_DEB 的名字只能用小写字母、数字、点"; exit 1 ;; esac
+    ! grep -q '^CONFIG_FUXI_FORCE_BUILTIN_DTB=y' .config ||
+      { echo "FUXI_DEB=1 要 FUXI_EXTRA_CFG=\"-d FUXI_FORCE_BUILTIN_DTB\""; exit 1; }
+    KO="$B/work/kbuild/$NAME"; mkdir -p "$KO"
+    KV=$(make -s kernelversion)
+    # bindeb-pkg 把包写在源码树的上一级（build/）
+    PK="$(dirname "$K")"
+    ls "$PK"/linux-*.deb >/dev/null 2>&1 && { echo "$PK 里已有 linux-*.deb，先挪走"; exit 1; }
+    KM=("${MAKE[@]}" LOCALVERSION="-fuxi-$NAME")
+    if command -v dh_listpackages >/dev/null; then
+      echo "[deb] make bindeb-pkg $KV-fuxi-$NAME（日志 $L/kbuild-deb.log）"
+      # DPKG_FLAGS=-d：不查 libdw-dev/libssl-dev（只给 headers 包和工具用，这里不需要）
+      "${KM[@]}" KDEB_PKGVERSION="$KV-$NAME" DPKG_FLAGS=-d bindeb-pkg \
+        > "$L/kbuild-deb.log" 2>&1 || { grep -m5 -B2 -A3 -E 'error|错误' "$L/kbuild-deb.log"; exit 1; }
+      mv "$PK"/linux-*.deb "$KO/"
+      rm -f "$PK"/linux-upstream_*.buildinfo "$PK"/linux-upstream_*.changes
+    else
+      # 主机没装 debhelper（内核的 debian/rules 要 dh_*）：只打 linux-image 包——同样用内核自带的
+      # scripts/package/builddeb 填包内容和维护脚本（run-parts /etc/kernel/post{inst,rm}.d），
+      # 只是 control 自己写、dpkg-deb 直接打包。装了 debhelper 就自动走上面的 bindeb-pkg。
+      KR=$("${KM[@]}" -s kernelrelease)
+      P=debian/linux-image-$KR
+      echo "[deb] 无 debhelper：Image.gz dtbs + builddeb + dpkg-deb，$KR（日志 $L/kbuild-deb.log）"
+      {
+        "${KM[@]}" Image.gz dtbs &&
+          mkdir -p debian && rm -rf "$P" &&
+          "${KM[@]}" run-command KBUILD_RUN_COMMAND="+\$(srctree)/scripts/package/builddeb linux-image-$KR" &&
+          cat > "$P/DEBIAN/control" <<EOF &&
+Package: linux-image-$KR
+Version: $KV-$NAME
+Architecture: arm64
+Maintainer: fuxi <fuxi@localhost>
+Section: kernel
+Priority: optional
+Installed-Size: $(du -sk --exclude=DEBIAN "$P" | cut -f1)
+Description: Linux kernel $KR for Xiaomi 13 (fuxi)
+ Image + DTBs; /etc/kernel/postinst.d/zz-fuxi installs the /boot/fuxi entry.
+EOF
+          dpkg-deb --root-owner-group -Zxz -b "$P" "$KO/linux-image-${KR}_$KV-${NAME}_arm64.deb"
+      } > "$L/kbuild-deb.log" 2>&1 || { grep -m5 -B2 -A3 -E 'error|错误' "$L/kbuild-deb.log"; tail -5 "$L/kbuild-deb.log"; exit 1; }
+      rm -rf "$P"
+    fi
+    cp .config "$KO/config"
+    ( cd "$KO" && sha256sum ./*.deb config > SHA256SUMS )
+    ls -la "$KO"
+    exit 0
+  fi
   echo "[kernel] make dtb → Image.gz（日志 $L/kbuild.log）"
   # 先单独编 DTB：内核用 .incbin 把它嵌进去
-  { "${MAKE[@]}" "qcom/$FUXI_DTB.dtb" && "${MAKE[@]}" FUXI_DTB="$FUXI_DTB" Image.gz; } > "$L/kbuild.log" 2>&1 ||
+  # FUXI_BOOTARGS_EXTRA="irqchip.gicv3_nolpi=1 panic=10"：试验用，追加到内建 DTB 的 /chosen/bootargs（同名参数后者生效）
+  { "${MAKE[@]}" "qcom/$FUXI_DTB.dtb" &&
+    { [ -z "${FUXI_BOOTARGS_EXTRA:-}" ] ||
+      fdtput -t s "$DTB" /chosen bootargs "$(fdtget "$DTB" /chosen bootargs | sed 's/ *$//') $FUXI_BOOTARGS_EXTRA"; } &&
+    "${MAKE[@]}" FUXI_DTB="$FUXI_DTB" Image.gz; } > "$L/kbuild.log" 2>&1 ||
     { grep -m5 -B2 -A3 'error' "$L/kbuild.log"; exit 1; }
+  # FUXI_KERNEL_ONLY=1：标准内核（不打 ABL 镜像），输出 work/kbuild/<名字>/{Image,<dtb>.dtb,config}，
+  # 给 kexec / 以后的 /boot 安装用；这种内核应配 FUXI_EXTRA_CFG="-d FUXI_FORCE_BUILTIN_DTB"，DTB 由加载方传入
+  if [ "${FUXI_KERNEL_ONLY:-0}" = 1 ]; then
+    KO="$B/work/kbuild/$NAME"; mkdir -p "$KO"
+    cp arch/arm64/boot/Image "$KO/Image"; cp "$DTB" "$KO/$FUXI_DTB.dtb"; cp .config "$KO/config"
+    ( cd "$KO" && sha256sum Image "$FUXI_DTB.dtb" config > SHA256SUMS )
+    echo "[ok] $KO（$(strings "$KO/Image" | grep -m1 -o 'Linux version [^ ]* [^ ]*')）"
+    exit 0
+  fi
   grep -q '^CONFIG_FUXI_FORCE_BUILTIN_DTB=y' .config || { echo "需要 CONFIG_FUXI_FORCE_BUILTIN_DTB=y"; exit 1; }
 fi
 

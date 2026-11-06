@@ -15,6 +15,17 @@
 - 23:25 卡 2 IMS 在 81voltd 重启 5 min 后仍未注册 → 新会话先查（交接 §7.1）。
 - USB 线、充电线、UFS G5、语音线：暂停，见旧版 TASKS。
 
+## 引导层 + 独立升级内核（2026-11-07）
+- recovery_b = `work/kbuild/abl-fuxi-shim7.img`（b78d3f73…）：shim 内核 + `scripts/fuxi-shim/init`，从 sda33 `/boot/fuxi/` 选条目 kexec。
+  回退：2 次未确认 → fallback；默认条目加载失败 → 立即改用 fallback；都不行 → 应急模式（shim 内核直接进 Ubuntu）。
+- 内核以 deb 安装：`FUXI_DEB=1 FUXI_DTB=…-usbc-dp FUXI_EXTRA_CFG="-d FUXI_FORCE_BUILTIN_DTB" [FUXI_KTREE=<树>] scripts/fuxi-build-abl.sh <名字>`
+  → 手机 `dpkg -i` → `/etc/kernel/postinst.d/zz-fuxi` → `fuxi-kernel-install`（`scripts/fuxi-boot/`）。
+- 手机上：默认 `7.4.0-rc1-fuxi-deb2`（实测基带 5G、显示、电池、音频、触摸、WiFi），回退 `7.3.0-fuxi-deb1`，另有 t281。
+- 内核分支：`fuxi/daily`（7.3）、`fuxi/daily-7.4`（worktree `~/.cache/fuxi-74/wt`，基于 tag `fuxi/base-v7.4-rc1`）、`fuxi/voice-exp`（daily + 语音实验）。
+- shim DTS 约束见 `sm8550-xiaomi-fuxi-shim.dts` 头注释（nolpi、无 ADSP、无基带 PAS、rmtfs 只删 compatible、不碰触摸 QUP0/GPI）。
+- 测试刷机：手机进 Android 后 `FUXI_KEEP=1 FUXI_SSH_WAIT=240 scripts/fuxi-test-recovery.sh <镜像>`；本机 fastboot 枚举不稳。
+- 待做：initramfs 从内核拆成条目 initrd；`~/.cache/fuxi-split`（2.3 GB）可清。
+
 ## 下一步
 1. 只读查卡 2 IMS（交接 §9.1–9.2）。
 2. 5G 按信号自动回切（只有设计，交接 §9.3；会断网约 3 s，先问用户）。

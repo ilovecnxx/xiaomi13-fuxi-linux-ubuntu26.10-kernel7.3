@@ -1,0 +1,18 @@
+# 装到 /etc/systemd/system/，systemctl enable。
+# 目标系统正常起到 multi-user 后删 /boot/fuxi/tries，shim 就继续用默认条目；
+# 默认条目连续 2 次没走到这里，shim 自动切到回退条目（见 scripts/fuxi-shim/init）。
+# fuxi.shim：shim 应急模式（shim 内核直接进根分区）不算确认。
+# fuxi.noconfirm：试新内核但不确认（下一次重启照样计数），也用于测试回退。
+[Unit]
+Description=fuxi: confirm kexec boot entry (clear /boot/fuxi/tries so the shim keeps the default)
+After=multi-user.target
+ConditionKernelCommandLine=!fuxi.shim
+ConditionKernelCommandLine=!fuxi.noconfirm
+ConditionPathExists=/boot/fuxi/tries
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f /boot/fuxi/tries
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,155 @@
+#!/bin/busybox sh
+# fuxi 引导层（shim）initramfs 的 /init：ABL → shim 内核（recovery_b）→ 本脚本 → kexec 根分区 /boot 里的内核。
+# 构建：scripts/fuxi-build-shim.sh；DTB：sm8550-xiaomi-fuxi-shim.dts（不起 ADSP/基带/PCIe，nolpi）。
+#
+# 根分区（/dev/sda33）/boot/fuxi/ 布局：
+#   default             默认条目名（一行）
+#   fallback            回退条目名（可选）
+#   tries               未确认的启动次数：shim 每次 +1，目标系统启动成功后由 fuxi-boot-ok.service 删除
+#   default.failed      自动回退时记下被放弃的条目名
+#   last-shim.log       最近一次 shim 的内核日志
+#   <条目>/Image（未压缩：这个静态 kexec 的 -c 路径不解压 Image.gz，fuxi-kernel-install 装时解压）、<条目>/*.dtb（恰好一个）、<条目>/cmdline（一行）、<条目>/initrd（可选）
+# tries 到 2（默认条目连续两次没确认）且有 fallback：default 改成 fallback，记 default.failed。
+#
+# 主机调试：USB 被主机枚举时留 3 s 窗口，串口 shell 里 `touch /tmp/stay` 留在 shim；
+#   之后 `touch /tmp/go` 继续 kexec，`touch /tmp/rescue` 进应急模式。
+# 应急模式：用 shim 内核直接 switch_root 进 UFS 上的系统（没有 ADSP/基带/WiFi，但能 ssh 修复 /boot）。
+# 没有可用条目、kexec 失败时也进应急模式。
+/bin/busybox --install -s /bin
+mkdir -p /proc /sys /dev /tmp /newroot
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+log() { echo "FUXI_SHIM: $*" > /dev/kmsg; }
+log "start $(cat /proc/sys/kernel/osrelease)"
+printf '\033[2J\033[H' > /dev/tty1 2>/dev/null
+
+ROOTDEV=/dev/sda33
+B=/newroot/boot/fuxi
+
+# ---- 串口 shell 与主机窗口 ----
+n=0
+while [ ! -e /dev/ttyGS0 ] && [ "$n" -lt 50 ]; do sleep 0.2; n=$((n + 1)); done
+if [ -e /dev/ttyGS0 ]; then
+  ( while [ ! -e /tmp/done ]; do
+      setsid -c /bin/sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1 ||
+        setsid /bin/sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1
+      sleep 1
+    done ) &
+  SHELL_LOOP=$!
+  win=0
+  n=0
+  while [ "$n" -lt 10 ]; do
+    grep -qx configured /sys/class/udc/*/state 2>/dev/null && { win=15; break; }
+    sleep 0.1
+    n=$((n + 1))
+  done
+  n=0
+  while [ "$n" -lt "$win" ] && [ ! -e /tmp/stay ]; do sleep 0.2; n=$((n + 1)); done
+  if [ -e /tmp/stay ]; then
+    log "host stay: touch /tmp/go (kexec) or /tmp/rescue"
+    while [ ! -e /tmp/go ] && [ ! -e /tmp/rescue ]; do sleep 0.5; done
+  fi
+fi
+
+# 串口 shell 让出 ttyGS0（busybox 没有 pkill：扫 /proc/*/fd）
+release_tty() {
+  : > /tmp/done
+  [ -n "${SHELL_LOOP:-}" ] && kill -KILL "$SHELL_LOOP" 2>/dev/null
+  for d in /proc/[0-9]*; do
+    for f in "$d"/fd/*; do
+      case "$(readlink "$f" 2>/dev/null)" in
+        /dev/ttyGS0) p=${d#/proc/}; [ "$p" != "$$" ] && kill -KILL "$p" 2>/dev/null ;;
+      esac
+    done
+  done
+}
+
+save_log() { dmesg > "$B/last-shim.log" 2>/dev/null; sync; }
+
+rescue() {
+  log "RESCUE: $*"
+  if grep -q ' /newroot ' /proc/mounts && [ -x /newroot/lib/systemd/systemd ]; then
+    save_log
+    release_tty
+    mount --move /dev /newroot/dev
+    mount --move /proc /newroot/proc
+    mount --move /sys /newroot/sys
+    exec switch_root /newroot /lib/systemd/systemd
+  fi
+  log "RESCUE failed: serial shell only, reboot in 300 s"
+  ( sleep 300; reboot -f ) &
+  while true; do
+    setsid -c /bin/sh -i </dev/ttyGS0 >/dev/ttyGS0 2>&1 || sleep 5
+  done
+}
+
+# ---- 挂根分区 ----
+n=0
+while [ ! -b "$ROOTDEV" ] && [ "$n" -lt 100 ]; do sleep 0.2; n=$((n + 1)); done
+mount -t ext4 -o rw,noatime "$ROOTDEV" /newroot || rescue "mount $ROOTDEV failed"
+[ -e /tmp/rescue ] && rescue "requested by host"
+
+# ---- 选条目（启动计数 + 自动回退）----
+mkdir -p "$B"
+DEF=$(cat "$B/default" 2>/dev/null)
+FB=$(cat "$B/fallback" 2>/dev/null)
+TRIES=$(cat "$B/tries" 2>/dev/null)
+case "$TRIES" in ''|*[!0-9]*) TRIES=0 ;; esac
+if [ "$TRIES" -ge 2 ] && [ -n "$FB" ] && [ "$FB" != "$DEF" ]; then
+  log "default '$DEF' not confirmed after $TRIES boots -> fallback '$FB'"
+  echo "$DEF" > "$B/default.failed"
+  echo "$FB" > "$B/default"
+  DEF=$FB
+  TRIES=0
+fi
+echo $((TRIES + 1)) > "$B/tries"
+sync
+
+# kexec_load_entry <条目名>
+kexec_load_entry() {
+  e=$1
+  d=$B/$e
+  [ -n "$e" ] && [ -d "$d" ] || { log "entry '$e' missing"; return 1; }
+  k=$d/Image
+  [ -f "$k" ] || k=$d/Image.gz
+  [ -f "$k" ] || { log "$e: no Image"; return 1; }
+  dtb=
+  for f in "$d"/*.dtb; do [ -f "$f" ] && dtb=$f; done
+  [ -n "$dtb" ] || { log "$e: no dtb"; return 1; }
+  cl=$(cat "$d/cmdline" 2>/dev/null)
+  [ -n "$cl" ] || { log "$e: no cmdline"; return 1; }
+  # 告诉目标系统本次是哪个条目（fuxi-kernel-install 据此定回退条目）
+  cl="$cl fuxi.entry=$e"
+  if [ -f "$d/initrd" ]; then
+    set -- --initrd="$d/initrd"
+  else
+    set --
+  fi
+  log "kexec load $e: ${k##*/} ${dtb##*/} $*"
+  # 必须强制经典 kexec_load（-c）：arm64 的 kexec_file_load 不收 DTB，内核直接复制自己正在用的
+  # DT（即 shim 的 DT）给新内核，--dtb 被忽略。kexec-tools 2.0.28 默认 -a（先试 kexec_file_load），
+  # 所以只写 -l 也会走 file 接口（11-07 实测两次目标内核都跑成了 shim DT）
+  kexec -c -l "$k" --dtb="$dtb" --command-line="$cl" "$@" || { log "$e: kexec load failed"; return 1; }
+  log "loaded $e (try $((TRIES + 1)))"
+}
+
+if kexec_load_entry "$DEF"; then
+  :
+elif [ -n "$FB" ] && [ "$FB" != "$DEF" ] && kexec_load_entry "$FB"; then
+  # 默认条目本身就坏了（缺文件 / 加载失败），不会自己好：直接改默认，免得每次都静默走回退
+  log "default '$DEF' not loadable -> fallback '$FB' becomes default"
+  echo "$DEF" > "$B/default.failed"
+  echo "$FB" > "$B/default"
+else
+  rescue "no bootable entry"
+fi
+save_log
+release_tty
+sync
+umount /newroot || mount -o remount,ro /newroot
+log "kexec -e"
+kexec -e
+# 只有失败才会回到这里
+mount -t ext4 -o rw,noatime "$ROOTDEV" /newroot 2>/dev/null
+rescue "kexec -e returned"
