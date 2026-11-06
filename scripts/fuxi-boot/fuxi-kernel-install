@@ -2,7 +2,9 @@
 # fuxi 内核条目管理（手机上运行，装到 /usr/local/sbin/）。条目在 /boot/fuxi/<条目>/{Image,<dtb>,cmdline}，两种引导层都用：
 #   - shim（kexec）：读 /boot/fuxi/{default,fallback,tries}，布局见 scripts/fuxi-shim/init
 #   - 主线 U-Boot：读本脚本生成的 /boot/extlinux/extlinux.conf（default 第一、fallback 第二、其余按名字），
-#     U-Boot 不能写 ext4 → 没有自动回退，靠 extlinux 菜单（音量键选、电源键确认）手动选回退条目Debian 内核包（make bindeb-pkg）装/卸时由 /etc/kernel/post{inst,rm}.d/zz-fuxi 调用。
+#     和 /boot/extlinux/fallback.conf（默认=回退条目）。自动回退靠 fuxi-bootcount 的计数块：换默认条目时 arm，
+#     U-Boot 每次启动未确认的默认条目 tries+1，到 2 改用 fallback.conf；fuxi-boot-ok.service 确认
+# Debian 内核包（make bindeb-pkg）装/卸时由 /etc/kernel/post{inst,rm}.d/zz-fuxi 调用。
 #
 # 用法:
 #   fuxi-kernel-install add <条目> <Image|Image.gz|vmlinuz> [<dtb>]（Image.gz 会解压）
@@ -35,13 +37,26 @@ running_entry() { tr ' ' '\n' < /proc/cmdline | sed -n 's/^fuxi\.entry=//p' | ta
 gen_extlinux() {
   def=$(get default); fb=$(get fallback)
   [ -n "$def" ] && [ -d "$B/$def" ] || { say "没有默认条目，不生成 extlinux.conf"; return 0; }
-  x=/boot/extlinux; seen=
+  x=/boot/extlinux
   mkdir -p "$x"
+  ext_conf "$def" "$def" "$fb" > "$x/.extlinux.conf.tmp"
+  mv -f "$x/.extlinux.conf.tmp" "$x/extlinux.conf"
+  if [ -n "$fb" ] && [ -f "$B/$fb/Image" ]; then
+    ext_conf "$fb" "$def" "$fb" > "$x/.fallback.conf.tmp"
+    mv -f "$x/.fallback.conf.tmp" "$x/fallback.conf"
+  else
+    rm -f "$x/fallback.conf"
+  fi
+  sync
+}
+# ext_conf <本文件的默认 label> <默认条目> <回退条目>
+ext_conf() {
+  first=$1; def=$2; fb=$3; seen=
   {
     echo "# 由 fuxi-kernel-install 生成，别手改（改 /etc/fuxi/cmdline 后重新 add，或 set-default）"
     echo "menu title fuxi Linux (default=$def fallback=${fb:--})"
     echo "timeout 30"
-    echo "default $def"
+    echo "default $first"
     for e in "$def" "$fb" $(ls "$B"); do
       [ -n "$e" ] && [ -f "$B/$e/Image" ] && [ -s "$B/$e/cmdline" ] || continue
       case " $seen " in *" $e "*) continue ;; esac
@@ -56,9 +71,13 @@ gen_extlinux() {
       echo "	fdt $B/$e/$d"
       echo "	append $(head -1 "$B/$e/cmdline") fuxi.entry=$e fuxi.boot=extlinux"
     done
-  } > "$x/.extlinux.conf.tmp"
-  mv -f "$x/.extlinux.conf.tmp" "$x/extlinux.conf"
-  sync
+  }
+}
+# 默认条目换成了没在跑的条目 → 下次启动要确认（U-Boot 计数）
+arm_bootcount() {
+  [ "$1" != "$(running_entry)" ] || return 0
+  [ -x /usr/local/sbin/fuxi-bootcount ] || return 0
+  /usr/local/sbin/fuxi-bootcount arm || say "警告：fuxi-bootcount arm 失败（没有自动回退）"
 }
 
 cmd_add() {
@@ -96,6 +115,7 @@ cmd_add() {
   [ "$(get default.failed)" != "$e" ] || rm -f "$B/default.failed"
   sync
   gen_extlinux
+  arm_bootcount "$e"
   say "已装 $e（$kn + ${dtb##*/}），默认=$e 回退=$(get fallback)"
 }
 
@@ -126,6 +146,7 @@ cmd_set() {
   fi
   sync
   gen_extlinux
+  [ "$1" != default ] || arm_bootcount "$2"
   say "$1=$2"
 }
 

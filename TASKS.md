@@ -27,7 +27,10 @@
 - 待做：initramfs 从内核拆成条目 initrd；`~/.cache/fuxi-split`（2.3 GB）可清。
 - **11-07 深夜：recovery_b = 主线 U-Boot `work/kbuild/abl-fuxi-uboot3.img`（57da97c5…）**，取代 shim：
   ABL → U-Boot（`scripts/fuxi-build-uboot.sh`，env `scripts/fuxi-uboot/fuxi.env`）→ 自动 sysboot `/boot/extlinux/extlinux.conf`
-  （fuxi-kernel-install 生成）→ 内核。按住音量下 = U-Boot 菜单；extlinux 菜单 3 s 可选回退条目。无自动回退。
+  （fuxi-kernel-install 生成）→ 内核。按住音量下 = U-Boot 菜单；extlinux 菜单 3 s 可选回退条目。
+  **现 recovery_b = uboot4（b30bfcb3…）**：带自动回退（`fuxi-bootcount` 计数块，2 次未确认 → fallback.conf），三种情况实测通过。
+  内核树收敛：分支 `fuxi/consolidate-7.4`（单文件 `sm8550-xiaomi-fuxi.dts`，dtc 只差 bootargs；`fuxi_defconfig` 与 deb2 零差异）。
+  待做：①initramfs-tools + `/etc/kernel/cmdline`（root=PARTUUID）；deb 改用 fuxi_defconfig + 新 DTB 名。
   回滚 shim：`scripts/fuxi-test-recovery.sh work/kbuild/abl-fuxi-shim7.img`。详情 `docs/计划-标准化启动-20261107.md` ③。
 
 ## 下一步
