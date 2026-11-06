@@ -51,6 +51,7 @@ if [ "${2:-}" != "--no-kernel" ]; then
               -e SND_SOC_WCD938X_SDW -e SND_SOC_LPASS_RX_MACRO -e SND_SOC_LPASS_TX_MACRO -e SND_SOC_LPASS_VA_MACRO
               -e PINCTRL_LPASS_LPI -e PINCTRL_SM8550_LPASS_LPI -e SND_SOC_SIMPLE_MUX)
   case "$FUXI_DTB" in
+    *-audio-disp-usbc-dp) VARIANT_CFG=("${DISP_CFG[@]}" "${AUDIO_CFG[@]}" "${USBC_CFG[@]}" -e DRM_MSM_DP) ;;
     *-audio-disp-usbc) VARIANT_CFG=("${DISP_CFG[@]}" "${AUDIO_CFG[@]}" "${USBC_CFG[@]}" -d DRM_MSM_DP) ;;
     *-audio-disp) VARIANT_CFG=("${DISP_CFG[@]}" "${AUDIO_CFG[@]}" -d DRM_MSM_DP) ;;
     *-disp) VARIANT_CFG=("${DISP_CFG[@]}" -d DRM_MSM_DP) ;;

@@ -1,0 +1,31 @@
+#!/usr/bin/busybox-static sh
+# fuxi 主线内核：ttyGS0 上的 agetty（fuxi-serial-shell）会一直占着 gserial 端口，
+# 导致 dwc3 切 host 时 drd_work 卡在 gserial_free_port 永远等不到。g_cdc/u_serial
+# 是内建的，没法 rmmod 掉 ACM，所以只能保证切换时 ttyGS0 没人打开：
+#   - 默认不开 fuxi-serial-shell（deploy 时 systemctl disable）；
+#   - 需要 USB 串口 console 时才手动 on，用完 off 再切 host。
+# 用法: fuxi-usb-serial on|off|status
+ROLE=/sys/class/usb_role/a600000.usb-role-switch/role
+
+case "$1" in
+  on)
+    role=$(cat "$ROLE" 2>/dev/null)
+    if [ "$role" != device ]; then
+      echo "role=$role（不是 device）：先把 USB-C 切回 device 再开串口 console" >&2
+      exit 1
+    fi
+    systemctl enable --now fuxi-serial-shell
+    ;;
+  off)
+    systemctl disable --now fuxi-serial-shell
+    ;;
+  status)
+    echo "role=$(cat "$ROLE" 2>/dev/null)"
+    echo "enabled=$(systemctl is-enabled fuxi-serial-shell 2>/dev/null)"
+    echo "active=$(systemctl is-active fuxi-serial-shell 2>/dev/null)"
+    ;;
+  *)
+    echo "usage: fuxi-usb-serial on|off|status" >&2
+    exit 2
+    ;;
+esac
