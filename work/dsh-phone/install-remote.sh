@@ -268,11 +268,11 @@ WantedBy=graphical-session.target
 APPUNIT
 # 用 -m 修正 %U（systemd %U 在当前用户 service 中可用；为兼容再显式替换）
 sed -i "s|/run/user/%U|/run/user/${USER_UID}|g" "$HOME_DIR/.config/systemd/user/dsh-app-window.service"
-# 把运行器也装到用户目录（service 用 %h/.local/bin）
+# 运行器只保留一份：service 用 %h/.local/bin，不再在 /usr/local/bin 留副本
 install -m 0755 /usr/local/bin/dsh-app-window-run "$HOME_DIR/.local/bin/dsh-app-window-run" 2>/dev/null || true
 sed -i "s|@RUN_UID@|${USER_UID}|g; s|@RUN_HOME@|${HOME_DIR}|g; s|@PORT@|${PORT}|g" "$HOME_DIR/.local/bin/dsh-app-window-run" 2>/dev/null || true
-# 同时修正 /usr/local 版本占位
-sed -i "s|@RUN_UID@|${USER_UID}|g; s|@RUN_HOME@|${HOME_DIR}|g; s|@PORT@|${PORT}|g" /usr/local/bin/dsh-app-window-run 2>/dev/null || true
+# 清理历史遗留的重复副本（旧版本会同时装到 /usr/local/bin）
+rm -f /usr/local/bin/dsh-app-window-run 2>/dev/null || true
 
 # API key（用户级，fuxi 可读）
 if [ -n "${API_KEY:-}" ]; then
