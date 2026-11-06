@@ -1,0 +1,17 @@
+# 常驻 qmi-proxy。
+# 背景（11-06 重启实测）：qmi-proxy 默认由第一个带 PROXY 标志的客户端拉起，并留在该客户端所在服务的 cgroup 里。
+# 开机时第一个客户端是 fuxi-sub2-ims-heal.sh（Type=simple，几分钟后退出），它一退出，systemd 就把整个 cgroup
+# 连同 qmi-proxy 一起杀掉 → MM “port qrtr0 no longer controllable, reprobing”、81voltd 丢 QMI、卡 2 IMS 掉线。
+# 让 qmi-proxy 先于所有 QMI 客户端独立常驻，客户端就只会连上它，不会再自己拉起一个。
+[Unit]
+Description=fuxi resident qmi-proxy (so no short-lived client owns it)
+After=qrtr-ns.service
+Before=ModemManager.service 81voltd.service fuxi-sub2-ims-heal.service fuxi-modem-keeper.service
+
+[Service]
+ExecStart=/usr/libexec/qmi-proxy --no-exit
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target ModemManager.service

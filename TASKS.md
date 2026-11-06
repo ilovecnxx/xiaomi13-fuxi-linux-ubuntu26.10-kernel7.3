@@ -52,9 +52,15 @@
   - 卡2 收短信：16:42:27 "测试"（WMS event-report，解析正常）。
   - **注意**：MM 也能看到卡2 的来电（Call/6 ringing-in，但它 accept 会失败："not ringing"）。gnome-calls 会为卡2 来电响铃，可接听按钮无效。以后要么让 MM 过滤 sub1，要么卡2 接听走 `fuxi-qmi-sub2.py`。
 - 本机号码查不到：EF_MSISDN 是空的，DMS 返回 NotProvisioned，MM own-numbers 也是空的。所以双卡互拨还没做。
-- 未测：双卡长时间待机；重启后自动恢复（provision service 首次开机运行）。
+- **重启自动恢复（11-06 实测，两次 `systemctl reboot --reboot-argument=recovery`）**：
+  - 第 1 次（16:45）：provision 首次开机运行正常（两个 GW 会话都已存在，无需激活）；约 16:46 数据 + sub0 IMS 起来。**但 16:48:58 heal 服务退出的同一秒 MM 报 qrtr0 no longer controllable 并重探测**（Modem/0→1，数据接口变 qmapmux1.x），内核里没有 modem 崩溃。
+  - 根因：qmi-proxy 是被第一个带 PROXY 标志的客户端（heal 脚本里的 fuxi-qmi-ims.py）拉起的，留在 heal 服务的 cgroup 里，heal 一退出就被 systemd 一并杀掉。
+  - 修复：`work/rootfs-overlay/etc/systemd/system/fuxi-qmi-proxy.service`（`qmi-proxy --no-exit` 常驻，Before= MM/81voltd/heal/keeper）。
+  - 第 2 次（16:5x）：修复后 332 s 时 qmi-proxy 在 `fuxi-qmi-proxy.service` 的 cgroup；heal 正常退出；MM 0 次重探测；Modem/0 connected 5gnr；NM fuxi-mobile-ct 激活；ping 通；sub0、sub1 IMS 都已注册。
+- 未测：双卡长时间待机。
 - 推测/待查：通话音频仍卡在语音 TX -22（语音线），对方听不到。
-- 未提交：上面这些 overlay/脚本、`hexagonrpcd` 覆盖、补丁导出。
+- 已提交（6988a2f 及之后）。
+- 用户新需求（11-06 17:0x）：双卡要能设置上网卡和拨号卡；开机时开机动画到桌面之间有黑屏，进桌面后要按两次电源键才亮屏。
 
 ## 下一步（USB 线，细节见交接 §9）
 1. 插 U 盘/SSD 复测枚举稳定性（等用户物理操作）：`lsusb -t`、`lsblk`、`dmesg | grep -iE 'uas|scsi|usb [12]-'`；确认 repeater host 调参是否解决 #274 的 EPROTO/掉线。
