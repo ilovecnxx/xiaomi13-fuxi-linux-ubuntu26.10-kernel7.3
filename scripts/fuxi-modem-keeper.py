@@ -23,7 +23,7 @@ STALL_LIMIT = int(os.environ.get("FUXI_STALL_LIMIT", "300"))
 MIN_GAP = 120
 MAX_GAP = 1800
 STABLE_RESET = 600
-# 3. 81voltd 在跑时，注册后 IMS_LIMIT 秒 IMSA 仍未注册，做一次射频循环让基带重新请求 IMS PDN（每个 modem 最多 IMS_MAX_CYCLES 次）
+# 3. 81voltd 在跑时，注册后 IMS_LIMIT 秒卡 1 IMSA 仍未注册：第 1 次重启 81voltd，第 2 次射频循环（每个 modem / 每次换上网卡后最多 IMS_MAX_CYCLES 次）
 IMS_TOOL = os.environ.get("FUXI_IMS_TOOL", "/usr/local/sbin/fuxi-qmi-ims.py")
 IMS_LIMIT = int(os.environ.get("FUXI_IMS_LIMIT", "180"))
 IMS_POLL = 30
@@ -34,7 +34,7 @@ BOOT_HOLDOFF = int(os.environ.get("FUXI_BOOT_HOLDOFF", "300"))
 SUB2_QUIET = int(os.environ.get("FUXI_SUB2_QUIET", "180"))
 
 # MMModemState
-ST_ENABLED, ST_SEARCHING = 6, 7
+ST_DISABLED, ST_ENABLED, ST_SEARCHING = 3, 6, 7
 # MMModem3gppRegistrationState：home、roaming、sms-only、csfb-not-preferred
 REGISTERED = {1, 5, 6, 7, 9, 10}
 # MMModemPowerState
@@ -48,6 +48,14 @@ def uptime():
 
 def log(msg):
     print(f"[{uptime():.2f}] {msg}", flush=True)
+
+
+def datacard():
+    try:
+        with open("/var/lib/fuxi/datacard") as f:
+            return f.read().strip()
+    except OSError:
+        return "1"
 
 
 def sub2_retrying():
@@ -75,6 +83,7 @@ class Keeper:
         self.ims2_checked = 0.0
         self.ims2_last = None
         self.ims_held = False
+        self.datacard = datacard()
         self.bus.signal_subscribe(MM, "org.freedesktop.DBus.Properties", "PropertiesChanged",
                                   None, None, Gio.DBusSignalFlags.NONE, self.on_props)
 
@@ -107,18 +116,49 @@ class Keeper:
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"usage data failed: {e}")
 
+    def modem_state(self):
+        try:
+            r = self.bus.call_sync(MM, self.path, "org.freedesktop.DBus.Properties", "Get",
+                                   GLib.Variant("(ss)", (IF_MODEM, "State")), None,
+                                   Gio.DBusCallFlags.NONE, 5000, None)
+            return r.unpack()[0]
+        except GLib.Error:
+            return None
+
     def cycle(self):
+        # 先关 NM 的 WWAN：否则 Enable(false) 之后 NM 的 fuxi-mobile-ct 自动连接会在 1 ms 内 simple-connect
+        # 把 modem 重新 enable，SetPowerState(low) 报 WrongState，循环只做了一半（11-06 23:03:58 实测）
         log(f"radio cycle start (gap {self.gap}s)")
         self.busy = True
+        voltd = subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode == 0
+        if voltd:
+            # 按 81voltd → MM → 81voltd 的顺序恢复，和 fuxi-simctl reconnect 一样
+            subprocess.run(["systemctl", "stop", "81voltd"], timeout=60)
         try:
-            self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (False,)))
+            subprocess.run(["nmcli", "radio", "wwan", "off"], timeout=20)
+            for _ in range(20):
+                st = self.modem_state()
+                if st is not None and st <= ST_DISABLED:
+                    break
+                time.sleep(0.5)
+            if (self.modem_state() or 0) > ST_DISABLED:
+                self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (False,)))
             self.call(self.path, IF_MODEM, "SetPowerState", GLib.Variant("(u)", (PWR_LOW,)))
             time.sleep(5)
-            self.call(self.path, IF_MODEM, "SetPowerState", GLib.Variant("(u)", (PWR_ON,)))
-            self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (True,)))
+            log("radio cycle: power low done")
+        except (GLib.Error, OSError, subprocess.TimeoutExpired) as e:
+            log(f"radio cycle error: {getattr(e, 'message', e)}")
+        finally:
+            subprocess.run(["nmcli", "radio", "wwan", "on"], timeout=20)
+        try:
+            # Enable 自己会上电；NM 打开 WWAN 后可能已经在 enable，WrongState 忽略
+            if (self.modem_state() or 0) <= ST_DISABLED:
+                self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (True,)))
             log("radio cycle done")
         except GLib.Error as e:
-            log(f"radio cycle error: {e.message}")
+            log(f"radio cycle enable: {e.message}")
+        if voltd:
+            subprocess.run(["systemctl", "start", "81voltd"], timeout=60)
         self.busy = False
         self.set_data_centric()
         self.last_cycle = time.monotonic()
@@ -160,10 +200,25 @@ class Keeper:
             self.ims2_last = st
 
     def check_ims(self, now):
-        if self.ims_ok or self.ims_cycles >= IMS_MAX_CYCLES or now - self.ims_checked < IMS_POLL:
+        if now - self.ims_checked < IMS_POLL:
             return
         self.ims_checked = now
+        dc = datacard()
+        if dc != self.datacard:
+            # 换上网卡会断掉卡 1 的 IMS PDN（ims_ok 不能一直算数），VoLTE 计时从切换时刻重新算
+            log(f"data card {self.datacard} -> {dc}: restart ims timer")
+            self.datacard = dc
+            self.reg_since, self.ims_ok, self.ims_cycles, self.ims_held = now, False, 0, False
+            return
+        if self.ims_ok or self.ims_cycles >= IMS_MAX_CYCLES:
+            return
         if subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode != 0:
+            return
+        if dc == "2":
+            # 卡槽 2 上网（DDS=2）时 modem 不给卡 1（电信）起 IMS PDN，循环射频没用，只会把卡 2 的数据和 IMS 一起打断
+            if not self.ims_held:
+                log("ims trigger held: data card is slot 2 (sim1 IMS unavailable while DDS=2)")
+                self.ims_held = True
             return
         ok = self.ims_registered()
         if ok:
@@ -180,6 +235,13 @@ class Keeper:
         self.ims_held = False
         self.ims_cycles += 1
         log(f"trigger: ims not registered {int(now - self.reg_since)}s after network registration")
+        if self.ims_cycles == 1:
+            # 11-06 23:19 实测：DDS 1→2→1 之后 modem IMS 栈不再向 81voltd 要卡 1 的连接，射频循环也没用；
+            # 只重启 81voltd，30 s 内两张卡都注册
+            log("restart 81voltd")
+            subprocess.run(["systemctl", "restart", "81voltd"], timeout=60)
+            self.reg_since = time.monotonic()
+            return
         self.cycle()
 
     def tick(self):

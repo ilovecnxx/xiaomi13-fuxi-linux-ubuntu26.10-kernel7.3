@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>fuxi</vendor>
+  <action id="org.fuxi.simctl.run">
+    <description>Change dual-SIM settings</description>
+    <description xml:lang="zh_CN">更改双卡设置</description>
+    <message>Authentication is required to change dual-SIM settings</message>
+    <message xml:lang="zh_CN">更改双卡设置需要认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/sbin/fuxi-simctl</annotate>
+  </action>
+</policyconfig>

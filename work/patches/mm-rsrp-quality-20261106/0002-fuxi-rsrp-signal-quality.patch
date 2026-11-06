@@ -1,0 +1,84 @@
+--- a/b/src/mm-broadband-modem-qmi.c	2026-11-06 22:59:03.904480320 +0800
++++ b/src/mm-broadband-modem-qmi.c	2026-11-06 22:59:03.916313949 +0800
+@@ -1527,6 +1527,32 @@
+     return FALSE;
+ }
+ 
++/* fuxi: Android-style bars. QMI NR5G quality above is MIN(rsrp, snr, rsrq) and LTE uses
++ * wideband RSSI, which gives ~45-50% even at RSRP -65 dBm; use the serving cell RSRP
++ * instead (-125 dBm -> 0%, -75 dBm -> 100%), the higher of LTE / NR5G. */
++#define FUXI_RSRP_Q_MIN -125
++#define FUXI_RSRP_Q_MAX -75
++
++static gboolean
++fuxi_rsrp_quality (MMBroadbandModemQmi *self,
++                   gint16               lte_rsrp,
++                   gint16               nr5g_rsrp,
++                   guint8              *out_quality)
++{
++    gint16 best = G_MININT16;
++
++    if (lte_rsrp <= RSRP_MAX && lte_rsrp >= RSRP_MIN)
++        best = MAX (best, lte_rsrp);
++    if (nr5g_rsrp <= RSRP_MAX && nr5g_rsrp >= RSRP_MIN)
++        best = MAX (best, nr5g_rsrp);
++    if (best == G_MININT16)
++        return FALSE;
++    *out_quality = (guint8) ((CLAMP (best, FUXI_RSRP_Q_MIN, FUXI_RSRP_Q_MAX) - FUXI_RSRP_Q_MIN) * 100 /
++                             (FUXI_RSRP_Q_MAX - FUXI_RSRP_Q_MIN));
++    mm_obj_dbg (self, "fuxi: RSRP (LTE %d, 5G %d) dBm --> %u%%", lte_rsrp, nr5g_rsrp, *out_quality);
++    return TRUE;
++}
++
+ static gboolean
+ signal_info_get_quality (MMBroadbandModemQmi *self,
+                          QmiMessageNasGetSignalInfoOutput *output,
+@@ -1537,6 +1563,7 @@
+     gint8 gsm_rssi = 0;
+     gint8 wcdma_rssi = 0;
+     gint8 lte_rssi = 0;
++    gint16 lte_rsrp = RSRP_MAX + 1;
+     gint16 nr5g_rsrp = RSRP_MAX + 1;
+     /* Multiplying SNR_MAX by 10 as QMI gives SNR level
+      * as a scaled integer in units of 0.1 dB. */
+@@ -1547,10 +1574,13 @@
+     qmi_message_nas_get_signal_info_output_get_hdr_signal_strength (output, &evdo_rssi, NULL, NULL, NULL, NULL);
+     qmi_message_nas_get_signal_info_output_get_gsm_signal_strength (output, &gsm_rssi, NULL);
+     qmi_message_nas_get_signal_info_output_get_wcdma_signal_strength (output, &wcdma_rssi, NULL, NULL);
+-    qmi_message_nas_get_signal_info_output_get_lte_signal_strength (output, &lte_rssi, NULL, NULL, NULL, NULL);
++    qmi_message_nas_get_signal_info_output_get_lte_signal_strength (output, &lte_rssi, NULL, &lte_rsrp, NULL, NULL);
+     qmi_message_nas_get_signal_info_output_get_5g_signal_strength (output, &nr5g_rsrp, &nr5g_snr, NULL);
+     qmi_message_nas_get_signal_info_output_get_5g_signal_strength_extended (output, &nr5g_rsrq, NULL);
+ 
++    if (fuxi_rsrp_quality (self, lte_rsrp, nr5g_rsrp, out_quality))
++        return TRUE;
++
+     /* Scale to integer values in units of 1 dB/dBm, if any */
+     nr5g_snr = 0.1 * nr5g_snr;
+ 
+@@ -6333,6 +6363,7 @@
+     gint8               gsm_rssi = 0;
+     gint8               wcdma_rssi = 0;
+     gint8               lte_rssi = 0;
++    gint16              lte_rsrp = RSRP_MAX + 1;
+     gint16              nr5g_rsrp = RSRP_MAX + 1;
+     /* Multiplying SNR_MAX by 10 as QMI gives SNR level
+      * as a scaled integer in units of 0.1 dB. */
+@@ -6351,14 +6382,15 @@
+     qmi_indication_nas_signal_info_output_get_hdr_signal_strength (output, &evdo_rssi, NULL, NULL, NULL, NULL);
+     qmi_indication_nas_signal_info_output_get_gsm_signal_strength (output, &gsm_rssi, NULL);
+     qmi_indication_nas_signal_info_output_get_wcdma_signal_strength (output, &wcdma_rssi, NULL, NULL);
+-    qmi_indication_nas_signal_info_output_get_lte_signal_strength (output, &lte_rssi, NULL, NULL, NULL, NULL);
++    qmi_indication_nas_signal_info_output_get_lte_signal_strength (output, &lte_rssi, NULL, &lte_rsrp, NULL, NULL);
+     qmi_indication_nas_signal_info_output_get_5g_signal_strength (output, &nr5g_rsrp, &nr5g_snr, NULL);
+     qmi_indication_nas_signal_info_output_get_5g_signal_strength_extended (output, &nr5g_rsrq, NULL);
+ 
+     /* Scale to integer values in units of 1 dB/dBm, if any */
+     nr5g_snr = 0.1 * nr5g_snr;
+ 
+-    if (common_signal_info_get_quality (self,
++    if (fuxi_rsrp_quality (self, lte_rsrp, nr5g_rsrp, &quality) ||
++        common_signal_info_get_quality (self,
+                                         cdma1x_rssi,
+                                         evdo_rssi,
+                                         gsm_rssi,

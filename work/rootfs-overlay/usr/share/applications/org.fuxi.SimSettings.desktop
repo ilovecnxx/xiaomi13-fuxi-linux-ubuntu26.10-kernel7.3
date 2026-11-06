@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=双卡设置
+Name[en]=Dual SIM
+Comment=上网卡、拨号卡、5G 开关
+Exec=/usr/local/bin/fuxi-sim-settings
+Icon=phone
+Terminal=false
+Categories=Settings;Telephony;GTK;
+Keywords=SIM;sim;双卡;流量;上网卡;拨号卡;5G;
+StartupNotify=true
+X-Purism-FormFactor=Workstation;Mobile;

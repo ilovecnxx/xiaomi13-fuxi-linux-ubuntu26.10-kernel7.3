@@ -1,0 +1,8 @@
+// 双卡设置（fuxi-sim-settings → pkexec fuxi-simctl）：本机活动会话里的 fuxi 用户免密码。
+// 其他用户 / ssh 会话按 org.fuxi.simctl.policy 默认值走（需要管理员认证）。
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.fuxi.simctl.run" &&
+        subject.user == "fuxi" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

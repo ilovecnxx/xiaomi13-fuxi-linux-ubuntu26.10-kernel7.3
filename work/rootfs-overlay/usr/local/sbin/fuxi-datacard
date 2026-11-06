@@ -324,6 +324,10 @@ def set_slot(slot):
               "activated" in sh(f"nmcli -g GENERAL.STATE con show {NM_CON}").stdout)
         if ok:
             break
+    if slot == 1 and sh("systemctl is-active 81voltd").stdout.strip() == "active":
+        # DDS 2→1 之后 modem 不会自己再向 81voltd 要卡 1 的 IMS 连接（11-06 23:19 实测），重启 81voltd 后约 10–30 s 两张卡都注册
+        sh("systemctl restart 81voltd")
+        log("81voltd restarted (VoLTE re-registers in ~30 s)")
     status()
 
 

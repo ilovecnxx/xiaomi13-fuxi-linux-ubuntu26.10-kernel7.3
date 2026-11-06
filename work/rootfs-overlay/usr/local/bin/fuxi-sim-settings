@@ -1,0 +1,290 @@
+#!/usr/bin/python3
+# 双卡设置（GTK4 / libadwaita）：两张卡状态、上网卡、拨号卡、5G 开关、重新连接网络。
+# 所有读写都通过 pkexec /usr/local/sbin/fuxi-simctl（polkit 规则让活动会话里的 fuxi 免密码）。
+import json
+import os
+import sys
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gio, GLib, Gtk
+
+HELPER = "/usr/local/sbin/fuxi-simctl"
+REFRESH_S = 10
+IMS_TEXT = {"registered": "VoLTE 已注册", "not-registered": "VoLTE 未注册",
+            "registering": "VoLTE 注册中"}
+SIGNAL_ICON = ["none", "weak", "ok", "good", "excellent"]
+
+
+def helper_argv(args):
+    return ([HELPER] if os.geteuid() == 0 else ["pkexec", HELPER]) + list(args)
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="双卡设置", default_width=420, default_height=760)
+        self.state = None
+        self.updating = False
+        self.op_running = False
+        self.status_running = False
+
+        self.toasts = Adw.ToastOverlay()
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        self.spinner = Adw.Spinner(visible=False)
+        header.pack_start(self.spinner)
+        refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="刷新")
+        refresh.connect("clicked", lambda *_: self.refresh())
+        header.pack_end(refresh)
+        view.add_top_bar(header)
+        view.set_content(self.toasts)
+        self.set_content(view)
+
+        page = Adw.PreferencesPage()
+        self.toasts.set_child(page)
+
+        g = Adw.PreferencesGroup(title="SIM 卡")
+        self.sim_rows = []
+        for slot in (1, 2):
+            row = Adw.ActionRow(title=f"卡槽 {slot}", subtitle="读取中…")
+            icon = Gtk.Image(icon_name="network-cellular-acquiring-symbolic")
+            row.add_prefix(icon)
+            g.add(row)
+            self.sim_rows.append((row, icon))
+        page.add(g)
+
+        self.data_checks = self.choice_group(
+            page, "上网卡", "移动数据走哪张卡", self.on_data_toggled)
+        self.voice_checks = self.choice_group(
+            page, "拨号卡", "打电话默认用哪张卡；来电两张卡都能接", self.on_voice_toggled)
+
+        g = Adw.PreferencesGroup(title="5G", description="关闭后只用 4G。正在上网时不会马上切换，重新连接网络后生效。")
+        self.nr_rows = []
+        for slot in (1, 2):
+            row = Adw.SwitchRow(title=f"卡槽 {slot} 启用 5G")
+            row.connect("notify::active", self.on_nr_toggled, slot)
+            g.add(row)
+            self.nr_rows.append(row)
+        page.add(g)
+
+        g = Adw.PreferencesGroup(title="网络")
+        row = Adw.ActionRow(title="重新连接网络",
+                            subtitle="modem 重新上线，用来回到 5G 或排除故障。期间约 1–3 分钟不能上网和打电话。")
+        btn = Gtk.Button(label="重新连接", valign=Gtk.Align.CENTER)
+        btn.add_css_class("destructive-action")
+        btn.connect("clicked", lambda *_: self.confirm_reconnect())
+        row.add_suffix(btn)
+        self.reconnect_btn = btn
+        g.add(row)
+        page.add(g)
+
+        self.controls = self.data_checks + self.voice_checks + self.nr_rows + [btn]
+        self.set_controls(False)
+        self.refresh()
+        GLib.timeout_add_seconds(REFRESH_S, self.on_tick)
+
+    def choice_group(self, page, title, desc, handler):
+        g = Adw.PreferencesGroup(title=title, description=desc)
+        checks, first = [], None
+        for slot in (1, 2):
+            check = Gtk.CheckButton(valign=Gtk.Align.CENTER)
+            if first:
+                check.set_group(first)
+            first = first or check
+            row = Adw.ActionRow(title=f"卡槽 {slot}", activatable_widget=check)
+            row.add_prefix(check)
+            check.connect("toggled", handler, slot)
+            checks.append(check)
+            g.add(row)
+        page.add(g)
+        return checks
+
+    # ---- 调助手 ----
+    def run_helper(self, args, done):
+        try:
+            proc = Gio.Subprocess.new(helper_argv(args),
+                                      Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        except GLib.Error as e:
+            done(-1, "", e.message)
+            return
+
+        def finish(p, res):
+            try:
+                _, out, err = p.communicate_utf8_finish(res)
+            except GLib.Error as e:
+                done(-1, "", e.message)
+                return
+            done(p.get_exit_status() if p.get_if_exited() else -1, out or "", err or "")
+        proc.communicate_utf8_async(None, None, finish)
+
+    def refresh(self):
+        if self.status_running:
+            return
+        self.status_running = True
+
+        def done(rc, out, err):
+            self.status_running = False
+            if rc != 0:
+                self.toast(f"读取状态失败：{last_line(err) or rc}")
+                return
+            try:
+                self.apply(json.loads(out))
+            except ValueError:
+                self.toast("读取状态失败：输出无法解析")
+        self.run_helper(["status"], done)
+
+    def on_tick(self):
+        if self.get_visible() and not self.op_running:
+            self.refresh()
+        return True
+
+    def operate(self, args, ok_text, wait_text):
+        self.op_running = True
+        self.set_controls(False)
+        self.spinner.set_visible(True)
+        self.toast(wait_text)
+
+        def done(rc, out, err):
+            self.op_running = False
+            self.spinner.set_visible(False)
+            if rc == 0:
+                self.toast(ok_text)
+            elif rc == 75:
+                self.toast("另一个设置操作正在进行，请稍后再试")
+            elif rc in (126, 127):
+                self.toast("没有权限（polkit 拒绝）")
+            else:
+                self.toast(f"失败：{last_line(err) or rc}")
+            self.refresh()
+        self.run_helper(args, done)
+
+    # ---- 界面 ----
+    def apply(self, st):
+        self.state = st
+        self.updating = True
+        try:
+            for (row, icon), s in zip(self.sim_rows, st["slots"]):
+                name = s.get("operator") or "无 SIM / 未知"
+                row.set_title(f"卡槽 {s['slot']} · {name}")
+                parts = []
+                if s.get("tech"):
+                    parts.append(s["tech"] + (f"（{s['serving']}网络）" if s.get("serving") else ""))
+                    if s.get("rsrp") is not None:
+                        parts.append(f"{s['rsrp']} dBm")
+                    icon.set_from_icon_name(f"network-cellular-signal-{SIGNAL_ICON[s.get('bars', 0)]}-symbolic")
+                else:
+                    parts.append("无服务")
+                    icon.set_from_icon_name("network-cellular-offline-symbolic")
+                if s.get("ims"):
+                    parts.append(IMS_TEXT.get(s["ims"], "VoLTE " + s["ims"]))
+                tags = []
+                if st.get("datacard") == s["slot"]:
+                    tags.append("上网")
+                if st.get("dialcard") == s["slot"]:
+                    tags.append("拨号")
+                if tags:
+                    parts.append("、".join(tags))
+                if s.get("error"):
+                    parts.append("读取出错：" + s["error"])
+                row.set_subtitle(" · ".join(parts))
+            for slot, c in enumerate(self.data_checks, 1):
+                c.set_active(st.get("datacard") == slot)
+            for slot, c in enumerate(self.voice_checks, 1):
+                c.set_active(st.get("dialcard") == slot)
+            for row, s in zip(self.nr_rows, st["slots"]):
+                row.set_active(bool(s.get("nr5g_enabled")))
+        finally:
+            self.updating = False
+        busy = st.get("busy") or self.op_running
+        self.spinner.set_visible(busy)
+        self.set_controls(not busy)
+
+    def set_controls(self, on):
+        for w in self.controls:
+            w.set_sensitive(on)
+
+    def revert(self):
+        if self.state:
+            self.apply(self.state)
+
+    def toast(self, text, button=None, action=None):
+        t = Adw.Toast.new(text)
+        t.set_timeout(4)
+        if button:
+            t.set_button_label(button)
+            t.connect("button-clicked", lambda *_: action())
+        self.toasts.add_toast(t)
+
+    def confirm(self, heading, body, ok_label, on_ok):
+        d = Adw.AlertDialog(heading=heading, body=body)
+        d.add_response("cancel", "取消")
+        d.add_response("ok", ok_label)
+        d.set_response_appearance("ok", Adw.ResponseAppearance.DESTRUCTIVE)
+        d.set_default_response("cancel")
+        d.set_close_response("cancel")
+        d.connect("response", lambda _d, r: on_ok() if r == "ok" else self.revert())
+        d.present(self)
+
+    # ---- 事件 ----
+    def on_data_toggled(self, check, slot):
+        if self.updating or not check.get_active() or not self.state or self.state.get("datacard") == slot:
+            return
+        go = lambda: self.operate(["data", str(slot)], f"上网卡已切到卡槽 {slot}", f"正在把上网卡切到卡槽 {slot}…")
+        if slot == 2:
+            self.confirm("用卡槽 2 上网？",
+                         "卡槽 2 上网期间，卡槽 1（电信）不能打电话，也接不到电话（电信 4G/5G 通话只走 VoLTE，"
+                         "目前 modem 不让非上网卡的电信卡起 VoLTE）。卡槽 2 的通话不受影响。",
+                         "仍然切换", go)
+        else:
+            go()
+
+    def on_voice_toggled(self, check, slot):
+        if self.updating or not check.get_active() or not self.state or self.state.get("dialcard") == slot:
+            return
+        self.operate(["voice", str(slot)], f"拨号卡已设为卡槽 {slot}", f"正在设置拨号卡…")
+
+    def on_nr_toggled(self, row, _pspec, slot):
+        if self.updating or not self.state:
+            return
+        on = row.get_active()
+        if bool(self.state["slots"][slot - 1].get("nr5g_enabled")) == on:
+            return
+        self.op_running = True
+        self.set_controls(False)
+        self.spinner.set_visible(True)
+
+        def done(rc, out, err):
+            self.op_running = False
+            self.spinner.set_visible(False)
+            if rc == 0:
+                self.toast(f"卡槽 {slot} 已{'启用' if on else '关闭'} 5G，重新连接后生效",
+                           "重新连接", self.confirm_reconnect)
+            else:
+                self.toast(f"失败：{last_line(err) or rc}")
+            self.refresh()
+        self.run_helper(["mode", str(slot), "5g" if on else "4g"], done)
+
+    def confirm_reconnect(self):
+        self.confirm("重新连接网络？",
+                     "modem 会重新上线，大约 1–3 分钟内不能上网、打电话和收短信；卡槽 2 的 VoLTE 可能要多等一会儿。",
+                     "重新连接",
+                     lambda: self.operate(["reconnect"], "网络已重新连接，VoLTE 注册可能还要 1–3 分钟",
+                                          "正在重新连接网络…"))
+
+
+def last_line(text):
+    lines = [l for l in (text or "").strip().splitlines() if l.strip()]
+    return lines[-1].strip() if lines else ""
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="org.fuxi.SimSettings", flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        win = self.props.active_window or Window(self)
+        win.present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

@@ -1,0 +1,341 @@
+#!/usr/bin/python3
+# 双卡设置的 root 助手，给图形界面 fuxi-sim-settings 通过 pkexec 调用（polkit 规则见
+# /etc/polkit-1/rules.d/50-fuxi-simctl.rules，只放行本机活动会话里的 fuxi 用户）。
+# 用法（root）：
+#   fuxi-simctl status                 JSON：两张卡的运营商 / 制式 / 信号 / VoLTE / 5G 开关，上网卡、拨号卡
+#   fuxi-simctl data 1|2               切上网卡（调 fuxi-datacard set）
+#   fuxi-simctl voice 1|2              切拨号卡（调 fuxi-sim-pref voice）
+#   fuxi-simctl mode 1|2 5g|4g         该卡的网络模式：LTE+5G 或只用 LTE（NAS 系统选择偏好）
+#   fuxi-simctl reconnect              modem 重新上线（停 keeper/81voltd → MM disable → 低功耗 → enable → 起服务）
+# NAS 按订阅查询：原始 NAS Bind Subscription 0x0045（TLV 0x01 u8，0 主 / 1 副），libqmi 1.38 没有这个方法。
+# 改动类命令互斥（flock /run/fuxi-simctl.lock），日志 /var/log/fuxi-simctl.log。
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import time
+import gi
+gi.require_version("Qmi", "1.0")
+gi.require_version("Qrtr", "1.0")
+from gi.repository import GLib, Qmi, Qrtr
+
+ctx = GLib.MainContext.default()
+LOG = "/var/log/fuxi-simctl.log"
+LOCK = "/run/fuxi-simctl.lock"
+DATACARD_STATE = "/var/lib/fuxi/datacard"
+DIALCARD = "/var/lib/fuxi/dialcard"
+MODE_LTE = 1 << 4
+MODE_NR5G = 1 << 6
+OPERATORS = {
+    "46000": "中国移动", "46002": "中国移动", "46004": "中国移动", "46007": "中国移动", "46008": "中国移动",
+    "46001": "中国联通", "46006": "中国联通", "46009": "中国联通",
+    "46003": "中国电信", "46005": "中国电信", "46011": "中国电信", "46012": "中国电信",
+    "46015": "中国广电",
+}
+
+
+def log(msg):
+    line = time.strftime("%m-%d %H:%M:%S ") + msg
+    try:
+        with open(LOG, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    print(msg, file=sys.stderr, flush=True)
+
+
+def wait(start, *args):
+    box = []
+    start(*args, lambda src, res: box.append(res))
+    while not box:
+        ctx.iteration(True)
+    return box[0]
+
+
+def call(fn, obj, *args):
+    return getattr(obj, fn + "_finish")(wait(getattr(obj, fn), *args))
+
+
+def gv(r):
+    # libqmi GI getter 有的返回 (True, v...)，有的直接返回 v...：去掉开头的 True
+    if isinstance(r, tuple):
+        return r[1:] if r and r[0] is True else r
+    return (r,)
+
+
+def nick(v):
+    return v.value_nick if hasattr(v, "value_nick") else v
+
+
+class Modem:
+    def __init__(self):
+        bus = Qrtr.Bus.new_finish(wait(Qrtr.Bus.new, 1000, None))
+        node = bus.peek_node(0)
+        if node is None:
+            raise RuntimeError("qrtr node 0 not found")
+        self.dev = Qmi.Device.new_from_node_finish(wait(Qmi.Device.new_from_node, node, None))
+        call("open", self.dev, Qmi.DeviceOpenFlags.PROXY, 10, None)
+        self.clients = []
+
+    def alloc(self, service):
+        c = call("allocate_client", self.dev, service, Qmi.CID_NONE, 10, None)
+        self.clients.append(c)
+        return c
+
+    def close(self):
+        for c in self.clients:
+            try:
+                call("release_client", self.dev, c, Qmi.DeviceReleaseClientFlags.RELEASE_CID, 10, None)
+            except GLib.Error:
+                pass
+
+    def raw_u8(self, c, service, msg_id, tlv, value):
+        msg = Qmi.message_new(service, c.get_cid(), c.get_next_transaction_id(), msg_id)
+        off = Qmi.message_tlv_write_init(msg, tlv)
+        Qmi.message_tlv_write_guint8(msg, value)
+        Qmi.message_tlv_write_complete(msg, off)
+        resp = self.dev.command_full_finish(wait(self.dev.command_full, msg, Qmi.MessageContext.new(), 10, None))
+        off = Qmi.message_tlv_read_init(resp, 0x02)[0]
+        _, o, result = Qmi.message_tlv_read_guint16(resp, off, 0, Qmi.Endian.LITTLE)
+        _, o, error = Qmi.message_tlv_read_guint16(resp, off, o, Qmi.Endian.LITTLE)
+        if result:
+            raise RuntimeError(f"{service.value_nick} 0x{msg_id:04x}: error 0x{error:04x}")
+
+    def nas(self, sub):
+        c = self.alloc(Qmi.Service.NAS)
+        self.raw_u8(c, Qmi.Service.NAS, 0x0045, 0x01, sub)
+        return c
+
+
+def tech_of(out):
+    def avail(getter):
+        try:
+            return nick(gv(getattr(out, getter)())[0]) == "available"
+        except (GLib.Error, AttributeError):
+            return False
+    if avail("get_nr5g_service_status_info"):
+        return "5G"
+    if avail("get_lte_service_status"):
+        try:
+            if gv(out.get_eutra_with_nr5g_availability())[0]:
+                return "5G NSA"
+        except (GLib.Error, AttributeError):
+            pass
+        return "4G"
+    if avail("get_wcdma_service_status") or avail("get_td_scdma_service_status"):
+        return "3G"
+    if avail("get_gsm_service_status"):
+        return "2G"
+    return ""
+
+
+def bars(rsrp):
+    if rsrp is None:
+        return 0
+    for b, th in ((4, -90), (3, -100), (2, -110), (1, -120)):
+        if rsrp >= th:
+            return b
+    return 0
+
+
+def slot_status(m, sub):
+    s = {"slot": sub + 1, "operator": "", "plmn": "", "tech": "", "rsrp": None, "bars": 0,
+         "ims": "", "nr5g_enabled": None, "error": ""}
+    try:
+        c = m.nas(sub)
+        out = call("get_system_info", c, None, 10, None)
+        out.get_result()
+        s["tech"] = tech_of(out)
+        # 运营商按 SIM 归属网络显示；联通/电信共建共享，卡 2（联通）实测驻留在 46011 上
+        try:
+            out = call("get_home_network", c, None, 10, None)
+            out.get_result()
+            mcc, mnc, desc = gv(out.get_home_network())[:3]
+            home = f"{mcc:03d}{mnc:02d}"
+            s["operator"] = OPERATORS.get(home, desc or home)
+        except GLib.Error:
+            pass
+        try:
+            out = call("get_serving_system", c, None, 10, None)
+            out.get_result()
+            mcc, mnc, desc = gv(out.get_current_plmn())[:3]
+            plmn = f"{mcc:03d}{mnc:02d}"
+            s["plmn"] = plmn
+            serving = OPERATORS.get(plmn, desc or plmn)
+            if not s["operator"]:
+                s["operator"] = serving
+            elif serving != s["operator"] and s["tech"]:
+                s["serving"] = serving
+        except GLib.Error:
+            pass
+        try:
+            out = call("get_signal_info", c, None, 10, None)
+            out.get_result()
+            rsrp = None
+            if s["tech"] in ("5G",):
+                try:
+                    r5 = gv(out.get_5g_signal_strength())[0]
+                    if -160 < r5 < 0:
+                        rsrp = r5
+                except (GLib.Error, AttributeError):
+                    pass
+            if rsrp is None:
+                try:
+                    rsrp = gv(out.get_lte_signal_strength())[2]
+                except (GLib.Error, AttributeError):
+                    pass
+            if s["tech"]:
+                s["rsrp"] = rsrp
+                s["bars"] = bars(rsrp)
+        except GLib.Error:
+            pass
+        out = call("get_system_selection_preference", c, None, 10, None)
+        out.get_result()
+        s["nr5g_enabled"] = bool(int(gv(out.get_mode_preference())[0]) & MODE_NR5G)
+    except (GLib.Error, RuntimeError) as e:
+        s["error"] = str(getattr(e, "message", e))
+    try:
+        c = m.alloc(Qmi.Service.IMSA)
+        inp = Qmi.MessageImsaBindInput.new()
+        inp.set_binding(sub)
+        call("bind", c, inp, 10, None).get_result()
+        out = call("get_ims_registration_status", c, None, 10, None)
+        out.get_result()
+        s["ims"] = nick(gv(out.get_ims_registration_status())[0])
+    except GLib.Error:
+        pass
+    return s
+
+
+def read(path, default):
+    try:
+        return open(path).read().strip() or default
+    except OSError:
+        return default
+
+
+def status():
+    m = Modem()
+    try:
+        slots = [slot_status(m, 0), slot_status(m, 1)]
+        dds = None
+        try:
+            c = m.alloc(Qmi.Service.DSD)
+            msg = Qmi.message_new(Qmi.Service.DSD, c.get_cid(), c.get_next_transaction_id(), 0x004F)
+            resp = m.dev.command_full_finish(wait(m.dev.command_full, msg, Qmi.MessageContext.new(), 10, None))
+            off = Qmi.message_tlv_read_init(resp, 0x10)[0]
+            dds = Qmi.message_tlv_read_guint32(resp, off, 0, Qmi.Endian.LITTLE)[-1]
+        except GLib.Error:
+            pass
+    finally:
+        m.close()
+    print(json.dumps({
+        "slots": slots,
+        "datacard": int(read(DATACARD_STATE, "1")),
+        "dds": dds,
+        "dialcard": int(read(DIALCARD, "1")),
+        "busy": busy(),
+    }, ensure_ascii=False))
+
+
+def busy():
+    try:
+        fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        except BlockingIOError:
+            return True
+        finally:
+            os.close(fd)
+    except OSError:
+        return False
+
+
+def run(cmd, timeout=300):
+    log("run: " + " ".join(cmd))
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    for line in (p.stdout + p.stderr).splitlines():
+        log("  " + line)
+    return p.returncode
+
+
+def set_mode(slot, mode):
+    m = Modem()
+    try:
+        c = m.nas(slot - 1)
+        flags = MODE_LTE | (MODE_NR5G if mode == "5g" else 0)
+        inp = Qmi.MessageNasSetSystemSelectionPreferenceInput.new()
+        inp.set_mode_preference(Qmi.NasRatModePreference(flags))
+        call("set_system_selection_preference", c, inp, 10, None).get_result()
+        out = call("get_system_selection_preference", c, None, 10, None)
+        out.get_result()
+        now = int(gv(out.get_mode_preference())[0])
+        log(f"mode slot {slot} -> {mode}: preference now 0x{now:x}")
+        return 0 if (now & MODE_NR5G) == (flags & MODE_NR5G) else 1
+    finally:
+        m.close()
+
+
+def reconnect():
+    # 11-06 实测流程；--set-power-state-on 在 enable 前会报 WrongState，enable 自己会上电
+    # 先关 NM 的 WWAN，否则 disable 后 NM 自动连接会立刻 simple-connect 把 modem 拉起来，低功耗报 WrongState
+    for u in ("fuxi-modem-keeper", "81voltd"):
+        run(["systemctl", "stop", u])
+    try:
+        run(["nmcli", "radio", "wwan", "off"], 30)
+        time.sleep(2)
+        run(["mmcli", "-m", "any", "-d"], 60)
+        run(["mmcli", "-m", "any", "--set-power-state-low"], 60)
+        time.sleep(5)
+    finally:
+        run(["nmcli", "radio", "wwan", "on"], 30)
+    time.sleep(2)
+    run(["mmcli", "-m", "any", "-e"], 120)  # NM 打开 WWAN 后可能已在 enable，报错不算失败
+    rc = 1
+    for _ in range(60):
+        st = subprocess.run(["mmcli", "-m", "any", "-K"], capture_output=True, text=True).stdout
+        if any(l.split(":", 1)[-1].strip() in ("registered", "connecting", "connected")
+               for l in st.splitlines() if l.startswith("modem.generic.state ")):
+            rc = 0
+            break
+        time.sleep(2)
+    log(f"modem {'registered' if rc == 0 else 'not registered after 120 s'}")
+    run(["systemctl", "start", "81voltd"])
+    if read(DATACARD_STATE, "1") == "2":
+        run(["systemctl", "restart", "fuxi-datacard"])
+    run(["systemctl", "start", "fuxi-modem-keeper"])
+    return rc
+
+
+def main():
+    a = sys.argv[1:]
+    if a == ["status"]:
+        status()
+        return 0
+    ok = (len(a) == 2 and a[0] in ("data", "voice") and a[1] in ("1", "2")) or \
+         (len(a) == 3 and a[0] == "mode" and a[1] in ("1", "2") and a[2] in ("5g", "4g")) or \
+         a == ["reconnect"]
+    if not ok:
+        print("用法: status | data 1|2 | voice 1|2 | mode 1|2 5g|4g | reconnect", file=sys.stderr)
+        return 2
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("另一个设置操作正在进行", file=sys.stderr)
+        return 75
+    log(f"=== {' '.join(a)} (uid {os.environ.get('PKEXEC_UID', os.getuid())})")
+    if a[0] == "data":
+        return run(["/usr/local/sbin/fuxi-datacard", "set", a[1]], 600)
+    if a[0] == "voice":
+        return run(["/usr/local/sbin/fuxi-sim-pref", "voice", a[1]])
+    if a[0] == "mode":
+        return set_mode(int(a[1]), a[2])
+    return reconnect()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
