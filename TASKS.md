@@ -67,7 +67,7 @@
   - ✅ #278 = #277 + initramfs 窗口缩短（`build/initramfs/init`：只有 UDC configured 才留窗口，AUTOBOOT_WAIT 8→3 s、0.2 s 粒度；原文件 `work/patches/pending/initramfs-init.before-autoboot3-20261106`；`fuxi-test-recovery.sh` 串口轮询改 0.2 s）。镜像 `work/kbuild/abl-fuxi-abl-fuxi-autoboot3.img` SHA256 d483a191…，**现在在 recovery_b**。实测：主机 0.4 s 内抓到 stay；systemd 11.24→6.54 s，phosh 16.98→11.93 s，亮屏 ≈20.3→14.9 s；用户确认自己亮、黑屏变短。
   - `fuxi-vt.service` 改为 `WantedBy=plasmamobile.service`（phosh 开机不再提前 chvt 7）。
   - 剩余：跑码→约 3 s 黑（phosh 自身启动）→桌面。可选：splash/quiet 代替跑码。
-  - 待用户批准提交：面板驱动补丁、initramfs/init、fuxi-test-recovery.sh/fuxi_serial.py、display-kick 两个文件、fuxi-vt.service。
+  - 已提交（75dab2a）：面板驱动补丁、initramfs/init、fuxi-test-recovery.sh/fuxi_serial.py、display-kick 两个文件、fuxi-vt.service。
   - 注意：重启 Linux 必须 `systemctl reboot --reboot-argument=recovery`（普通 reboot 进 Android）；initramfs 放行用 `python3 scripts/fuxi_sh.py --send 'touch /tmp/do_switch; exit'`。**严禁远程重启 phosh.service**。
   - ath12k 0.98 s 的 `-110`：首探无固件，之后正常，不用管。
   - 下一项：双卡上网卡/拨号卡设置（QMI DSD 切换 DDS；默认拨号卡）。
@@ -86,7 +86,8 @@
   - ✅ 上网卡 2：`fuxi-datacard set 2` 后卡 2 上网通，卡 2 IMS 保持注册（补丁前两张卡都会掉）。
   - ❌ **限制：DDS=2 时卡 1（电信）VoLTE 起不来**。modem 拒绝卡 1 上的任何 PDN：profile 2 + IPv6 → 210 pdn-ipv6-call-disallowed；APN "IMS"/"ims"、IPv4、只用 LTE（NAS 模式偏好 power-cycle）、DSD Set APN Info（0x0032，DSD bind 0x0027/0x0028 可用）一律 CM 2001 no-service；NAS 显示卡 1 已注册、PS 已附着。电信 LTE 没有 CS，所以卡槽 2 上网时卡 1 打不了也接不到电话。卡 2 当非 DDS 卡时 IMS 正常（81voltd 走 APN），不对称原因未知；可能是 Android 侧某条 QMI 配置我们没有做。`fuxi-datacard set 2` 会打印警告；`nm_slot1(False)` 同时关掉旧连接 `fuxi-mobile`（apn 3gnet，11-04 的残留，会自己起来占 internet 呼叫）。测试改过的模式偏好和 DSD APN 信息都已恢复（0x50 = LTE|NR5G）。
   - 卡 2 的 IMS 在恢复流程后约 3 min 注册（81voltd v6 的 wrong-PDN 重试，第 4 次成功），和补丁前一样。
-  - 未测：两张卡来电经 MM/gnome-calls 接听（需要用户打进来）——补丁后卡 2 来电的 accept 应走 SECONDARY VOICE 客户端，之前是"not ringing"。
+  - ✅ **来电（11-06 22:15–22:17，用户真人打入，补丁版 MM）**：卡 1 Call/2 ringing-in → `mmcli --accept` → active，gnome-calls 同步响铃/显示接通；卡 2 Call/4 ringing-in → 用户在 gnome-calls 点接听 → active，用户手机确认接通（补丁前卡 2 accept 报"not ringing"）。挂断（gnome-calls 红键 / 对方挂）两卡都正常。卡 2 来电期间 MM 报一次 3GPP PS detached→attached（DSDS 单射频调谐，正常）。测试器 `/root/mm-answer.sh`（临时 unit fuxi-mm-answer），日志 `/root/mm-answer.log`。测完 MM 日志级别已回 WARN，两卡 IMS 仍注册，拨号卡/上网卡都是卡槽 1。
+  - 剩余：通话音频（语音线 TX -22）；卡 2 当上网卡时的卡 1 限制见上。
 
 ## 下一步（USB 线，细节见交接 §9）
 1. 插 U 盘/SSD 复测枚举稳定性（等用户物理操作）：`lsusb -t`、`lsblk`、`dmesg | grep -iE 'uas|scsi|usb [12]-'`；确认 repeater host 调参是否解决 #274 的 EPROTO/掉线。
