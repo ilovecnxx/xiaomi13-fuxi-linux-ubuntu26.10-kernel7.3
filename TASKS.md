@@ -45,6 +45,14 @@
   dmesg 写到 /dev/kmsg 以外的地方）再判断降档是否生效；② 降到 HS-G4 而非 G1；③ 关机完全跳过 `ufshcd_suspend`；
   ④ 补测 `systemctl reboot`（负载）和空闲 `reboot -f`（看 G5 一次都没到时是否也挂，排除与 G5 无关）。
   脚本 `work/claude-logs/ufs-g5-reboot/loop.sh f|s|i`，结果 `result.txt`。
+- ✅ 11-06 已修：基线 #222 的蓝牙 120 s 超时 + SSC QRTR 400 缺失（从 11-04 16:38 那次开机起出现）是同一个根因。
+  蓝牙：initramfs 里没有 qca 固件，0.5 s 时的那次 probe -2，但 `hci_uart_qca` 已经绑定。fuxi-firmware-devices 只 bind
+  未绑定的设备，所以 hci0 一直没有固件，fuxi-bt-address 空等 120 s。修法：脚本对 wcn7850-bt serdev 先 unbind 再 bind
+  （蓝牙重绑安全，ath12k 仍然禁止重绑）。传感器：上游 hexagonrpcd.service 带 `After=multi-user.target`，而
+  fuxi-bt-address 是 `Before=multi-user.target`，所以 hexagonrpcd 被拖到 135 s 才启动，fuxi-wait-ssc 40 s 后先超时，
+  sensor_pd 没起来。蓝牙修好后，hexagonrpcd 在 15 s 启动，400 ready，iio-sensor-proxy 正常（11-06 10:55 那次开机验证过）。
+  与 11-05 20:18 的 ADSP 固件换官方包无关（失败从 11-04 就开始了）。
+  隐患：如果 fuxi-bt-address 以后再超时，传感器也会跟着挂；可以考虑把 hexagonrpcd 的 After=multi-user.target 去掉（未做）。
 
 ## 桌面线（当前主线，通信暂停）
 - 设备现在跑在 Linux（Plasma Mobile），不是 Android。

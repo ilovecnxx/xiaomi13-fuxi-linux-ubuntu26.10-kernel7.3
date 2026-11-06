@@ -6,7 +6,8 @@
 #     要在基带启动前完成，所以本服务排在 rmtfs 之前。
 #   - WCN7850 WiFi（PCI 17cb:1107，ath12k）：probe 失败后处于未绑定状态，bind 一次即可。
 #     不要 unbind/rebind 半初始化的 ath12k（2026-10-27 实测会把整机卡死）。
-#   - WCN7850 蓝牙（uart14 上的 serdev，hci_uart_qca）：固件在 hci0 上电时才加载；没绑定时 bind 一次。
+#   - WCN7850 蓝牙（uart14 上的 serdev，hci_uart_qca）：固件在 hci0 上电时才加载；initramfs 阶段那次必失败，
+#     所以无论是否已绑定都重绑一次（见文件末尾）。
 log() { echo "fuxi-firmware-devices: $*"; }
 
 for r in /sys/class/remoteproc/remoteproc*; do
@@ -46,7 +47,14 @@ done
 for d in /sys/bus/serial/devices/*; do
 	[ -e "$d" ] || continue
 	grep -q 'wcn7850-bt' "$d/of_node/compatible" 2>/dev/null || continue
-	[ -e "$d/driver" ] && continue
+	# initramfs 里没有 qca 固件，0.5 s 时的那次 probe 必然 -2（hci0 没地址，fuxi-bt-address 空等 120 s），
+	# 但驱动已经绑上了。所以已绑定也要 unbind 再 bind 一次，让 hci0 在根文件系统里重新上电加载固件。
+	# 蓝牙 serdev 可以安全重绑（2026-11-06 实测），和 ath12k 不同。
+	if [ -e "$d/driver" ]; then
+		log "rebind $(basename "$d") (initramfs probe had no firmware)"
+		echo "$(basename "$d")" > "$d/driver/unbind" || log "unbind $(basename "$d") failed"
+		sleep 1
+	fi
 	log "bind $(basename "$d") to hci_uart_qca"
 	echo "$(basename "$d")" > /sys/bus/serial/drivers/hci_uart_qca/bind || log "bind $(basename "$d") failed"
 done
