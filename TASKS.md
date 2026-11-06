@@ -42,7 +42,12 @@
 - 2026-11-07 04:03 起默认图形会话改为 Denial（disable phosh / enable denial，回退相反）。切换：`fuxi-session denial` / `fuxi-session phosh`（实测 17 s；
   phoc 偶尔对 SIGTERM 不退出，systemd 90 s 超时后 SIGKILL）。unit `denial.service`、
   切换脚本在 `work/rootfs-overlay/`；安装脚本 `work/denial-arm64/install-prebuilt.sh`。
-- 待办：下次真实重启确认冷启动路径；退出 Denial 后自动回 Phosh；双屏/旋转/休眠/输入法验收。
+- 【已修】Denial 下 DeepSeek App / Chromium 浏览器打不开：unit 写死 `WAYLAND_DISPLAY=wayland-0`，
+  Denial 的 socket 是 `wayland-1`。改成运行时探测（`work/dsh-phone/install-remote.sh`、
+  `work/chromium-mobile/fuxi-mobile-shell-run`），实测两应用都能起。
+- 冷启动路径【实测通过】：11-07 04:15 / 04:24 两次重启都直接进 Denial。
+- 待办：退出 Denial 后自动回 Phosh；`scripts/fuxi-basic-check.py` 适配 Denial 会话；
+  双屏/旋转/休眠/输入法验收。
   详情 `docs/Denial桌面安装-20261107.md`。
 
 ## 下一步

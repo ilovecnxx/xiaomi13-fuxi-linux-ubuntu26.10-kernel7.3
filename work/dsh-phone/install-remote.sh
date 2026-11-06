@@ -137,7 +137,32 @@ export DSH_WEB_PORT="$PORT" DSH_WEB_STATE="$STATE" DSH_WEB_BIND="$BIND"
 
 # 原版 UI：裸 Chromium --app 独立应用窗口（无地址栏/无底部栏，不碰浏览器壳）
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$RUN_UID}"
+# Denial 的 Wayland socket 是 wayland-1、Phosh 是 wayland-0，不能写死；优先用当前会话的。
+# 只认真正有进程监听的 socket（ss），避免 phoc 被 SIGKILL 后留下的死 wayland-0。
+wayland_ok() {
+  local d="${1:-}" dir="${XDG_RUNTIME_DIR:-/run/user/$RUN_UID}"
+  [ -n "$d" ] && [ -S "$dir/$d" ] || return 1
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -xl 2>/dev/null | grep -qF "$dir/$d"
+}
+find_wayland_display() {
+  local dir="${XDG_RUNTIME_DIR:-/run/user/$RUN_UID}" cand
+  for cand in "$dir"/wayland-*; do
+    case "$cand" in *.lock) continue ;; esac
+    [ -S "$cand" ] || continue
+    if command -v ss >/dev/null 2>&1; then
+      ss -xl 2>/dev/null | grep -qF "$cand" || continue
+    fi
+    printf '%s\n' "$(basename "$cand")"
+    return 0
+  done
+  return 1
+}
+if ! wayland_ok "${WAYLAND_DISPLAY:-}"; then
+  WAYLAND_DISPLAY="$(find_wayland_display || true)"
+fi
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$RUN_UID/bus}"
 # 通过用户级 service 启动/重启应用窗口（脱离本会话常驻，重启存活）
 user_ctl restart dsh-app-window.service 2>/dev/null || {
@@ -155,7 +180,32 @@ set -o pipefail
 STATE="@RUN_HOME@/.local/state/dsh-web"
 PORT="@PORT@"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/@RUN_UID@}"
+# Denial 的 Wayland socket 是 wayland-1、Phosh 是 wayland-0，不能写死；优先用当前会话的。
+# 只认真正有进程监听的 socket（ss），避免 phoc 被 SIGKILL 后留下的死 wayland-0。
+wayland_ok() {
+  local d="${1:-}" dir="${XDG_RUNTIME_DIR:-/run/user/@RUN_UID@}"
+  [ -n "$d" ] && [ -S "$dir/$d" ] || return 1
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -xl 2>/dev/null | grep -qF "$dir/$d"
+}
+find_wayland_display() {
+  local dir="${XDG_RUNTIME_DIR:-/run/user/@RUN_UID@}" cand
+  for cand in "$dir"/wayland-*; do
+    case "$cand" in *.lock) continue ;; esac
+    [ -S "$cand" ] || continue
+    if command -v ss >/dev/null 2>&1; then
+      ss -xl 2>/dev/null | grep -qF "$cand" || continue
+    fi
+    printf '%s\n' "$(basename "$cand")"
+    return 0
+  done
+  return 1
+}
+if ! wayland_ok "${WAYLAND_DISPLAY:-}"; then
+  WAYLAND_DISPLAY="$(find_wayland_display || true)"
+fi
 export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/@RUN_UID@/bus}"
 export LD_LIBRARY_PATH="/opt/chromium/privatelib:/opt/chromium/root/usr/lib/chromium${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # 取最新 token URL
@@ -257,7 +307,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 Environment=XDG_RUNTIME_DIR=/run/user/%U
-Environment=WAYLAND_DISPLAY=wayland-0
+# 不写死 WAYLAND_DISPLAY：Denial 用 wayland-1、Phosh 用 wayland-0，运行器自己探测。
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus
 ExecStart=%h/.local/bin/dsh-app-window-run
 Restart=on-failure

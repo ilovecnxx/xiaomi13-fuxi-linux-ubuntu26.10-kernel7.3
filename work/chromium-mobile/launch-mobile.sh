@@ -9,7 +9,7 @@ if systemctl --user -q is-enabled fuxi-mobile-chromium.service 2>/dev/null; then
   systemctl --user start fuxi-mobile-chromium.service && exit 0
 fi
 # fallback: direct
-export WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 FUXI_FORCE_LIGHT=1
-export FUXI_HOME="${FUXI_HOME:-https://www.example.com}"
+# 回退路径：交给 fuxi-mobile-shell-run，它自己探测当前会话的 Wayland socket
+# （Phosh=wayland-0，Denial=wayland-1）。
 if pgrep -u fuxi -f fuxi-mobile-shell.py >/dev/null; then exit 0; fi
-exec /usr/bin/python3 -u /opt/chromium/mobile/fuxi-mobile-shell.py
+exec /opt/chromium/mobile/fuxi-mobile-shell-run

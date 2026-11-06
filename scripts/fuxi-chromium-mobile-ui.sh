@@ -31,7 +31,7 @@ R
 fi
 
 ssh_retry 'mkdir -p /opt/chromium/mobile'
-for f in cdp.py fuxi-mobile-shell.py mobile-chrome.js probe.py launch-mobile.sh; do
+for f in cdp.py fuxi-mobile-shell.py fuxi-mobile-shell-run mobile-chrome.js probe.py launch-mobile.sh; do
   scp_retry "$SRC/$f" "/opt/chromium/mobile/$f"
 done
 
@@ -40,7 +40,7 @@ set -eu
 grep -q fuxi.fb= /proc/cmdline
 [ "$(findmnt -n -o SOURCE /)" = /dev/sda33 ]
 [ -x /opt/chromium/root/usr/lib/chromium/chromium ]
-chmod 755 /opt/chromium/mobile /opt/chromium/mobile/*.py /opt/chromium/mobile/launch-mobile.sh
+chmod 755 /opt/chromium/mobile /opt/chromium/mobile/*.py /opt/chromium/mobile/launch-mobile.sh /opt/chromium/mobile/fuxi-mobile-shell-run
 chmod 644 /opt/chromium/mobile/mobile-chrome.js
 
 install -d -o fuxi -g fuxi /home/fuxi/.config/systemd/user
@@ -53,12 +53,13 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WAYLAND_DISPLAY=wayland-0
+# 不写死 WAYLAND_DISPLAY：Phosh 用 wayland-0、Denial 用 wayland-1（2026-11-07），
+# 由 fuxi-mobile-shell-run 探测真正在监听的 socket。
 Environment=DISPLAY=:0
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 Environment=FUXI_FORCE_LIGHT=1
 Environment=FUXI_HOME=https://www.example.com
-ExecStart=/usr/bin/python3 -u /opt/chromium/mobile/fuxi-mobile-shell.py
+ExecStart=/opt/chromium/mobile/fuxi-mobile-shell-run
 Restart=on-failure
 RestartSec=3
 

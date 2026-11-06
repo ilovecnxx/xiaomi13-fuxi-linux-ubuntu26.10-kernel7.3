@@ -13,16 +13,36 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 REMOTE="/tmp/fuxi-shot-$$.png"
-# 手机端：以 fuxi 用户进入 phosh 的 Wayland 会话截图
-if ! "$B/scripts/fuxi-ssh.sh" "sudo -u fuxi XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-0 grim '$REMOTE'"; then
-  echo "ERROR: 手机端 grim 截图失败（手机是否在线 / phosh 是否在跑？）" >&2
+# 手机端：以 fuxi 用户进入当前图形会话截图。
+# socket 名不固定：Phosh 用 wayland-0，Denial 用 wayland-1（还有 phoc 被 SIGKILL 后的死 socket），
+# 所以按“真的有进程在监听”来挑（2026-11-07）。
+WD="$("$B/scripts/fuxi-ssh.sh" 'for s in /run/user/1000/wayland-*; do
+    case "$s" in *.lock) continue ;; esac
+    [ -S "$s" ] || continue
+    if command -v ss >/dev/null 2>&1; then
+      ss -xl 2>/dev/null | grep -qF "$s" || continue
+    fi
+    basename "$s"; break
+  done')"
+WD="${WD:-wayland-0}"
+if ! "$B/scripts/fuxi-ssh.sh" "sudo -u fuxi XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY='$WD' grim '$REMOTE'"; then
+  echo "ERROR: 手机端 grim 截图失败（手机是否在线 / 图形会话是否在跑？socket=$WD）" >&2
   exit 1
 fi
 "$B/scripts/fuxi-ssh.sh" "cat '$REMOTE'; rm -f '$REMOTE'" > "$TMP/raw.png"
 
-# 手机合成缓冲可能是 2700x6000（面板 2.5 倍），真实画面在左上角
+# 截图尺寸不应超过面板真实分辨率：Phosh 的合成缓冲可能是 2700x6000（面板 2.5 倍），
+# 真实画面在左上角；Denial 直接给 1080x2400 左右，不需要裁（2026-11-07）。
 MODE=$("$B/scripts/fuxi-ssh.sh" "cat /sys/class/drm/card*-*/modes 2>/dev/null | grep -m1 -E '^[0-9]+x[0-9]+$'" | tr -d '[:space:]')
 MODE="${MODE:-1080x2400}"
-CROP="${MODE%x*}:${MODE#*x}:0:0"
-ffmpeg -loglevel error -y -i "$TMP/raw.png" -vf "crop=$CROP" "$BASE/$NAME.png"
+MODEW="${MODE%x*}"; MODEH="${MODE#*x}"
+read -r SHOTW SHOTH < <(ffprobe -v error -select_streams v:0 \
+  -show_entries stream=width,height -of csv=p=0 "$TMP/raw.png" | tr ',' ' ')
+CROPW=$(( SHOTW < MODEW ? SHOTW : MODEW ))
+CROPH=$(( SHOTH < MODEH ? SHOTH : MODEH ))
+if [ "$CROPW" -eq "$SHOTW" ] && [ "$CROPH" -eq "$SHOTH" ]; then
+  cp "$TMP/raw.png" "$BASE/$NAME.png"
+else
+  ffmpeg -loglevel error -y -i "$TMP/raw.png" -vf "crop=$CROPW:$CROPH:0:0" "$BASE/$NAME.png"
+fi
 echo "$BASE/$NAME.png"
