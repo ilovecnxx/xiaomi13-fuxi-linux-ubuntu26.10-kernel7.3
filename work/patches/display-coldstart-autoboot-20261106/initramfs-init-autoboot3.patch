@@ -1,0 +1,48 @@
+--- a/init
++++ b/init
+@@ -63,8 +63,10 @@
+   exec switch_root /newroot /lib/systemd/systemd
+ }
+ 
+-# 主机等串口 shell 的时间窗：主机连上后第一件事是 `touch /tmp/stay`（scripts/fuxi_serial.py）
+-AUTOBOOT_WAIT=8
++# 主机等串口 shell 的时间窗（秒）：主机连上后第一件事是 `touch /tmp/stay`（scripts/fuxi_serial.py）。
++# 只有 USB 被主机枚举（UDC state=configured）才留窗口；没接主机（或只接充电器）直接启动。
++# 11-06 从固定 8 s 缩到 3 s，主机端 fuxi-test-recovery.sh 每 0.2 s 查一次串口。
++AUTOBOOT_WAIT=3
+ 
+ # USB 依赖链要等 late_initcall 的 deferred probe，给足时间
+ n=0
+@@ -83,9 +85,21 @@
+     done ) &
+   SHELL_LOOP=$!
+ 
++  # 最多 1 s 等主机枚举；没枚举上就不留窗口
++  win=0
+   n=0
+-  while [ "$n" -lt "$AUTOBOOT_WAIT" ] && [ ! -e /tmp/stay ] && [ ! -e /tmp/do_switch ]; do
+-    sleep 1
++  while [ "$n" -lt 10 ]; do
++    if grep -qx configured /sys/class/udc/*/state 2>/dev/null; then
++      win=$((AUTOBOOT_WAIT * 5))
++      break
++    fi
++    sleep 0.1
++    n=$((n + 1))
++  done
++  echo "FUXI_AUTOBOOT: udc $(cat /sys/class/udc/*/state 2>/dev/null) after ${n}00ms, window $((win / 5))s" > /dev/kmsg
++  n=0
++  while [ "$n" -lt "$win" ] && [ ! -e /tmp/stay ] && [ ! -e /tmp/do_switch ]; do
++    sleep 0.2
+     n=$((n + 1))
+   done
+   if [ -e /tmp/stay ]; then
+@@ -93,7 +107,7 @@
+     while [ ! -e /tmp/do_switch ]; do sleep 1; done
+     switch_to_ufs_root host
+   else
+-    echo "FUXI_AUTOBOOT: no host within ${AUTOBOOT_WAIT}s, booting UFS root" > /dev/kmsg
++    echo "FUXI_AUTOBOOT: no host within $((win / 5))s, booting UFS root" > /dev/kmsg
+     switch_to_ufs_root auto
+   fi
+   # switch_root 失败：串口 shell 留着排查，PID 1 不能退出

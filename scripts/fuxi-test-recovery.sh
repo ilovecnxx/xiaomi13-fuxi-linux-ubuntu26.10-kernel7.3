@@ -1,7 +1,7 @@
 #!/bin/bash
 # 不用 fastboot 的测试流程（fastboot 在这台电脑上 USB 很不稳定）：
 #   Android（adb root）把镜像 dd 进 recovery_b → adb reboot recovery → 主线 Linux
-#   → [可选] 在 initramfs 串口 shell 执行命令（FUXI_STAY=1，赶在 8 秒自动启动前 touch /tmp/stay）
+#   → [可选] 在 initramfs 串口 shell 执行命令（FUXI_STAY=1，赶在 3 秒自动启动前 touch /tmp/stay）
 #     或等 Ubuntu 起来后用 ssh 执行命令 → reboot 回 Android
 # 测试镜像起不来时：长按电源 20 秒即回 Android（正常开机不碰 recovery_b）。
 # 用法: scripts/fuxi-test-recovery.sh <abl 镜像> [ssh 命令 ...]
@@ -55,7 +55,9 @@ timeout 20 "$ADB" reboot recovery
 log "adb reboot recovery"
 
 if [ "${FUXI_STAY:-0}" = 1 ]; then
-  wait_for 60 test -c /dev/fuxi-acm || { notify "60s 内没有串口：测试镜像可能没起来，长按电源 20 秒回 Android"; exit 3; }
+  # initramfs 只留 3 s 窗口（见 build/initramfs/init AUTOBOOT_WAIT），这里每 0.2 s 查一次
+  i=0; while [ ! -c /dev/fuxi-acm ] && [ $i -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
+  test -c /dev/fuxi-acm || { notify "60s 内没有串口：测试镜像可能没起来，长按电源 20 秒回 Android"; exit 3; }
   log "串口出现"
   python3 "$B/scripts/fuxi_serial.py" /dev/fuxi-acm "$RUN" "$@" 2>&1 | tee -a "$S"
   [ "${FUXI_KEEP:-0}" = 1 ] && { log "FUXI_KEEP=1：留在 initramfs"; exit 0; }

@@ -3,7 +3,7 @@
 
 用法: fuxi_serial.py <tty> <outdir> [cmd ...]
   - 先 `touch /tmp/keep /tmp/stay`：取消 init 的 180 秒安全重启，并留在 initramfs
-    （不 touch /tmp/stay 的话，init 在 USB 就绪 8 秒后自动 switch_root 进 UFS 上的 Ubuntu）
+    （不 touch /tmp/stay 的话，init 在 USB 被主机枚举后 3 秒自动 switch_root 进 UFS 上的 Ubuntu）
   - 依次执行 cmd，每条输出写到 <outdir>/cmd-NN.txt
   - 最后保存完整 dmesg 到 <outdir>/dmesg.txt
   - 全部原始串口流追加到 <outdir>/acm-raw.log

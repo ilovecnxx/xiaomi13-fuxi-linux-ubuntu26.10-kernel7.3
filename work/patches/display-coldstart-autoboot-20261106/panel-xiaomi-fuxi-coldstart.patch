@@ -1,0 +1,46 @@
+--- a/drivers/gpu/drm/panel/panel-xiaomi-fuxi.c
++++ b/drivers/gpu/drm/panel/panel-xiaomi-fuxi.c
+@@ -73,6 +73,8 @@
+ 	struct regulator_bulk_data supplies[3];
+ 	struct dentry *debugfs;
+ 	unsigned int rate_hz;
++	/* supplies are still on from the bootloader; the first prepare cold-starts the panel */
++	bool bootloader_on;
+ };
+ 
+ /*
+@@ -362,6 +364,26 @@
+ 	struct device *dev = &ctx->dsi->dev;
+ 	int i, ret;
+ 
++	/*
++	 * The bootloader leaves the panel running.  Resetting and re-initialising
++	 * it on top of that leaves it dark (DRM and backlight say on, the screen
++	 * stays black) until the next full power cycle, which is what a DPMS
++	 * off/on does (2026-11-06).  So cut the supplies once and cold-start it
++	 * here as well.  The boot-on supplies have no other consumers: taking a
++	 * reference and dropping it switches them off.
++	 */
++	if (ctx->bootloader_on) {
++		ctx->bootloader_on = false;
++		gpiod_direction_output(ctx->reset_gpio, 1);
++		ret = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
++		if (!ret) {
++			regulator_bulk_disable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
++			msleep(100);
++		} else {
++			dev_warn(dev, "panel cold start skipped: %d\n", ret);
++		}
++	}
++
+ 	for (i = 0; i < ARRAY_SIZE(ctx->supplies); i++) {
+ 		ret = regulator_enable(ctx->supplies[i].consumer);
+ 		if (ret) {
+@@ -530,6 +552,7 @@
+ 				     "failed to get reset-gpios\n");
+ 
+ 	ctx->dsi = dsi;
++	ctx->bootloader_on = true;
+ 	mipi_dsi_set_drvdata(dsi, ctx);
+ 
+ 	dsi->lanes = 4;

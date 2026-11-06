@@ -61,6 +61,16 @@
 - 推测/待查：通话音频仍卡在语音 TX -22（语音线），对方听不到。
 - 已提交（6988a2f 及之后）。
 - 用户新需求（11-06 17:0x）：双卡要能设置上网卡和拨号卡；开机时开机动画到桌面之间有黑屏，进桌面后要按两次电源键才亮屏。
+- **开机黑屏排查（11-06 18:3x 完成，用户确认）**：
+  - ✅ 不按键自动亮：`fuxi-display-kick`（`work/rootfs-overlay/usr/local/sbin/` + `etc/systemd/system/fuxi-display-kick.service`，WantedBy=phosh.service）在 phosh 就绪后做一次 PowerSaveMode 3→0。18:08 实测停用它仍要按键，**必须保留**。
+  - ✅ 内核 #277 面板冷启动（`panel-xiaomi-fuxi.c` 首次 prepare 先断电 100 ms；原文件 `work/patches/pending/panel-xiaomi-fuxi.c.before-coldstart-20261106`）：0.8 s 起屏幕亮着跑码。用户决定**保留**。
+  - ✅ #278 = #277 + initramfs 窗口缩短（`build/initramfs/init`：只有 UDC configured 才留窗口，AUTOBOOT_WAIT 8→3 s、0.2 s 粒度；原文件 `work/patches/pending/initramfs-init.before-autoboot3-20261106`；`fuxi-test-recovery.sh` 串口轮询改 0.2 s）。镜像 `work/kbuild/abl-fuxi-abl-fuxi-autoboot3.img` SHA256 d483a191…，**现在在 recovery_b**。实测：主机 0.4 s 内抓到 stay；systemd 11.24→6.54 s，phosh 16.98→11.93 s，亮屏 ≈20.3→14.9 s；用户确认自己亮、黑屏变短。
+  - `fuxi-vt.service` 改为 `WantedBy=plasmamobile.service`（phosh 开机不再提前 chvt 7）。
+  - 剩余：跑码→约 3 s 黑（phosh 自身启动）→桌面。可选：splash/quiet 代替跑码。
+  - 待用户批准提交：面板驱动补丁、initramfs/init、fuxi-test-recovery.sh/fuxi_serial.py、display-kick 两个文件、fuxi-vt.service。
+  - 注意：重启 Linux 必须 `systemctl reboot --reboot-argument=recovery`（普通 reboot 进 Android）；initramfs 放行用 `python3 scripts/fuxi_sh.py --send 'touch /tmp/do_switch; exit'`。**严禁远程重启 phosh.service**。
+  - ath12k 0.98 s 的 `-110`：首探无固件，之后正常，不用管。
+  - 下一项：双卡上网卡/拨号卡设置（QMI DSD 切换 DDS；默认拨号卡）。
 
 ## 下一步（USB 线，细节见交接 §9）
 1. 插 U 盘/SSD 复测枚举稳定性（等用户物理操作）：`lsusb -t`、`lsblk`、`dmesg | grep -iE 'uas|scsi|usb [12]-'`；确认 repeater host 调参是否解决 #274 的 EPROTO/掉线。

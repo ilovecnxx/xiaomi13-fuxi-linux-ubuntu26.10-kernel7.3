@@ -1,0 +1,24 @@
+#!/bin/sh
+# fuxi: 开机后屏幕物理上是黑的（DRM 报 dpms On、背光 40、phoc 正常翻页），
+# 只有一次完整的 DPMS off→on 才会亮（2026-11-06 实测，按两次电源键或下面的 D-Bus 调用都行）。
+# 这里在 phosh 起来后自动做一次：PowerSaveMode 3 → 0。
+UID_N=1000
+BUS="unix:path=/run/user/$UID_N/bus"
+call() {
+	runuser -u fuxi -- env DBUS_SESSION_BUS_ADDRESS="$BUS" gdbus call --session \
+		--dest org.gnome.Mutter.DisplayConfig --object-path /org/gnome/Mutter/DisplayConfig \
+		--method "org.freedesktop.DBus.Properties.$1" org.gnome.Mutter.DisplayConfig PowerSaveMode $2
+}
+# 等 DisplayConfig 出现且输出为 On（最多 90 s，每 0.2 s 查一次）
+i=0
+while [ $i -lt 450 ]; do
+	m=$(call Get 2>/dev/null) && [ "$m" = "(<0>,)" ] && break
+	i=$((i + 1)); sleep 0.2
+done
+[ "$m" = "(<0>,)" ] || { echo "DisplayConfig 未就绪或不是 On（$m），不动"; exit 0; }
+# DisplayConfig 报 On 时 phoc 已完成首次 modeset，可以直接踢（11-06 实测）
+call Set "<3>" >/dev/null || exit 0
+sleep 0.3
+call Set "<0>" >/dev/null
+sleep 0.3  # 立刻 Get 可能还读到 3
+echo "display kick done after $((i / 5)) s wait: $(call Get 2>&1)"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Fuxi: one DPMS off/on cycle after Phosh starts (panel stays dark otherwise)
+After=phosh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/fuxi-display-kick
+TimeoutStartSec=120
+
+[Install]
+WantedBy=phosh.service

@@ -12,4 +12,6 @@ RemainAfterExit=yes
 ExecStart=/usr/bin/chvt 7
 
 [Install]
-WantedBy=graphical.target
+# 只给 Plasma 用：phosh.service.d/20-fuxi-session.conf 的 ExecStartPre 自己 chvt 7，
+# 提前切到空 tty7 只会让 Phosh 开机多黑 5 s（2026-11-06）。
+WantedBy=plasmamobile.service
