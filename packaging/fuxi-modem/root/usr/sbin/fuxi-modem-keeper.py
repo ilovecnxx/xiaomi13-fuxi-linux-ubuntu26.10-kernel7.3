@@ -42,6 +42,7 @@ REGISTERED = {1, 5, 6, 7, 9, 10}
 PWR_LOW, PWR_ON = 2, 3
 COMMAND_ERRORS = (OSError, subprocess.SubprocessError)
 IMS_STATES = {"not-registered", "registering", "registered", "limited-registered"}
+DATACARD_STATE = "/var/lib/fuxi/datacard"
 
 
 def uptime():
@@ -73,10 +74,13 @@ def voltd_active():
 
 def datacard():
     try:
-        with open("/var/lib/fuxi/datacard") as f:
-            return f.read().strip()
-    except OSError:
+        with open(DATACARD_STATE, encoding="ascii") as f:
+            slot = f.read().strip()
+    except FileNotFoundError:
         return "1"
+    except (OSError, UnicodeError):
+        return None
+    return slot if slot in ("1", "2") else None
 
 
 def sub2_retrying():
@@ -253,6 +257,8 @@ class Keeper:
             return
         self.ims_checked = now
         dc = datacard()
+        if dc is None:
+            return
         if dc != self.datacard:
             # 换上网卡会断掉卡 1 的 IMS PDN（ims_ok 不能一直算数），VoLTE 计时从切换时刻重新算
             log(f"data card {self.datacard} -> {dc}: restart ims timer")

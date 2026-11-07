@@ -18,6 +18,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import gi
 gi.require_version("Qmi", "1.0")
@@ -364,10 +365,36 @@ def status():
     print(f"卡槽 2 ({IF}): service {svc}, {a2[2] if len(a2) > 2 else 'no address'}")
 
 
+def save_slot(slot):
+    if slot not in (1, 2):
+        raise ValueError("data card must be slot 1 or 2")
+    directory = os.path.dirname(STATE)
+    os.makedirs(directory, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=directory,
+                                         prefix=".datacard-", delete=False) as f:
+            temporary = f.name
+            f.write(f"{slot}\n")
+            f.flush()
+            os.fchmod(f.fileno(), 0o644)
+            os.fsync(f.fileno())
+        os.replace(temporary, STATE)
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
 def set_slot(slot):
-    os.makedirs(os.path.dirname(STATE), exist_ok=True)
-    with open(STATE, "w") as f:
-        f.write(f"{slot}\n")
+    save_slot(slot)
     if slot == 2:
         sh("systemctl enable --now fuxi-datacard.service", True)
     else:

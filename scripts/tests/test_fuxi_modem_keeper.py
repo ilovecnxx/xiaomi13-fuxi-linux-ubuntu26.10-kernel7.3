@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import subprocess
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -286,6 +287,28 @@ class ModemEvidenceTest(unittest.TestCase):
         self.assertEqual(kwargs["env"]["LC_ALL"], "C")
 
 
+class ModemDatacardTest(unittest.TestCase):
+    def test_missing_preference_keeps_first_install_slot1_default(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(keeper, "DATACARD_STATE", str(Path(directory) / "datacard")):
+            self.assertEqual(keeper.datacard(), "1")
+
+    def test_only_valid_slot_files_are_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "datacard"
+            with patch.object(keeper, "DATACARD_STATE", str(path)):
+                for content, expected in ((b"1\n", "1"), (b"2\n", "2"), (b"", None),
+                                          (b"3\n", None), (b"1\n2\n", None), (b"\xff", None)):
+                    with self.subTest(content=content):
+                        path.write_bytes(content)
+                        self.assertEqual(keeper.datacard(), expected)
+
+    def test_unreadable_state_is_unknown(self):
+        for error in (PermissionError("denied"), OSError("I/O error"), IsADirectoryError("directory")):
+            with self.subTest(error=error), patch("builtins.open", side_effect=error):
+                self.assertIsNone(keeper.datacard())
+
+
 class ModemImsDecisionTest(unittest.TestCase):
     def setUp(self):
         self.controller = keeper.Keeper.__new__(keeper.Keeper)
@@ -320,6 +343,40 @@ class ModemImsDecisionTest(unittest.TestCase):
         self.command.assert_not_called()
         self.controller.cycle.assert_not_called()
         self.sub2_retrying.assert_not_called()
+
+    def test_unknown_datacard_preserves_last_slot_timer_and_recovery_budget(self):
+        for slot in ("1", "2", None):
+            with self.subTest(slot=slot), patch.object(keeper, "datacard", return_value=None):
+                self.controller.datacard = slot
+                self.controller.ims_ok = True
+                self.controller.ims_held = True
+                self.check(1)
+                self.assertEqual(self.controller.datacard, slot)
+                self.assertEqual(self.controller.reg_since, 1)
+                self.assertEqual(self.controller.ims_cycles, 1)
+                self.assertTrue(self.controller.ims_ok)
+                self.assertTrue(self.controller.ims_held)
+        self.controller.ims_registered.assert_not_called()
+        self.command.assert_not_called()
+        self.controller.cycle.assert_not_called()
+        self.sub2_retrying.assert_not_called()
+
+    def test_valid_slot_after_unknown_can_resume_recovery(self):
+        with patch.object(keeper, "datacard", return_value=None):
+            self.check(0)
+        with patch.object(keeper.time, "monotonic", return_value=1000):
+            self.check(0)
+        self.command.assert_called_once_with(["systemctl", "restart", "81voltd"], 60)
+        self.assertEqual(self.controller.ims_cycles, 1)
+
+    def test_valid_changed_slot_resets_timer_without_recovery(self):
+        with patch.object(keeper, "datacard", return_value="2"):
+            self.check(1)
+        self.assertEqual(self.controller.datacard, "2")
+        self.assertEqual(self.controller.reg_since, 1000)
+        self.assertEqual(self.controller.ims_cycles, 0)
+        self.command.assert_not_called()
+        self.controller.cycle.assert_not_called()
 
     def test_active_or_unknown_sub2_retries_hold_both_recovery_stages(self):
         for retrying in (True, None):
