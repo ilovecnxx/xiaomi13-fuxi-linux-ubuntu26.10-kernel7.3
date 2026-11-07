@@ -21,7 +21,9 @@ KO="$B/work/kbuild/$NAME"
 mkdir -p "$O" "$(dirname "$L")"
 exec 9>"$O/.fuxi-build.lock"
 flock -n 9 || { echo "另一个构建正在用 $O"; exit 1; }
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$K" log -1 --format=%ct)}"
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$K" log -1 --format=%ct)}"
+[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || { echo '无法确定有效的源码时间戳'; exit 1; }
+export SOURCE_DATE_EPOCH
 export KBUILD_BUILD_TIMESTAMP="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC')"
 export KBUILD_BUILD_USER=fuxi KBUILD_BUILD_HOST=builder KBUILD_BUILD_VERSION=1
 read -r -a EXTRA_CFG <<< "${FUXI_EXTRA_CFG:-}"
@@ -29,13 +31,16 @@ JOBS="${FUXI_BUILD_JOBS:-$(nproc)}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo 'FUXI_BUILD_JOBS must be a positive integer'; exit 1; }
 export FUXI_BUILD_JOBS="$JOBS"
 M=(make -C "$K" O="$O" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$JOBS" LOCALVERSION="-fuxi-$NAME")
+# Keep errexit active inside build groups and show failures outside their log redirection.
+exec 3>&2
+trap 'status=$?; tail -20 "$L" >&3; exit "$status"' ERR
 {
   "${M[@]}" fuxi_defconfig
   # 防御：defconfig 以后被谁改回内建 initramfs / ABL 直启也不行
   "$K/scripts/config" --file "$O/.config" --set-str INITRAMFS_SOURCE "" --set-str CMDLINE "" \
     -d FUXI_FORCE_BUILTIN_DTB -e BLK_DEV_INITRD -e RD_ZSTD "${EXTRA_CFG[@]}"
   "${M[@]}" olddefconfig
-} > "$L" 2>&1 || { tail -5 "$L"; exit 1; }
+} > "$L" 2>&1
 for c in 'CONFIG_INITRAMFS_SOURCE=""' 'CONFIG_CMDLINE=""' 'CONFIG_BLK_DEV_INITRD=y' 'CONFIG_RD_ZSTD=y' 'CONFIG_EXT4_FS=y'; do
   grep -qx "$c" "$O/.config" || { echo "[config] 缺 $c"; exit 1; }
 done
@@ -70,7 +75,9 @@ EOF
   find "$P" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
   mkdir -p "$KO"
   dpkg-deb --root-owner-group -Zxz -b "$P" "$KO/linux-image-${KR}_$KV-${NAME}_arm64.deb"
-} >> "$L" 2>&1 || { grep -m5 -B2 -A3 -E 'error|错误' "$L"; tail -5 "$L"; exit 1; }
+} >> "$L" 2>&1
+trap - ERR
+exec 3>&-
 rm -rf "$P"
 cp "$O/.config" "$KO/config"
 echo "$(git -C "$K" rev-parse --short HEAD)$(git -C "$K" diff --quiet HEAD || echo -dirty) $(git -C "$K" rev-parse --abbrev-ref HEAD)" > "$KO/source"
