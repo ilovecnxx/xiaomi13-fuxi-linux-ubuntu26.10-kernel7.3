@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""Take a finite, on-demand SSC gravity sample using libssc's vector parser."""
+import argparse
+import json
+import math
+import signal
+
+
+class GravitySession:
+    def __init__(self, sensor, loop, schedule, cancel, initialize, seconds):
+        self.sensor = sensor
+        self.loop = loop
+        self.schedule = schedule
+        self.cancel = cancel
+        self.initialize = initialize
+        self.seconds = seconds
+        self.stage = "initializing"
+        self.stopping = False
+        self.report = {"schema_version": 1, "data_type": "gravity",
+                       "requested_seconds": seconds, "status": "initializing",
+                       "samples": 0, "invalid_samples": 0,
+                       "open_requested": False, "closed": None,
+                       "physical_units": "not_independently_verified",
+                       "mounting_axes": "not_verified", "motion_validation": "not_tested"}
+
+    def start(self):
+        self.schedule(6, lambda: self.deadline("initializing"))
+        self.initialize(self.initialized)
+
+    def deadline(self, stage):
+        if self.stage == stage:
+            self.stop("timed_out")
+        return False
+
+    def initialized(self, source, result, _data):
+        try:
+            if not source.init_finish(result):
+                raise RuntimeError("initialization failed")
+            if self.stopping:
+                self.stage = "finished"
+                self.loop.quit()
+                return
+            if self.sensor.get_property("data-type") != "gravity":
+                raise RuntimeError("unexpected datatype")
+            self.sensor.connect("measurement", self.measured)
+            self.stage = "opening"
+            self.report["open_requested"] = True
+            self.schedule(4, lambda: self.deadline("opening"))
+            self.sensor.open(None, self.opened, None)
+        except Exception:
+            self.stop("initialization_failed")
+
+    def opened(self, source, result, _data):
+        try:
+            opened = source.open_finish(result)
+        except Exception:
+            opened = False
+        if self.stopping:
+            self.close()
+        elif not opened:
+            self.stage = "sampling"
+            self.stop("open_failed")
+        else:
+            self.stage = "sampling"
+            self.report["status"] = "sampling"
+            self.schedule(self.seconds, self.stop)
+
+    def measured(self, _sensor, x, y, z):
+        if self.stopping or self.stage not in ("opening", "sampling"):
+            return
+        vector = (x, y, z)
+        if not all(isinstance(value, (int, float)) and math.isfinite(value)
+                   and abs(value) < 1e6 for value in vector):
+            self.report["invalid_samples"] += 1
+            return
+        self.report["samples"] += 1
+        self.report["last_vector"] = list(vector)
+        magnitude = math.sqrt(sum(value * value for value in vector))
+        self.report["magnitude_min"] = min(self.report.get("magnitude_min", magnitude), magnitude)
+        self.report["magnitude_max"] = max(self.report.get("magnitude_max", magnitude), magnitude)
+
+    def stop(self, reason=None):
+        if self.stopping:
+            return False
+        self.stopping = True
+        self.report["status"] = reason or ("sampled" if self.report["samples"] else "no_measurements")
+        self.cancel()
+        if self.stage in ("initializing", "opening") and reason != "initialization_failed":
+            # Wait for the in-flight operation before sending disable, so a late
+            # enable cannot race after close. The grace period remains bounded.
+            self.schedule(2, self.cleanup_timeout)
+        elif self.report["open_requested"]:
+            self.close()
+        else:
+            self.stage = "finished"
+            self.loop.quit()
+        return False
+
+    def close(self):
+        if self.stage in ("closing", "finished"):
+            return
+        self.stage = "closing"
+        self.schedule(2, self.cleanup_timeout)
+        try:
+            self.sensor.close(None, self.closed, None)
+        except Exception:
+            self.closed(None, None, None)
+
+    def closed(self, source, result, _data):
+        if self.stage == "finished":
+            return
+        try:
+            self.report["closed"] = bool(source.close_finish(result))
+        except Exception:
+            self.report["closed"] = False
+        if not self.report["closed"]:
+            self.report["status"] = "cleanup_failed"
+        self.stage = "finished"
+        self.loop.quit()
+
+    def cleanup_timeout(self):
+        if self.stage != "finished":
+            self.report["status"] = "cleanup_timed_out"
+            if self.report["open_requested"]:
+                self.report["closed"] = False
+            self.stage = "finished"
+            self.loop.quit()
+        return False
+
+
+def collect(seconds):
+    try:
+        import gi
+        gi.require_version("SSC", "2")
+        from gi.repository import Gio, GLib, GObject, SSC
+    except (ImportError, ValueError):
+        return {"status": "dependency_unavailable", "closed": None}
+    loop = GLib.MainLoop()
+    cancellable = Gio.Cancellable()
+    sensor = GObject.new(SSC.SensorAccelerometer, data_type="gravity")
+    session = GravitySession(
+        sensor, loop, GLib.timeout_add_seconds, cancellable.cancel,
+        lambda callback: Gio.AsyncInitable.init_async(
+            sensor, GLib.PRIORITY_DEFAULT, cancellable, callback, None), seconds)
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signum, session.stop, "interrupted")
+    session.start()
+    loop.run()
+    return session.report
+
+
+def duration(value):
+    seconds = int(value)
+    if not 1 <= seconds <= 10:
+        raise argparse.ArgumentTypeError("duration must be 1..10 seconds")
+    return seconds
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("seconds", nargs="?", type=duration, default=3)
+    report = collect(parser.parse_args().seconds)
+    print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False), flush=True)
+    raise SystemExit(0 if report["status"] == "sampled" and report["closed"] else 1)

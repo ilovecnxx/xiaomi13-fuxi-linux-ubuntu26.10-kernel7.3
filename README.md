@@ -22,7 +22,7 @@ CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](d
 | 显示、触摸、Phosh 桌面 | ✅ 原生 MSM DSI、120 Hz、Adreno 740 GPU 渲染，用户现场确认 |
 | Denial 桌面（mobile shell） | ✅ 0.6.2 官方 arm64 预编译包已安装运行，开机默认（2026-11-07）；`fuxi-session phosh` 回退 |
 | WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
-| 传感器 | 部分支持：加速度、光线、距离、磁场、指南针及陀螺仪已有读数；陀螺仪轴方向、单位、运动响应与其他 SSC 类型未验收，不能等同全部传感器支持 |
+| 传感器 | 部分支持：加速度、光线、距离、磁场、指南针、陀螺仪及重力已有读数；重力限时启停及中断关闭通过，轴方向、运动响应等仍未验收，不能等同全部传感器支持 |
 | NFC | 未接通：std2 未启用 `CONFIG_NFC`，没有可用 NFC 设备；读卡、卡模拟和支付均未验收 |
 | GPS / GNSS | 标准 MM GPS_RAW 按需启停已通过实机验收；能力收紧为 `3gpp-lac-ci/gps-raw`，本次两轮请求无有效 fix，原生 NMEA/AGPS 与桌面定位仍未完成 |
 | 音频（非通话） | ✅ 双扬声器、主麦克风；⚠️ 保护/标定未做，蓝牙耳机 A2DP 未验收 |
@@ -91,6 +91,7 @@ scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 
 scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
 scripts/fuxi-runtime-audit.sh             # 只读 KVM/TUN API 与启动级别检查；不创建 VM、网卡或修改路由
 scripts/fuxi-sensor-inventory.sh          # SSC 固定类型身份/属性探测，不启动测量流；不是全传感器验收
+scripts/fuxi-gravity-sample.sh 3          # 按需 1–10 秒重力三轴采样，报告正常/中断关闭；不是运动标定验收
 scripts/fuxi-gnss-session.sh 30           # 按需限时 LOC 会话，汇总报告，不保存坐标；不是桌面定位服务
 FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
