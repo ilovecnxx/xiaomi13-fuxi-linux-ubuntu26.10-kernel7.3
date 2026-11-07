@@ -4,13 +4,13 @@
 不使用 Android vendor kernel、Halium 或 Android HAL；Android 与 Linux 双系统共存，普通开机进 Android，
 需要时写 `recovery_b` 进 Linux。
 
-当前版本：**v0.5.0**（内核 `7.3.0+ #222`，Ubuntu 26.10）。
+当前版本：**v0.6.0**（内核 `7.4.0-rc1`，主线 U-Boot + extlinux 引导，内核以 deb 包升级，Ubuntu 26.10）。
 
 ## 当前状态
 
 | 能力 | 状态 |
 |---|---|
-| 启动、UFS 根文件系统、双系统切换 | ✅ 实机稳定（Linux 在 `/dev/sda33`） |
+| 启动、UFS 根文件系统、双系统切换 | ✅ 实机稳定（Linux 在 `/dev/sda33`）；`recovery_b` = 主线 U-Boot，内核 deb 独立升级，启动失败 2 次自动回退 |
 | 显示、触摸、Phosh 桌面 | ✅ 原生 MSM DSI、120 Hz、Adreno 740 GPU 渲染，用户现场确认 |
 | Denial 桌面（mobile shell） | ✅ 0.6.2 官方 arm64 预编译包已安装运行，开机默认（2026-11-07）；`fuxi-session phosh` 回退 |
 | WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
@@ -18,12 +18,12 @@
 | 音频（非通话） | ✅ 双扬声器、主麦克风；⚠️ 保护/标定未做，蓝牙耳机 A2DP 未验收 |
 | 电量、充电、调频温控、s2idle | ✅ 可用；⚠️ 续航未达标，空闲自动挂起已关闭 |
 | 浏览器 / 应用 | ✅ Chromium（隔离安装）、Epiphany、文件选择器、Clash、DeepSeek Harness |
-| 蜂窝数据 | ⚠️ 下行打通（约 85 Mbit/s），注册稳定性未解决 |
-| 通话、短信、双卡 | ❌ 未完成；VoLTE 通话音频卡在 `start(TX)` 返回 -22 |
-| 相机 | ❌ 仅完成调研与 DTS 准备 |
+| 蜂窝数据 | ✅ 双卡注册，上网卡可选卡槽 1/2 |
+| 通话、短信、双卡 | ⚠️ 双卡 IMS 注册、短信收发、VoLTE 来电接听实测通过；**通话没有声音**（ADSP TX 图 `start` 返回 -22） |
+| 相机 | ❌ 未完成；MCLK 修法已写（`work/patches/camera-mclk-gdsc-20261107/`），未上机 |
 | 指纹 | ❌ 主线不可行（TrustZone 独占） |
 
-细节与逐项证据见 [`docs/`](docs/)，最新交接见 [`docs/交接-新会话-20261103-1940.md`](docs/交接-新会话-20261103-1940.md)。
+细节与逐项证据见 [`docs/`](docs/)，最新交接见 [`docs/交接-新会话-20261107-1652.md`](docs/交接-新会话-20261107-1652.md)，任务摘要见 [`TASKS.md`](TASKS.md)。
 
 ## 下载与安装
 
@@ -31,6 +31,9 @@
 
 可刷的东西在 Release 里：
 
+- [v0.6.0](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.6.0-uboot-20261107) —
+  `abl-fuxi-uboot7.img`（主线 U-Boot，1.3 MB）、7.4 内核 deb、fuxi-device/desktop/modem 包、完整内核补丁、`.config`、校验和。
+  从 v0.5.0 升级要先在 Linux 里装好内核 deb 和 fuxi-device，再换 `recovery_b`，步骤见 Release 说明。
 - [v0.5.0](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.5.0-dualboot-20261031) —
   `abl-fuxi-modem16-epmap.img`（10.4 MB）、完整内核补丁、`.config`、源码树快照、校验和。
 
