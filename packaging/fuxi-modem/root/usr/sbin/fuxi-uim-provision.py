@@ -77,10 +77,13 @@ def main():
     if status is None:
         log(f"no card present within {WAIT}s, skip")
         return 0
-    # 给基带自己预配的机会
-    time.sleep(SETTLE)
-    text = card_status() or status
-    sessions, slots = parse(text)
+    sessions, slots = parse(status)
+    # Already-provisioned cards need no settling delay on the boot critical path.
+    present_sessions = [sessions.get(name) for n, (name, _) in SESSIONS.items()
+                        if slots.get(n, {}).get("present")]
+    if not present_sessions or not all(value is True for value in present_sessions):
+        time.sleep(SETTLE)
+        sessions, slots = parse(card_status() or status)
     changed = 0
     for n, (name, stype) in SESSIONS.items():
         info = slots.get(n)
