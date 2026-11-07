@@ -4,7 +4,7 @@ Architecture: all
 Maintainer: fuxi port <noreply@localhost>
 Section: x11
 Priority: optional
-Depends: fuxi-device, python3, kbd, systemd
+Depends: fuxi-device, python3, python3-gi, gir1.2-glib-2.0, kbd, systemd
 Recommends: denial, phosh, xdg-desktop-portal-gtk
 Suggests: plasma-mobile, kscreen
 Description: Xiaomi 13 (fuxi, SM8550) graphical session glue
@@ -14,5 +14,6 @@ Description: Xiaomi 13 (fuxi, SM8550) graphical session glue
   - fuxi-session: switch between Denial / Phosh / Plasma Mobile and clean up
     leftover compositors
   - fuxi-autorotate: iio-sensor-proxy orientation -> kscreen for Plasma
+  - opt-in Denial ambient-light brightness and explicit power preferences
   - fuxi-desktop-app: software-render fallback when no GPU render node
   - xdg-desktop-portal preference for Phosh (conffile)

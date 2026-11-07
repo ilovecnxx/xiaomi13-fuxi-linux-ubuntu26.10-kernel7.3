@@ -88,6 +88,7 @@ assert "@MIGRATE_LIST@" in s
 open(p, "w").write(s.replace("@MIGRATE_LIST@", m))
 EOF2
 sed -i "s/@VERSION@/$V/" "$P/DEBIAN/control"
+find "$P" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$P" -type d -exec chmod 755 {} +
 find "$P" -type f -exec chmod 644 {} +
 chmod 755 "$P"/DEBIAN/{postinst,postrm} "$P"/usr/sbin/* "$P"/usr/bin/* "$P"/usr/libexec/fuxi/81voltd-sub2 \
@@ -111,6 +112,7 @@ open(p, "w").write(s.replace("@MIGRATE_LIST@", m))
 EOF2
 done
 sed -i "s/@VERSION@/$V/" "$P/DEBIAN/control"
+find "$P" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$P" -type d -exec chmod 755 {} +
 find "$P" -type f -exec chmod 644 {} +
 chmod 755 "$P"/DEBIAN/{preinst,postinst,postrm} "$P"/usr/bin/*

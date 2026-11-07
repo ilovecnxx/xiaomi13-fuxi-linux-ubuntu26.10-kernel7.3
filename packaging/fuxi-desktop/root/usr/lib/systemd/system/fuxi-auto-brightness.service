@@ -1,0 +1,21 @@
+[Unit]
+Description=Fuxi ambient-light brightness for Denial
+After=denial.service iio-sensor-proxy.service
+BindsTo=denial.service
+Wants=iio-sensor-proxy.service
+ConditionPathExists=/sys/class/backlight/ae94000.dsi.0/brightness
+
+[Service]
+ExecStart=/usr/bin/fuxi-auto-brightness
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/sys/class/backlight/ae94000.dsi.0/brightness
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=denial.service

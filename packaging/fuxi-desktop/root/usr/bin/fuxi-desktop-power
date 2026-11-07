@@ -1,0 +1,56 @@
+#!/usr/bin/python3
+"""Apply explicit Denial power preferences as the desktop user."""
+import argparse
+import json
+import os
+from pathlib import Path
+import tempfile
+
+
+def configure(path, lock=None, idle_seconds=None):
+    original = path.read_bytes() if path.exists() else b"{}"
+    settings = json.loads(original)
+    power = settings.setdefault("power", {})
+    if lock is not None:
+        power["idleLockEnabled"] = lock
+    if idle_seconds is not None:
+        power["idleDpmsEnabled"] = True
+        power["idleDpmsTimeoutSeconds"] = idle_seconds
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = path.with_name("settings.before-fuxi-power.json")
+    if not backup.exists():
+        with backup.open("xb") as stream:
+            os.chmod(backup, 0o600)
+            stream.write(original)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = stream.name
+            stream.write((json.dumps(settings, ensure_ascii=False, indent=2) + "\n").encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lock", choices=("enabled", "disabled"))
+    parser.add_argument("--idle-seconds", type=int)
+    args = parser.parse_args()
+    if args.lock is None and args.idle_seconds is None:
+        parser.error("specify --lock or --idle-seconds")
+    if args.idle_seconds is not None and not 30 <= args.idle_seconds <= 3600:
+        parser.error("idle timeout must be between 30 and 3600 seconds")
+    if os.geteuid() == 0:
+        parser.error("run as the desktop user, not root")
+    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    configure(root / "denial/settings.json",
+              None if args.lock is None else args.lock == "enabled", args.idle_seconds)
+    print("Denial power preferences saved; original settings backup preserved")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,136 @@
+#!/usr/bin/python3
+"""Bounded ambient-light control for the Denial session on fuxi."""
+import math
+from pathlib import Path
+import signal
+import time
+
+
+BACKLIGHT = Path("/sys/class/backlight/ae94000.dsi.0")
+CURVE = ((0, .04), (5, .06), (30, .10), (100, .18), (300, .28),
+         (1000, .42), (5000, .60), (20000, .65))
+
+
+def target_brightness(lux, maximum):
+    if not math.isfinite(lux) or lux < 0 or maximum < 1:
+        raise ValueError("invalid light level or backlight range")
+    for (low, start), (high, end) in zip(CURVE, CURVE[1:]):
+        if lux <= high:
+            fraction = (math.log1p(lux) - math.log1p(low)) / (math.log1p(high) - math.log1p(low))
+            return max(1, round(maximum * (start + fraction * (end - start))))
+    return max(1, round(maximum * CURVE[-1][1]))
+
+
+def next_brightness(current, target, maximum):
+    if abs(current - target) < max(2, round(maximum * .015)):
+        return current
+    step = max(1, round(maximum * .03))
+    return max(current - step, min(target, current + step))
+
+
+class Controller:
+    def __init__(self, gio, glib, backlight=BACKLIGHT):
+        self.gio, self.glib, self.backlight = gio, glib, backlight
+        self.proxy = gio.DBusProxy.new_for_bus_sync(
+            gio.BusType.SYSTEM, gio.DBusProxyFlags.NONE, None,
+            "net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+            "net.hadess.SensorProxy", None)
+        self.proxy.set_default_timeout(2000)
+        self.proxy.connect("g-properties-changed", self.properties_changed)
+        self.proxy.connect("notify::g-name-owner", self.owner_changed)
+        self.claimed = False
+        self.sample = None
+        self.last_written = None
+        self.adjusted = False
+        self.hold_until = 0
+        self.error = None
+
+    def owner_changed(self, *_):
+        self.claimed = False
+        self.sample = None
+        self.last_written = None
+
+    def property(self, name):
+        value = self.proxy.get_cached_property(name)
+        return value.unpack() if value is not None else None
+
+    def properties_changed(self, proxy, changed, invalidated):
+        if "LightLevel" in invalidated or "HasAmbientLight" in invalidated:
+            self.sample = None
+        values = changed.unpack()
+        if self.claimed and "LightLevel" in values:
+            self.sample = values["LightLevel"]
+
+    def release(self):
+        if self.claimed and self.proxy.get_name_owner():
+            self.proxy.call_sync("ReleaseLight", None, self.gio.DBusCallFlags.NONE, 2000, None)
+        self.claimed = False
+        self.sample = None
+        self.last_written = None
+        self.adjusted = False
+
+    def tick(self):
+        try:
+            awake = (self.backlight / "bl_power").read_text().strip() == "0"
+            if (not awake or not self.proxy.get_name_owner()
+                    or not self.property("HasAmbientLight")):
+                self.release()
+                return True
+            if not self.claimed:
+                self.proxy.call_sync("ClaimLight", None, self.gio.DBusCallFlags.NONE, 2000, None)
+                self.claimed = True
+                self.sample = self.property("LightLevel")
+                self.hold_until = time.monotonic() + 2
+                return True
+            if self.sample is None or self.property("LightLevelUnit") != "lux":
+                return True
+            maximum = int((self.backlight / "max_brightness").read_text())
+            current = int((self.backlight / "brightness").read_text())
+            now = time.monotonic()
+            # A slider or another controller changed the level: yield for a minute.
+            if self.last_written is not None and current != self.last_written:
+                self.hold_until = now + 60
+                self.last_written = current
+            if now < self.hold_until:
+                return True
+            target = target_brightness(float(self.sample), maximum)
+            value = next_brightness(current, target, maximum)
+            if current != value:
+                (self.backlight / "brightness").write_text(str(value))
+                self.last_written = value
+                if not self.adjusted:
+                    print(f"auto-brightness: light={self.sample} lux; brightness={value}/{maximum}", flush=True)
+                    self.adjusted = True
+            self.error = None
+        except (OSError, ValueError, TypeError, self.glib.Error) as error:
+            message = str(error)
+            if message != self.error:
+                print(f"auto-brightness: leaving current brightness unchanged: {message}", flush=True)
+                self.error = message
+        return True
+
+
+def main():
+    import gi
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import Gio, GLib, GLibUnix
+
+    controller = Controller(Gio, GLib)
+    loop = GLib.MainLoop()
+
+    def stop(*_):
+        loop.quit()
+        return False
+
+    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
+    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
+    GLib.timeout_add_seconds(1, controller.tick)
+    print("auto-brightness: active for Denial; stop service for manual-only brightness", flush=True)
+    try:
+        loop.run()
+    finally:
+        controller.release()
+
+
+if __name__ == "__main__":
+    main()
