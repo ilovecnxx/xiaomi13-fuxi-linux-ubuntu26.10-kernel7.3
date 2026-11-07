@@ -71,6 +71,7 @@ scripts/fuxi-build-abl.sh daily
 scripts/fuxi-ssh.sh                       # USB SSH，手机 10.42.0.2；FUXI_HOST=<无线 IP> 走 WiFi
 scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
+FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
 python3 -m unittest discover -s scripts/tests -v
 ```
