@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="typec", KERNEL=="port*-partner", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fuxi-mipps-auth.service"
+ACTION=="change", SUBSYSTEM=="power_supply", KERNEL=="qcom-battmgr-usb", RUN+="/usr/libexec/fuxi/fuxi-mipps-auth --trigger"

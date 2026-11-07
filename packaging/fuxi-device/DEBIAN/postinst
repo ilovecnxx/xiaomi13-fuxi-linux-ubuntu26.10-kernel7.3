@@ -7,7 +7,7 @@
 #  3. daemon-reload、udev reload
 set -e
 BK=/var/backups/fuxi-device-migrate
-UNITS="fuxi-boot-ok fuxi-firmware-devices fuxi-usbnet fuxi-wifi-regdom fuxi-bt-address fuxi-display-kick fuxi-vt"
+UNITS="fuxi-boot-ok fuxi-firmware-devices fuxi-usbnet fuxi-wifi-regdom fuxi-bt-address fuxi-display-kick fuxi-vt fuxi-mipps-auth"
 
 [ "$1" = configure ] || exit 0
 

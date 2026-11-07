@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+# Protocol and public key candidates adapted from Armbian xiaomi-mipps-auth,
+# build commit c95374efd50807424c906e885d3b2c0452c27ba4.
+"""Verify the fuxi battery and MiPPS adapter through the ADSP charger."""
+
+import argparse
+import glob
+import hashlib
+import hmac
+import secrets
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+FG_KEYS = (
+    "45f0f5a023b09a7437d9b85a6ea2033539321d5437b9543f3f2292e0c966d675",
+    "02b3a85ea4c1a6db6fbd1fd5767c1a42314f37ba7c9460c9ed79a12bb2b5d99c",
+)
+ADAPTER_SEED = "d6e9770506c7f5f4df7a40008c7467b8"
+ADAPTER_KEY = "5c4d4179da1501ed11747492e26083d96b8fbc73c82e7bdf5d3255c2a036a1dc"
+STATE = Path("/run/fuxi-mipps-auth/attach")
+USB = Path("/sys/class/power_supply/qcom-battmgr-usb")
+
+
+def valid_battery_digest(challenge, reply):
+    try:
+        digest = bytes.fromhex(reply)
+        challenge_bytes = bytes.fromhex(challenge)
+    except ValueError:
+        return False
+    if len(digest) != 32 or len(challenge_bytes) != 32:
+        return False
+    return any(hmac.compare_digest(
+        digest, hmac.new(bytes.fromhex(key), challenge_bytes, hashlib.sha256).digest()
+    ) for key in FG_KEYS)
+
+
+def adapter_digest(challenge, adapter_id):
+    return hmac.new(bytes.fromhex(ADAPTER_KEY),
+                    bytes.fromhex(challenge + adapter_id), hashlib.sha256).hexdigest()
+
+
+def attach_token():
+    for partner in sorted(glob.glob("/sys/class/typec/port*-partner")):
+        try:
+            stat = Path(partner).stat()
+            return f"{partner}:{stat.st_ino}:{stat.st_ctime_ns}"
+        except FileNotFoundError:
+            continue
+    return None
+
+
+def usb_online():
+    try:
+        return (USB / "online").read_text().strip() == "1"
+    except OSError:
+        return False
+
+
+def trigger():
+    if not usb_online():
+        STATE.unlink(missing_ok=True)
+        return
+    token = attach_token()
+    if token and STATE.exists() and STATE.read_text() == token:
+        return
+    subprocess.run(["systemctl", "--no-block", "start", "fuxi-mipps-auth.service"],
+                   check=True, timeout=2)
+
+
+class Charger:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.token = attach_token()
+
+    def read(self, name):
+        return (self.root / name).read_text().strip()
+
+    def write(self, name, value):
+        if not usb_online() or (self.token and attach_token() != self.token):
+            raise RuntimeError("charger detached during authentication")
+        (self.root / name).write_text(str(value) + "\n")
+
+    def verify_battery(self):
+        # fuxi has one fuel gauge; the sheng slave-gauge step does not apply.
+        if self.read("authentic") == "1":
+            print("battery_verified=1 (firmware already verified)", flush=True)
+            return
+        self.write("verify_slave_flag", 0)
+        for attempt in range(3):
+            challenge = secrets.token_hex(32)
+            self.write("verify_digest", challenge)
+            time.sleep(1.4)
+            for poll in range(5):
+                if valid_battery_digest(challenge, self.read("verify_digest")):
+                    self.write("authentic", 1)
+                    print("battery_verified=1", flush=True)
+                    return
+                time.sleep(0.4)
+        self.write("authentic", 0)
+        raise RuntimeError("battery digest did not match the supported key candidates")
+
+    def vdm(self, cmd, payload="null", wait=True):
+        self.write("request_vdm_cmd", f"{cmd},{payload}")
+        if not wait:
+            time.sleep(0.1)
+            return ""
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state, _, result = self.read("request_vdm_cmd").partition(",")
+            if int(state) == cmd:
+                time.sleep(0.5 if cmd in (4, 5) else 0.005)
+                return self.read("request_vdm_cmd").partition(",")[2]
+            time.sleep(0.05)
+        raise RuntimeError(f"adapter does not complete MiPPS command {cmd}")
+
+    def verify_adapter(self, swap_data_role=False):
+        if int(self.read("real_type"), 0) not in (6, 7, 8):
+            print("adapter_auth=skipped (not PD)", flush=True)
+            return
+        ports = glob.glob("/sys/class/typec/port*/data_role") if swap_data_role else []
+        for port in sorted(ports):
+            node = Path(port)
+            if "[host]" not in node.read_text():
+                node.write_text("host\n")
+                time.sleep(0.5)
+            if "[host]" not in node.read_text():
+                raise RuntimeError("adapter data role swap did not complete")
+            break
+        self.vdm(1)
+        self.vdm(2)
+        self.vdm(3)
+        self.vdm(4, ADAPTER_SEED)
+        challenge = secrets.token_hex(16)
+        reply = self.vdm(5, challenge)
+        adapter_id = int(self.read("adapter_id"), 0)
+        if not 0 < adapter_id <= 0xffffffff:
+            raise RuntimeError("adapter did not supply an identity")
+        digest = adapter_digest(challenge, f"{adapter_id:08x}")
+        verified = hmac.compare_digest(reply.lower(), digest[:32])
+        payload = "01000000" if verified else "00000000"
+        self.vdm(6, payload, wait=False)
+        if verified:
+            self.vdm(8, digest[32:])
+        self.vdm(7, payload, wait=False)
+        self.write("pd_verifed", int(verified))
+        if not verified:
+            raise RuntimeError("adapter authentication digest mismatch")
+        print("adapter_verified=1", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sysfs")
+    parser.add_argument("--battery-only", action="store_true")
+    parser.add_argument("--swap-data-role", action="store_true",
+                        help="experimental: request host data role before MiPPS authentication")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--trigger", action="store_true")
+    args = parser.parse_args()
+    if args.trigger:
+        trigger()
+        return
+    roots = [args.sysfs] if args.sysfs else sorted(glob.glob(
+        "/sys/devices/platform/pmic-glink/*/xiaomi"))
+    if not roots:
+        raise RuntimeError("kernel does not provide the Xiaomi authentication interface")
+    deadline = time.monotonic() + 3
+    while not usb_online() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if not usb_online():
+        print("authentication skipped: USB offline", flush=True)
+        return
+    token = attach_token()
+    if not args.force and token and STATE.exists() and STATE.read_text() == token:
+        print("authentication already attempted for this attachment", flush=True)
+        return
+    if token:
+        STATE.parent.mkdir(parents=True, exist_ok=True)
+        STATE.write_text(token)
+    charger = Charger(roots[0])
+    charger.verify_battery()
+    if not args.battery_only:
+        try:
+            charger.verify_adapter(swap_data_role=args.swap_data_role)
+        except (OSError, RuntimeError) as error:
+            # A generic PD charger can still charge after fuel-gauge verification.
+            print(f"adapter_auth=unavailable: {error}", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"fuxi-mipps-auth: {error}", file=sys.stderr)
+        sys.exit(1)

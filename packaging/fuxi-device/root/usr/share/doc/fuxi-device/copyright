@@ -1,0 +1,18 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+
+Files: usr/libexec/fuxi/fuxi-mipps-auth
+Copyright: Armbian contributors and fuxi port contributors
+License: GPL-2
+Comment: Protocol and public key candidates adapted from
+ https://github.com/armbian/build/blob/c95374efd50807424c906e885d3b2c0452c27ba4/packages/bsp/xiaomi-sheng/xiaomi-mipps-auth
+ The associated kernel message formats are documented in
+ https://github.com/ianchb/sm8550-mainline/blob/dd8bbe0acff33bb739f1f6ed3091946e052cd39b/drivers/power/supply/qcom_battmgr.c
+ and the Xiaomi fuxi-t-oss qti_battery_charger driver.
+
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of version 2 of the GNU General Public License as
+ published by the Free Software Foundation.
+ .
+ On Debian systems, the complete license is in
+ /usr/share/common-licenses/GPL-2.

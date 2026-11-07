@@ -8,16 +8,19 @@
 小米 13（fuxi）主线 Linux 成为可日用的完整手机 + 桌面；内核以 deb 独立升级、标准引导、设备支持全部打包。
 
 ## 当前状态
-- 引导：ABL → recovery_b = uboot7（b78e2462…）→ extlinux → deb5（default）/ deb4（fallback），2 次未确认自动回退。
-- deb5 = 收敛树 a5dcbb9cc（花屏修复）+ 语音移植（未提交，默认关），由 `~/.cache/fuxi-voice74` 构建。cmdline loglevel=3。
+- 引导：ABL → recovery_b = uboot7（b78e2462…）→ extlinux → chg2（default）/ deb5（fallback），2 次未确认自动回退。
+- chg2 = 收敛树 a5dcbb9cc + 充电认证接口（89846aa3d），`~/.cache/fuxi-charge74` 构建。回退 deb5 含默认关闭的语音移植，原语音工作树未改。cmdline loglevel=3。
 - 开机花屏 SMMU fault 10→0（已实测）；卡 2 IMS 127 s（81voltd v8）；双卡 IMS 正常。
-- 包：fuxi-device/desktop/firmware 0.20261107.1519，fuxi-modem 0.20261107.1619。
-- 充电（11-07 晚，deb5）：电脑 SDP 约 1.8 W，实测净放电；换墙充后 5 V PD 约 6.9 W，121 秒电荷 +44 mAh、电量 26%→27%。**快充未解决**，未改充电参数；见 `docs/充电验收-20261107.md`。已找到 Armbian sheng 的 MiPPS 认证程序和配套 qcom_battmgr 扩展，尚未移植，机型/固件差异见 `docs/快充开源实现调研-20261107.md`。
+- 包：fuxi-device 0.20261107.2005，desktop/firmware 0.20261107.1519，fuxi-modem 0.20261107.1619。
+- 充电基线（11-07 晚，deb5）：电脑 SDP 约 1.8 W，实测净放电；换墙充后 5 V PD 约 6.9 W，121 秒电荷 +44 mAh、电量 26%→27%。当时未改充电参数；见 `docs/充电验收-20261107.md`。Armbian sheng 的 MiPPS 认证程序和配套 qcom_battmgr 扩展调研见 `docs/快充开源实现调研-20261107.md`。
+- 充电推进（约 20:00）：已装 chg2，default=chg2、fallback=deb5、pending=0；电池随机挑战认证实测通过（AUTHENTIC=1）。MiPPS/快充仍未解决；数据角色切换实验超时后退到 USB_FLOAT（约 5 V / 0.92 A），软件复位未恢复，需要重新插拔墙充。fuxi-device 0.20261107.2005 自动服务仅做电池认证，禁自动角色切换。代码、镜像哈希、复测入口见 `docs/快充修复进展-20261107.md`。
 - 相机第 1 步（17:10 用户叫停，**未编译内核、未上机**）：MCLK 修法写好 → 补丁 `work/patches/camera-mclk-gdsc-20261107/`
   （收敛树与语音树都已打上、未提交）。相机 DTB 编译通过，并已确认是日常 DTB 的超集（只多开 cci0/cci1/camss + LDO 电压）。
 - 子 agent 16:45 起 API 余额不足（403），充值前别派。
 
 ## 下一步
+当前优先：重新插拔墙充后继续快充协商验证；不要将基础充电或 AUTHENTIC=1 单独记为快充通过。
+
 1. 相机：编 deb6——`FUXI_KTREE=~/.cache/fuxi-voice74 FUXI_KOUT=~/.cache/fuxi-voice74-out FUXI_EXTRA_CFG="-e FUXI_CAMERA_POWER -e I2C_QCOM_CCI -e I2C_CHARDEV -e MEDIA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e MEDIA_CAMERA_SUPPORT -e VIDEO_DEV -e V4L_PLATFORM_DRIVERS -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10" scripts/fuxi-build-deb.sh deb6`
    → 装上后 `fuxi-kernel-install add 7.4.0-rc1-fuxi-deb6 /boot/vmlinuz-7.4.0-rc1-fuxi-deb6 /usr/lib/linux-image-7.4.0-rc1-fuxi-deb6/qcom/sm8550-xiaomi-fuxi-camera.dtb`
    → 重启前先问用户 → `scripts/fuxi-camera-probe.sh`（MCLK 是否开起来、i2ctransfer 读 OV13B10 chip ID）。回滚 `fuxi-kernel-install set-default 7.4.0-rc1-fuxi-deb5`。

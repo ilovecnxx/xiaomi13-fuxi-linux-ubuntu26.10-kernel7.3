@@ -6,4 +6,5 @@ enable fuxi-wifi-regdom.service
 enable fuxi-bt-address.service
 enable fuxi-display-kick.service
 enable fuxi-vt.service
+enable fuxi-mipps-auth.service
 disable fuxi-serial-shell.service

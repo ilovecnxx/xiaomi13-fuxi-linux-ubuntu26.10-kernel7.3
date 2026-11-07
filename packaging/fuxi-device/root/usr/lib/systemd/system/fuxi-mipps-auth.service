@@ -1,0 +1,16 @@
+[Unit]
+Description=fuxi battery and MiPPS adapter authentication
+After=fuxi-firmware-devices.service
+ConditionPathExistsGlob=/sys/devices/platform/pmic-glink/*/xiaomi/verify_digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n -E 0 /run/fuxi-mipps-auth.lock /usr/libexec/fuxi/fuxi-mipps-auth --battery-only
+TimeoutStartSec=35
+RuntimeDirectory=fuxi-mipps-auth
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

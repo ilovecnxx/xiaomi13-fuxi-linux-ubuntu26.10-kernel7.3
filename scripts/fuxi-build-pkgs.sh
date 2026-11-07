@@ -46,7 +46,7 @@ open(p, "w").write(s.replace("@MIGRATE_LIST@", m))
 EOF
 done
 sed -i "s/@VERSION@/$V/" "$P/DEBIAN/control"
-rm -rf "$P"/usr/sbin/__pycache__
+find "$P" -type d -name __pycache__ -prune -exec rm -rf {} +
 chmod 755 "$P"/DEBIAN/{preinst,postinst,postrm} "$P"/usr/sbin/* "$P"/usr/libexec/fuxi/* "$P"/etc/kernel/post*.d/zz-fuxi "$P"/etc/initramfs/post-update.d/zz-fuxi
 find "$P" -type d -exec chmod 755 {} +
 find "$P" -type f ! -perm -u+x -exec chmod 644 {} +
