@@ -1,0 +1,4 @@
+/etc/kernel/postinst.d/zz-fuxi
+/etc/kernel/postrm.d/zz-fuxi
+/etc/initramfs/post-update.d/zz-fuxi
+/etc/initramfs-tools/conf.d/fuxi

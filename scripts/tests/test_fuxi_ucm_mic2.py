@@ -6,7 +6,7 @@ class TestFuxiUCMMic2(unittest.TestCase):
     def test_mic2_uses_adc4_amic5(self):
         """Mic2 device 调用 AnalogMic5EnableSeq + SoundwireMic1EnableSeq，CaptureElem 为 ADC4"""
         from pathlib import Path
-        p = Path(__file__).parents[2]/"work/rootfs-overlay/usr/share/alsa/ucm2/Qualcomm/sm8550/Xiaomi-13/HiFi.conf"
+        p = Path(__file__).parents[2]/"packaging/fuxi-device/root/usr/share/alsa/ucm2/Qualcomm/sm8550/Xiaomi-13/HiFi.conf"
         t = p.read_text()
         sec = [s.strip() for s in t.split("SectionDevice") if '"Mic2"' in s]
         self.assertEqual(len(sec), 1, "Mic2 section 未找到或重复")

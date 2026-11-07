@@ -9,7 +9,7 @@ ConditionPathExists=/etc/fuxi/bt-address
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/fuxi-bt-address
+ExecStart=/usr/sbin/fuxi-bt-address
 
 [Install]
 WantedBy=multi-user.target

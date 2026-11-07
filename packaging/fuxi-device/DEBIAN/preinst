@@ -1,0 +1,25 @@
+#!/bin/sh
+# fuxi-device preinst：首次安装前，把与本包同路径的旧手工 conffile（哈希与 migrate.list 一致的）先挪走，
+# 免得 dpkg 因"磁盘上已有不同内容的配置文件"停下来问。内容不一致（本地改过）的保留，dpkg 会照常询问。
+set -e
+BK=/var/backups/fuxi-device-migrate
+case "$1" in
+install)
+	[ -n "$2" ] && exit 0   # 曾装过（配置文件已归 dpkg 管）
+	while read -r h p; do
+		case "$h" in ''|\#*) continue ;; esac
+		case "$p" in /etc/kernel/*/zz-fuxi|/etc/initramfs/post-update.d/zz-fuxi|/etc/initramfs-tools/conf.d/fuxi) ;; *) continue ;; esac
+		[ -f "$p" ] || continue
+		if [ "$(sha256sum < "$p" | cut -d' ' -f1)" = "$h" ]; then
+			mkdir -p "$BK$(dirname "$p")"
+			mv "$p" "$BK$p"
+			echo "fuxi-device: 旧 $p 已移到 $BK$p"
+		else
+			echo "fuxi-device: 警告：$p 与已知旧版不同（本地改过），保留，dpkg 会询问" >&2
+		fi
+	done <<'EOF'
+@MIGRATE_LIST@
+EOF
+	;;
+esac
+exit 0

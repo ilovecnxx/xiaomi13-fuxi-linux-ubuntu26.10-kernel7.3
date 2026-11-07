@@ -52,7 +52,7 @@ FUXI_KEEP=1 "$B/scripts/fuxi-test-recovery.sh" "$IMG" 'uname -v' | grep -vE 'pus
 say "== 3. 部署"
 tar -C "$FW" -cf - qcom | T=600 ssh_ 'tar -C /lib/firmware -xmf - && echo modem-fw-ok'
 tar -C "$EFS" -cf - . | ssh_ 'mkdir -p /var/lib/fuxi-rmtfs && chmod 700 /var/lib/fuxi-rmtfs && tar -C /var/lib/fuxi-rmtfs -xmf - && echo efs-ok'
-tar -C "$B/work/rootfs-overlay" -cf - . | ssh_ 'tar --no-same-owner --no-overwrite-dir -C / -xmf - && chmod 755 /usr/local/sbin/fuxi-firmware-devices && echo overlay-ok'
+tar -C "$B/work/rootfs-overlay" -cf - . | ssh_ 'tar --no-same-owner --no-overwrite-dir -C / -xmf - && echo overlay-ok'
 T=900 ssh_ 'printf "#!/bin/sh\nexit 101\n" > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
 DEBIAN_FRONTEND=noninteractive apt-get install -y rmtfs tqftpserv qrtr-tools modemmanager libqmi-utils 2>&1 | tail -n 3
 rm -f /usr/sbin/policy-rc.d

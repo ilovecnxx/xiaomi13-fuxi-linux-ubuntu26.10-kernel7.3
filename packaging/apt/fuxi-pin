@@ -1,0 +1,11 @@
+# /etc/apt/preferences.d/fuxi（fuxi-device 本地源）
+# fuxi 自己的包只从本地源 /srv/fuxi-apt 取，且优先于任何同名的发行版包（990 < 1000：不强制降级）
+Package: fuxi-* linux-image-*-fuxi-*
+Pin: release o=fuxi
+Pin-Priority: 990
+
+# 发行版的通用内核和 linux-firmware 不要装：内核是全内建的 fuxi 内核，固件由 fuxi-firmware 提供；
+# 装上 linux-firmware 会和 fuxi-firmware 抢 /usr/lib/firmware 下的同名文件（例如 qcom/a740_sqe.fw）
+Package: linux-image-generic linux-generic linux-firmware linux-firmware-*
+Pin: release *
+Pin-Priority: -1

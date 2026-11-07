@@ -6,7 +6,7 @@ Before=NetworkManager.service bluetooth.service rmtfs.service ModemManager.servi
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/fuxi-firmware-devices
+ExecStart=/usr/sbin/fuxi-firmware-devices
 
 [Install]
 WantedBy=multi-user.target

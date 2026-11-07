@@ -7,7 +7,7 @@ import time
 import unittest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "work/rootfs-overlay/usr/local/libexec/fuxi-wait-ssc"
+SCRIPT = Path(__file__).resolve().parents[2] / "packaging/fuxi-device/root/usr/libexec/fuxi/fuxi-wait-ssc"
 
 
 class WaitSSCTest(unittest.TestCase):

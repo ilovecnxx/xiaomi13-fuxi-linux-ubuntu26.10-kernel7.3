@@ -8,7 +8,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-OVERRIDE = ROOT / "work/rootfs-overlay/usr/share/glib-2.0/schemas/90-fuxi-power.gschema.override"
+OVERRIDE = ROOT / "packaging/fuxi-device/root/usr/share/glib-2.0/schemas/90-fuxi-power.gschema.override"
 SECTION = "org.gnome.settings-daemon.plugins.power"
 HOST_SCHEMAS = Path("/usr/share/glib-2.0/schemas")
 NEEDED = ("org.gnome.settings-daemon.plugins.power.gschema.xml", "org.gnome.settings-daemon.enums.xml")

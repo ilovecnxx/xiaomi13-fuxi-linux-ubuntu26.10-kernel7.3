@@ -1,0 +1,5 @@
+Types: deb
+URIs: file:/srv/fuxi-apt
+Suites: ./
+# 无签名本地源（file:，只在本机）
+Trusted: yes

@@ -36,7 +36,7 @@ say "== 4. 部署"
 tar -C "$B/work/firmware" -cf - . | ssh_ 'tar -C /lib/firmware -xmf - && echo firmware-ok'
 # Android 的 regdb.bin 会让上游固件崩（见 fuxi-wcn7850-firmware.sh）；旧部署留下的改名备查，不删
 ssh_ 'd=/lib/firmware/ath12k/WCN7850/hw2.0; [ -e $d/regdb.bin ] && mv $d/regdb.bin $d/regdb.bin.android; true'
-tar -C "$B/work/rootfs-overlay" -cf - . | ssh_ 'tar --no-same-owner --no-overwrite-dir -C / -xmf - && chmod 755 /usr/local/sbin/fuxi-firmware-devices && echo overlay-ok'
+tar -C "$B/work/rootfs-overlay" -cf - . | ssh_ 'tar --no-same-owner --no-overwrite-dir -C / -xmf - && echo overlay-ok'
 ssh_ 'set -e
 mkdir -p /etc/NetworkManager/conf.d
 printf "%s\n" "# fuxi：usb0 由 fuxi-usbnet.service 配静态 10.42.0.2（主机共享连接），NetworkManager 别接管" "[keyfile]" "unmanaged-devices=interface-name:usb0" > /etc/NetworkManager/conf.d/10-fuxi-usb0.conf

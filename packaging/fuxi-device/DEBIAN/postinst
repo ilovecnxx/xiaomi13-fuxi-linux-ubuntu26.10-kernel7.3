@@ -1,0 +1,68 @@
+#!/bin/sh
+# fuxi-device postinst
+#  1. /etc/kernel/cmdline 不存在时按模板生成（root=UUID=<当前根分区>）；存在就不动（启动关键，管理员维护）
+#  2. 首次安装：把旧的手工文件（/usr/local/sbin、/usr/local/libexec、/etc/systemd/system、/etc/udev、/etc/NetworkManager）
+#     中哈希与 migrate.list 一致的移到 /var/backups/fuxi-device-migrate/（否则 /etc 单元和 PATH 里的 /usr/local 会遮住本包），
+#     原来启用的单元改为启用 /usr/lib 下的同名单元；全新系统按 80-fuxi-device.preset 启用
+#  3. daemon-reload、udev reload
+set -e
+BK=/var/backups/fuxi-device-migrate
+UNITS="fuxi-boot-ok fuxi-firmware-devices fuxi-usbnet fuxi-wifi-regdom fuxi-bt-address fuxi-display-kick fuxi-vt"
+
+[ "$1" = configure ] || exit 0
+
+if [ ! -e /etc/kernel/cmdline ]; then
+	u=$(findmnt -no UUID / 2>/dev/null || true)
+	if [ -n "$u" ]; then
+		sed "s/@ROOT_UUID@/$u/" /usr/share/fuxi-device/kernel-cmdline > /etc/kernel/cmdline
+		echo "fuxi-device: 已生成 /etc/kernel/cmdline（root=UUID=$u）"
+	else
+		echo "fuxi-device: 警告：找不到根分区 UUID，未生成 /etc/kernel/cmdline（模板 /usr/share/fuxi-device/kernel-cmdline）" >&2
+	fi
+fi
+
+if [ -z "$2" ]; then
+	enabled=""
+	migrated=0
+	for u in $UNITS; do
+		# 旧单元在 /etc/systemd/system 且已启用 → 记下，迁移后重新启用
+		if [ -f "/etc/systemd/system/$u.service" ] && ls /etc/systemd/system/*.wants/"$u.service" >/dev/null 2>&1; then
+			enabled="$enabled $u"
+		fi
+	done
+	while read -r h p; do
+		case "$h" in ''|\#*) continue ;; esac
+		case "$p" in /etc/kernel/*|/etc/initramfs/*|/etc/initramfs-tools/*) continue ;; esac  # preinst 处理
+		[ -f "$p" ] || continue
+		if [ "$(sha256sum < "$p" | cut -d' ' -f1)" = "$h" ]; then
+			mkdir -p "$BK$(dirname "$p")"
+			mv "$p" "$BK$p"
+			migrated=$((migrated + 1))
+		else
+			echo "fuxi-device: 警告：$p 与已知旧版不同（本地改过），保留；它会遮住本包的同名文件" >&2
+		fi
+	done <<'EOF'
+@MIGRATE_LIST@
+EOF
+	[ "$migrated" -gt 0 ] && echo "fuxi-device: 迁走 $migrated 个旧手工文件 → $BK"
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	if [ "$migrated" -gt 0 ] || [ -n "$enabled" ]; then
+		for u in $enabled; do
+			# 删掉指向已迁走文件的悬空 wants 链接，再按 [Install] 启用 /usr/lib 下的单元
+			for l in /etc/systemd/system/*.wants/"$u.service"; do
+				[ -L "$l" ] && [ ! -e "$l" ] && rm -f "$l"
+			done
+			systemctl enable "$u.service" >/dev/null 2>&1 || echo "fuxi-device: 警告：启用 $u 失败" >&2
+		done
+	else
+		for u in $UNITS; do systemctl preset "$u.service" >/dev/null 2>&1 || true; done
+	fi
+fi
+
+if [ -d /run/systemd/system ]; then
+	systemctl daemon-reload || true
+	udevadm control --reload 2>/dev/null || true
+fi
+exit 0

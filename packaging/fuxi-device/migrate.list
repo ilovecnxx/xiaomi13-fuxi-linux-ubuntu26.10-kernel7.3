@@ -1,0 +1,27 @@
+# fuxi-device 首次安装时迁走的旧手工文件：<sha256> <路径>。哈希一致才移到 /var/backups/fuxi-device-migrate/，
+# 不一致（本地改过）就原样保留并警告。来源：2026-11-07 手机快照 work/pkg-snapshot-20261107。
+70ccfe5afae5b6c77752fdfb0f9720f6b5a5152550eb64147af12c20dd25d1ed /usr/local/sbin/fuxi-kernel-install
+2b613a8e8f3df46da467e540f2813c3799cd3c3868258736ea00edc80a0b3dac /usr/local/sbin/fuxi-bootcount
+c7dfe15a3bf7551a07339379db4c5dbafe60ea4ce28b91e45f4ff6c275c6815f /usr/local/sbin/fuxi-firmware-devices
+0396492331d26edb38236c10f543c35b035c61f986994d28dc213986717a7440 /usr/local/sbin/fuxi-display-kick
+4d52f205d52b970312d6a01f3d4909fb67e6b49bbd7ceadce61d0607f18949ae /usr/local/sbin/fuxi-bt-address
+4f4388b87487416eb6325d185baec0cc331f391a9a4b9ebaa6b9cec282646a41 /usr/local/sbin/fuxi-usbnet
+bcf23010f5043f250f9f5b840a5ddca4d6d058f045ac3529c2bf3eed01c04729 /usr/local/sbin/fuxi-usb-serial
+2f8c65e5859b20b6d892a019f6738b6528ce812bfa4b0f158126c4b67327825f /etc/systemd/system/fuxi-boot-ok.service
+14bd7ed18f4f8187461dac2a7b3b1f5ee02376783b3122da3820addc89dc320a /etc/systemd/system/fuxi-firmware-devices.service
+029391cd8fec956ea4958dd4d22c7fb70a61bab8a63fded9a387956d3b30fd9c /etc/systemd/system/fuxi-display-kick.service
+08f7de1f75f38745e7fb623929cac5aac615930889d40fe91efca540890dbf4a /etc/systemd/system/fuxi-bt-address.service
+0689427bad02a9680cde0fa0d7974e35ba04b71dbb6c36ea27546438e069d90e /etc/systemd/system/fuxi-usbnet.service
+83043d400466c3272f5d2b873dd864346244621374ec940408c8e83edd267d31 /etc/systemd/system/fuxi-vt.service
+30d79d93c07a26d7c304d93f82f1f2e1e46337248f45083db94ec455763a8eb8 /etc/systemd/system/fuxi-wifi-regdom.service
+52e49e795b6c7dbe9b6dfb59580013697a87555912e596247fc655d7e70988da /etc/systemd/system/rmtfs.service.d/10-fuxi.conf
+280f24880cc93184b8a816cc9dda7ca224d8a49f7e1b3ce94528bee0aa30512f /etc/systemd/system/hexagonrpcd.service.d/20-fuxi.conf
+ddc4e3f721483a75935e51b6e417da09857a92a890bc2747210a01baa8eb7f51 /etc/systemd/system/iio-sensor-proxy.service.d/20-fuxi-ssc.conf
+d49abf3eeeb1d35fdd4a8414bda209724437c02ae1acb2c1532e2b2323a647f4 /etc/udev/rules.d/81-fuxi-ssc.rules
+1544ad38a9152d3ee9ef1db3a286d2f24d6e64398c7b39a9c35fab60302630d1 /etc/NetworkManager/conf.d/10-fuxi-usb0.conf
+0c7c3c76cfd826baa2063965efb94a9026b258880a813fcfd2224e25f36439ae /etc/kernel/postinst.d/zz-fuxi
+0c7c3c76cfd826baa2063965efb94a9026b258880a813fcfd2224e25f36439ae /etc/kernel/postrm.d/zz-fuxi
+0c7c3c76cfd826baa2063965efb94a9026b258880a813fcfd2224e25f36439ae /etc/initramfs/post-update.d/zz-fuxi
+ab81e762d45e1e4b44cd72fc33ef545d2b550a2da59f236ecaac78ff5cb390db /etc/initramfs-tools/conf.d/fuxi
+81ffc81e5b645aea4aedc6fb052b79f359e6a126d7e320bde42fb020d80b515a /usr/local/libexec/fuxi-wait-ssc
+b62357e94f318f0730e6a02ea44a5fe443e496cb71318043858086f54636db14 /usr/local/libexec/hexagonrpcd-fuxi

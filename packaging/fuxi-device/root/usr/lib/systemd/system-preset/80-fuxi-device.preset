@@ -1,0 +1,8 @@
+# fuxi-device：首次安装时由 postinst `systemctl preset` 启用
+enable fuxi-boot-ok.service
+enable fuxi-firmware-devices.service
+enable fuxi-usbnet.service
+enable fuxi-wifi-regdom.service
+enable fuxi-bt-address.service
+enable fuxi-display-kick.service
+enable fuxi-vt.service

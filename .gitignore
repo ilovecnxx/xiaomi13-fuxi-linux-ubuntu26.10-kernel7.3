@@ -77,3 +77,4 @@ __pycache__/
 
 # ---- 其它 ----
 .checkpatch-camelcase.date.0
+/work/apt/

@@ -1,0 +1,14 @@
+Package: fuxi-firmware
+Version: @VERSION@
+Architecture: all
+Maintainer: fuxi port <noreply@localhost>
+Section: non-free-firmware/kernel
+Priority: optional
+Description: Xiaomi 13 (fuxi, SM8550) firmware (proprietary, locally built)
+ Firmware loaded by the mainline kernel and services on the Xiaomi 13:
+ modem / modem_pr / IPA / ADSP / GPU zap under qcom/sm8550/xiaomi/fuxi,
+ Adreno 740 SQE + GMU, the AudioReach topology, WCN7850 WiFi (ath12k) and
+ Bluetooth (qca). Built on the host from the phone's own copies by
+ scripts/fuxi-firmware-pull.sh; never redistributed. The per-file sha256
+ and origin (an Android partition, or local) is in
+ /usr/share/fuxi-firmware/PROVENANCE.txt.

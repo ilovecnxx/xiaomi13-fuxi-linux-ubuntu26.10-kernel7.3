@@ -1,0 +1,175 @@
+#!/usr/bin/python3 -I
+# fuxi 启动计数块（手机上运行，由 fuxi-device 包装到 /usr/sbin/）。主线 U-Boot 不能写 ext4，所以学 GRUB grubenv：
+# /boot/fuxi/bootcount 是预先分配好的 4096 字节文件，U-Boot 按"块号"原地改写它的数据块（不碰任何 ext4 元数据）。
+#
+# 块格式（小端）：
+#   0..3  "FXBC" 魔数
+#   4..7  该文件数据块在 sda33 内的块号（4 KiB 块；U-Boot 用 part start + 它算 LBA）
+#   8     pending：1 = 默认条目是新的、还没确认（fuxi-kernel-install 设默认时置 1）
+#   9     tries：pending 期间 U-Boot 每次启动默认条目前 +1
+# U-Boot 侧的保护（scripts/fuxi-uboot/fuxi.env）：经 ext4 读出的文件内容必须和按块号裸读的块逐字节相同、
+# 魔数对、块号在分区范围内，才会写；写完读回比较。pending 为 0 时 U-Boot 不写。
+# tries ≥ 2 → U-Boot 改用 /boot/extlinux/fallback.conf；回退条目起来后 confirm 把默认改成回退（同 shim）。
+#
+# 用法: fuxi-bootcount init | show | arm | confirm | set <pending> <tries>（测试用）
+#   init     建（或修复）计数块，pending=0
+#   arm      pending=1 tries=0（fuxi-kernel-install 换默认条目时调用）
+#   confirm  fuxi-boot-ok.service 调用：本次是默认条目 → 清 pending；是回退条目且 tries≥2 → 默认改成回退
+import fcntl, os, struct, subprocess, sys
+
+F = "/boot/fuxi/bootcount"
+B = "/boot/fuxi"
+PART = "/dev/disk/by-partuuid/7f2e6802-83d9-47e7-9011-8bc643debd36"
+LIMIT = 2
+BS = 4096
+MAGIC = b"FXBC"
+FIBMAP = 1
+
+
+def log(m):
+    print("fuxi-bootcount: " + m)
+
+
+def die(m):
+    print("fuxi-bootcount: " + m, file=sys.stderr)
+    sys.exit(1)
+
+
+def fs_block(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        r = fcntl.ioctl(fd, FIBMAP, struct.pack("i", 0))
+        return struct.unpack("i", r)[0]
+    finally:
+        os.close(fd)
+
+
+def raw_block(n):
+    fd = os.open(PART, os.O_RDONLY)
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        return os.pread(fd, BS, n * BS)
+    finally:
+        os.close(fd)
+
+
+def write_inplace(data):
+    assert len(data) == BS
+    fd = os.open(F, os.O_WRONLY)
+    try:
+        os.pwrite(fd, data, 0)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def pack(blk, pending, tries):
+    return (MAGIC + struct.pack("<IBB", blk, pending, tries)).ljust(BS, b"\0")
+
+
+def read_state():
+    """返回 (blk, pending, tries)；文件坏/块号不对返回 None。"""
+    try:
+        with open(F, "rb") as f:
+            d = f.read()
+    except OSError:
+        return None
+    if len(d) != BS or d[:4] != MAGIC:
+        return None
+    blk, pending, tries = struct.unpack("<IBB", d[4:10])
+    if blk != fs_block(F) or raw_block(blk) != d:
+        return None
+    return blk, pending, tries
+
+
+def put(pending, tries):
+    st = read_state()
+    if st is None:
+        die("计数块不存在或校验失败，先 fuxi-bootcount init")
+    write_inplace(pack(st[0], pending, tries))
+    st2 = read_state()
+    if st2 != (st[0], pending, tries):
+        die("写后校验失败: %r" % (st2,))
+
+
+def cmd_init():
+    if read_state() is not None:
+        log("已存在且校验通过")
+        return
+    tmp = F + ".new"
+    with open(tmp, "wb") as f:
+        f.write(pack(0, 0, 0))
+        f.flush()
+        os.fsync(f.fileno())
+    blk = fs_block(tmp)
+    if blk <= 0:
+        die("FIBMAP 失败")
+    os.rename(tmp, F)
+    write_inplace(pack(blk, 0, 0))
+    os.sync()
+    if fs_block(F) != blk or read_state() != (blk, 0, 0):
+        die("建好后校验失败")
+    log("已建 %s（sda33 块 %d）" % (F, blk))
+
+
+def cmdline_get(k):
+    v = None
+    for a in open("/proc/cmdline").read().split():
+        if a.startswith(k + "="):
+            v = a.split("=", 1)[1]
+    return v
+
+
+def getf(n):
+    try:
+        return open(os.path.join(B, n)).read().strip()
+    except OSError:
+        return ""
+
+
+def cmd_confirm():
+    st = read_state()
+    if st is None:
+        log("没有有效计数块，跳过")
+        return
+    _, pending, tries = st
+    if not pending:
+        return
+    run, dflt, fb = cmdline_get("fuxi.entry"), getf("default"), getf("fallback")
+    if run and run == dflt:
+        put(0, 0)
+        log("默认条目 %s 已确认（第 %d 次启动）" % (run, tries))
+    elif run and run == fb and tries >= LIMIT:
+        log("默认 %s 连续 %d 次没确认，U-Boot 起了回退 %s → 默认改成回退" % (dflt, tries, fb))
+        with open(os.path.join(B, "default.failed"), "w") as f:
+            f.write(dflt + "\n")
+        subprocess.run(["/usr/sbin/fuxi-kernel-install", "set-default", fb], check=True)
+        put(0, 0)
+    else:
+        log("本次条目 %s 不是默认 %s（手动选的？），不确认" % (run, dflt))
+
+
+def main():
+    if os.geteuid() != 0:
+        die("要 root")
+    c = sys.argv[1] if len(sys.argv) > 1 else "show"
+    if c == "init":
+        cmd_init()
+    elif c == "show":
+        st = read_state()
+        print("invalid" if st is None else "block=%d pending=%d tries=%d" % st)
+    elif c == "arm":
+        if read_state() is None:
+            cmd_init()
+        put(1, 0)
+        log("pending=1：下次启动默认条目要确认")
+    elif c == "set" and len(sys.argv) == 4:
+        put(int(sys.argv[2]), int(sys.argv[3]))
+        log("pending=%s tries=%s" % (sys.argv[2], sys.argv[3]))
+    elif c == "confirm":
+        cmd_confirm()
+    else:
+        die("未知命令 %s（init/show/arm/confirm）" % c)
+
+
+main()

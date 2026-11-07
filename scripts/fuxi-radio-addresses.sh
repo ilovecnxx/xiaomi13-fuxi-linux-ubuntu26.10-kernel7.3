@@ -28,7 +28,8 @@ printf 'bt=%s\nwlan=%s\n' "$bt" "$wl" > "$B/work/device-info/radio-addresses.txt
 
 say "== 2. 进 Ubuntu（$IMG）并部署"
 FUXI_KEEP=1 "$B/scripts/fuxi-test-recovery.sh" "$IMG" 'uname -v' | grep -vE 'pushed' || { say "FAIL 没进 Ubuntu"; exit 1; }
-tar -C "$B/work/rootfs-overlay" -cf - usr/local/sbin/fuxi-bt-address etc/systemd/system/fuxi-bt-address.service | ssh_ 'tar --no-same-owner --no-overwrite-dir -C / -xmf - && chmod 755 /usr/local/sbin/fuxi-bt-address && echo overlay-ok'
+# fuxi-bt-address 脚本与 unit 由 fuxi-device 包提供（scripts/fuxi-build-pkgs.sh），这里只写地址文件
+ssh_ 'dpkg -s fuxi-device >/dev/null 2>&1 || echo "WARN 未装 fuxi-device：fuxi-bt-address 不存在"'
 ssh_ "mkdir -p /etc/fuxi
 [ -n '$bt' ] && echo '$bt' > /etc/fuxi/bt-address
 [ -n '$wl' ] && printf '%s\n' '# fuxi：ath12k 默认用高通占位地址，固定成本机 WiFi 地址（取自 Android）' '[Match]' 'Driver=ath12k_wifi7_pci' '' '[Link]' 'MACAddress=$wl' 'NamePolicy=kernel database onboard slot path' > /etc/systemd/network/10-fuxi-wlan.link

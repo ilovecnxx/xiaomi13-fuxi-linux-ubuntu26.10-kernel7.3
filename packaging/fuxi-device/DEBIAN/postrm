@@ -1,0 +1,12 @@
+#!/bin/sh
+# fuxi-device postrm：单元文件已删 → daemon-reload。/etc/kernel/cmdline 与 /boot/fuxi 不动（启动要用）。
+set -e
+case "$1" in
+remove|purge)
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+		udevadm control --reload 2>/dev/null || true
+	fi
+	;;
+esac
+exit 0
