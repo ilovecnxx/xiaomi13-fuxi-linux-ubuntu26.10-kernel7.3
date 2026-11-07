@@ -126,6 +126,11 @@ if [ "$require_sensors" = 1 ]; then
   exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
   case "$exe" in
     /usr/local/libexec/hexagonrpcd-fuxi|/usr/libexec/fuxi/hexagonrpcd-fuxi) pass '传感器使用 fuxi daemon';;
+    '/usr/local/libexec/hexagonrpcd-fuxi (deleted)'|'/usr/libexec/fuxi/hexagonrpcd-fuxi (deleted)')
+      # dpkg replaces the inode even when the installed executable is unchanged.
+      if cmp -s "/proc/$pid/exe" "${exe% (deleted)}"; then
+        pass '传感器使用 fuxi daemon（包升级替换 inode，运行内容与已安装文件一致）'
+      else fail '传感器仍运行旧版或不可核对的 daemon，需要安排服务更新'; fi;;
     *) fail "非预期传感器进程: $exe";;
   esac
   if timeout 3 qrtr-lookup 400 | awk '$1 == 400 { found=1 } END { exit !found }'; then pass 'SSC QRTR 400 已发布'; else fail 'SSC QRTR 400 缺失'; fi
