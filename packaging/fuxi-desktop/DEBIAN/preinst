@@ -1,0 +1,22 @@
+#!/bin/sh
+# fuxi-desktop preinst：首次安装前把哈希一致的旧 /etc/xdg 配置文件挪走，免得 dpkg 停下来询问；本地改过的保留
+set -e
+BK=/var/backups/fuxi-desktop-migrate
+case "$1" in
+install)
+	[ -n "$2" ] && exit 0
+	while read -r h p; do
+		case "$p" in /etc/xdg/*) ;; *) continue ;; esac
+		[ -f "$p" ] || continue
+		if [ "$(sha256sum < "$p" | cut -d' ' -f1)" = "$h" ]; then
+			mkdir -p "$BK$(dirname "$p")"; mv "$p" "$BK$p"
+			echo "fuxi-desktop: 旧 $p 已移到 $BK$p"
+		else
+			echo "fuxi-desktop: 警告：$p 与已知旧版不同（本地改过），保留，dpkg 会询问" >&2
+		fi
+	done <<'MIGRATE'
+@MIGRATE_LIST@
+MIGRATE
+	;;
+esac
+exit 0

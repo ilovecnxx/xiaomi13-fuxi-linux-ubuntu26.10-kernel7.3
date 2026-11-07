@@ -1,0 +1,9 @@
+#!/bin/sh
+# fuxi-desktop postrm：单元和 drop-in 已删 → daemon-reload
+set -e
+case "$1" in
+remove|purge)
+	[ -d /run/systemd/system ] && { systemctl daemon-reload || true; }
+	;;
+esac
+exit 0

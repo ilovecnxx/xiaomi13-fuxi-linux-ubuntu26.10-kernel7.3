@@ -1,0 +1,18 @@
+Package: fuxi-desktop
+Version: @VERSION@
+Architecture: all
+Maintainer: fuxi port <noreply@localhost>
+Section: x11
+Priority: optional
+Depends: fuxi-device, python3, kbd, systemd
+Recommends: denial, phosh, xdg-desktop-portal-gtk
+Suggests: plasma-mobile, kscreen
+Description: Xiaomi 13 (fuxi, SM8550) graphical session glue
+ Session units and helpers for the Xiaomi 13 on mainline Linux:
+  - denial.service (default mobile session on tty7), plasmamobile.service,
+    phosh.service drop-ins (user bus, chvt 7, logind seat, wayland-0)
+  - fuxi-session: switch between Denial / Phosh / Plasma Mobile and clean up
+    leftover compositors
+  - fuxi-autorotate: iio-sensor-proxy orientation -> kscreen for Plasma
+  - fuxi-desktop-app: software-render fallback when no GPU render node
+  - xdg-desktop-portal preference for Phosh (conffile)

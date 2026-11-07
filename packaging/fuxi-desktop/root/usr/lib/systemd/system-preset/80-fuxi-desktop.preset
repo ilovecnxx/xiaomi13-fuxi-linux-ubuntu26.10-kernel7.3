@@ -1,0 +1,4 @@
+# fuxi-desktop：全新安装时 postinst 用 `systemctl preset` 启用；默认会话 Denial，Phosh/Plasma 用 fuxi-session 切换
+enable denial.service
+disable plasmamobile.service
+disable fuxi-autorotate.service

@@ -2,3 +2,4 @@
 /etc/kernel/postrm.d/zz-fuxi
 /etc/initramfs/post-update.d/zz-fuxi
 /etc/initramfs-tools/conf.d/fuxi
+/etc/systemd/system/hexagonrpcd.service

@@ -50,7 +50,7 @@ echo 'fuxi-mainline 第十二次（M5.3）: apt 装 phosh 等；用户 fuxi（ui
 echo config-ok"
 
 say "== 启动 Phosh"
-cat "$B/work/rootfs-overlay/etc/systemd/system/phosh.service.d/20-fuxi-session.conf" | ssh_ 'cat > /etc/systemd/system/phosh.service.d/20-fuxi-session.conf; systemctl daemon-reload'
+cat "$B/packaging/fuxi-desktop/root/usr/lib/systemd/system/phosh.service.d/20-fuxi-session.conf" | ssh_ 'cat > /etc/systemd/system/phosh.service.d/20-fuxi-session.conf; systemctl daemon-reload'
 ssh_ 'systemctl restart phosh.service; sleep 15; systemctl is-active phosh.service; journalctl -u phosh -b --no-pager -o cat | tail -n 15'
 "$B/scripts/fuxi-basic-desktop.sh" || exit $?
 say "完成，日志 $LOG"

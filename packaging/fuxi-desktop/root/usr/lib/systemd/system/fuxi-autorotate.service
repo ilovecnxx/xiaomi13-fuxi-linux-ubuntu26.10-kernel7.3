@@ -10,7 +10,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=QT_QPA_PLATFORM=wayland
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-ExecStart=/usr/local/bin/fuxi-autorotate
+ExecStart=/usr/bin/fuxi-autorotate
 Restart=on-failure
 RestartSec=2
 

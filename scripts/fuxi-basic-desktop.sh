@@ -98,7 +98,7 @@ done
 printf '%s desktop software rendering launcher backup=%s\n' "$(date -Iseconds)" "$backup" >> /root/fuxi-mainline-backup/CHANGES.txt
 REMOTE
 timeout 30 "$B/scripts/fuxi-ssh.sh" 'install -D -m 755 /dev/stdin /usr/local/bin/fuxi-desktop-app' \
-  < "$B/work/rootfs-overlay/usr/local/bin/fuxi-desktop-app"
+  < "$B/packaging/fuxi-desktop/root/usr/bin/fuxi-desktop-app"
 timeout 30 "$B/scripts/fuxi-ssh.sh" 'python3 -' <<'PY' | tee -a "$LOG"
 from pathlib import Path
 import re

@@ -81,9 +81,8 @@ ssh_phone 'if grep -q "^DENIAL_SHELL_PROFILE=mobile" /etc/denial/session.conf 2>
   fi'
 
 echo "== 会话 unit + 切换脚本 =="
-scp_phone "$B/work/rootfs-overlay/etc/systemd/system/denial.service" "root@$HOST:/etc/systemd/system/denial.service"
-scp_phone "$B/work/rootfs-overlay/usr/local/bin/fuxi-session" "root@$HOST:/usr/local/bin/fuxi-session"
-ssh_phone 'chmod 755 /usr/local/bin/fuxi-session; systemctl daemon-reload; systemctl reset-failed denial.service phosh.service 2>/dev/null || true'
+# 由 fuxi-desktop 包提供（/usr/lib/systemd/system/denial.service、/usr/bin/fuxi-session）；见 scripts/fuxi-build-pkgs.sh
+ssh_phone 'dpkg -s fuxi-desktop >/dev/null 2>&1 || { echo "   缺 fuxi-desktop：先在手机上 apt install fuxi-desktop（本地源 /srv/fuxi-apt）" >&2; exit 1; }; systemctl daemon-reload; systemctl reset-failed denial.service phosh.service 2>/dev/null || true'
 
 echo "== 只读检查（不启动会话）=="
 ssh_phone 'dpkg-query -W -f="    ${Package} ${Version} (${Architecture})\n" denial denial-flutter-engine; echo; /usr/bin/denial-session --check'

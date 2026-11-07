@@ -4,6 +4,7 @@
 # 产物：work/apt/
 #   fuxi-device_<版本>_arm64.deb      packaging/fuxi-device（引导工具、服务、udev、UCM…）
 #   fuxi-modem_<版本>_arm64.deb       packaging/fuxi-modem（双卡/IMS/数据卡）+ work/modem-bin（scripts/fuxi-modem-bin-pull.sh）
+#   fuxi-desktop_<版本>_all.deb       packaging/fuxi-desktop（Denial/Phosh/Plasma 会话单元、fuxi-session、portal 配置）
 #   fuxi-firmware_<版本>_all.deb       work/firmware-pkg（scripts/fuxi-firmware-pull.sh 拉取；专有，不进 git）
 #   linux-image-*-fuxi-*.deb          work/kbuild/*/ 里已有的内核包（硬链接）
 #   Packages Packages.gz Release SHA256SUMS fuxi.sources fuxi-pin（Release 无签名，fuxi.sources 里 Trusted: yes）
@@ -79,6 +80,28 @@ chmod 755 "$P"/DEBIAN/{postinst,postrm} "$P"/usr/sbin/* "$P"/usr/bin/* "$P"/usr/
 if grep -rIl "/usr/local/" "$P" --exclude-dir=DEBIAN; then echo "包内仍引用 /usr/local（见上）" >&2; exit 1; fi
 ( cd "$P" && find . -path ./DEBIAN -prune -o -type f -print | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' md5sum ) > "$P/DEBIAN/md5sums"
 build "$P" "$OUT/fuxi-modem_${V}_arm64.deb"
+
+echo "== fuxi-desktop $V"
+P="$TMP/fuxi-desktop"
+mkdir -p "$P"
+cp -a "$B/packaging/fuxi-desktop/root/." "$P/"
+cp -a "$B/packaging/fuxi-desktop/DEBIAN" "$P/DEBIAN"
+for s in preinst postinst; do
+	python3 - "$P/DEBIAN/$s" "$B/packaging/fuxi-desktop/migrate.list" <<'EOF2'
+import sys
+p, m = sys.argv[1], open(sys.argv[2]).read().rstrip("\n")
+s = open(p).read()
+assert "@MIGRATE_LIST@" in s
+open(p, "w").write(s.replace("@MIGRATE_LIST@", m))
+EOF2
+done
+sed -i "s/@VERSION@/$V/" "$P/DEBIAN/control"
+find "$P" -type d -exec chmod 755 {} +
+find "$P" -type f -exec chmod 644 {} +
+chmod 755 "$P"/DEBIAN/{preinst,postinst,postrm} "$P"/usr/bin/*
+if grep -rIl "/usr/local/" "$P" --exclude-dir=DEBIAN; then echo "包内仍引用 /usr/local（见上）" >&2; exit 1; fi
+( cd "$P" && find . -path ./DEBIAN -prune -o -type f -print | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' md5sum ) > "$P/DEBIAN/md5sums"
+build "$P" "$OUT/fuxi-desktop_${V}_all.deb"
 
 echo "== fuxi-firmware $V"
 FW="$B/work/firmware-pkg"
