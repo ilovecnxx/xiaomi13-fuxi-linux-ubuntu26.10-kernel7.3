@@ -88,6 +88,7 @@ scripts/fuxi-ssh.sh                       # USB SSH，手机 10.42.0.2；FUXI_HO
 scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
 scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
+scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
 FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
 python3 -m unittest discover -s scripts/tests -v

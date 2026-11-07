@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Inspect GNSS interfaces without starting sessions or reading coordinates."""
+import json
+import os
+from pathlib import Path
+import subprocess
+
+
+GPS_SOURCES = {"gps-raw", "gps-nmea", "gps-unmanaged"}
+
+
+def command(argv):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=8,
+                                env={**os.environ, "LC_ALL": "C"})
+    except FileNotFoundError:
+        return {"status": "unavailable"}, ""
+    except subprocess.TimeoutExpired:
+        return {"status": "timed_out"}, ""
+    except OSError:
+        return {"status": "failed"}, ""
+    return {"status": "ok" if result.returncode == 0 else "failed",
+            "returncode": result.returncode}, result.stdout
+
+
+def qrtr_nodes(output, service):
+    nodes = set()
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        try:
+            sid, _version, _instance, node, _port = map(int, fields[:5])
+        except ValueError:
+            continue
+        if sid == service and node >= 0:
+            nodes.add(node)
+    return sorted(nodes)
+
+
+def location_sources(output):
+    location = json.loads(output)["modem"]["location"]
+    sources = {}
+    for key in ("capabilities", "enabled"):
+        values = location[key]
+        if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+            raise ValueError("unexpected location source list")
+        sources[key] = values
+    return sources
+
+
+def collect(run=command, sys=Path("/sys")):
+    report = {"schema_version": 1, "satellite_fix": "not_tested",
+              "gnss_class_devices": sorted(path.name for path in (sys / "class/gnss").glob("*"))}
+    probes = report["probes"] = {}
+    for service, label in ((16, "qrtr_loc"), (6, "qrtr_pds")):
+        result, output = run(["qrtr-lookup", str(service)])
+        probes[label] = {**result, "nodes": qrtr_nodes(output, service)
+                         if result["status"] == "ok" else None}
+
+    result, output = run(["mmcli", "-m", "any", "--location-status", "--output-json"])
+    probes["modemmanager"] = dict(result)
+    sources = None
+    if result["status"] == "ok":
+        try:
+            sources = location_sources(output)
+        except (ValueError, KeyError, TypeError):
+            probes["modemmanager"]["status"] = "invalid_response"
+    if sources is not None:
+        probes["modemmanager"].update(sources)
+    report["modemmanager_gps_capability"] = (
+        bool(GPS_SOURCES.intersection(sources["capabilities"])) if sources is not None else None)
+
+    nodes = probes["qrtr_loc"]["nodes"]
+    for option in ("engine-lock", "operation-mode"):
+        label = "loc_" + option.replace("-", "_")
+        if nodes is None or len(nodes) != 1:
+            probes[label] = {"status": "not_probed"}
+            continue
+        result, _output = run(["qmicli", "-d", f"qrtr://{nodes[0]}", "--device-open-proxy",
+                              "--loc-get-" + option])
+        probes[label] = result
+    states = [probes[label]["status"] for label in ("loc_engine_lock", "loc_operation_mode")]
+    report["qmi_loc_readable"] = (None if "not_probed" in states else
+                                  all(state == "ok" for state in states))
+    report["findings"] = []
+    if nodes is None:
+        report["findings"].append("qrtr_loc_discovery_unknown")
+    elif nodes == []:
+        report["findings"].append("qrtr_loc_not_advertised")
+    elif nodes is not None and len(nodes) > 1:
+        report["findings"].append("multiple_loc_nodes_require_selection")
+    if report["qmi_loc_readable"] is False:
+        report["findings"].append("loc_read_failed")
+    if report["qmi_loc_readable"] and report["modemmanager_gps_capability"] is False:
+        report["findings"].append("loc_readable_but_modemmanager_gps_not_exposed")
+    if report["modemmanager_gps_capability"] is None:
+        report["findings"].append("modemmanager_capability_unknown")
+    return report
+
+
+if __name__ == "__main__":
+    print(json.dumps(collect(), indent=2, sort_keys=True))
