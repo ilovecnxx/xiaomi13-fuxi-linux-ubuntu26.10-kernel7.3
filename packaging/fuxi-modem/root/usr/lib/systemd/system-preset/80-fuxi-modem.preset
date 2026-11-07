@@ -1,0 +1,7 @@
+# fuxi-modem：全新安装时 postinst 用 `systemctl preset` 启用；数据卡（卡槽 2 上网）默认关，由 SIM 设置打开
+enable fuxi-qmi-proxy.service
+enable fuxi-uim-provision.service
+enable fuxi-modem-keeper.service
+enable fuxi-sub2-msg.service
+enable fuxi-sub2-ims-heal.service
+disable fuxi-datacard.service

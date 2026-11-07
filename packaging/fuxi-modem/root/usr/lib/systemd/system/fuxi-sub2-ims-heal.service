@@ -1,0 +1,14 @@
+[Unit]
+Description=fuxi SIM2 IMS heal (one-shot ordered restart of 81voltd/MM if SIM2 IMS stuck after boot)
+After=ModemManager.service 81voltd.service fuxi-modem-keeper.service
+Wants=ModemManager.service 81voltd.service
+
+[Service]
+# simple 而不是 oneshot：脚本最长约 7 分钟，oneshot 会拖住 multi-user/graphical target
+Type=simple
+ExecStart=/bin/bash /usr/sbin/fuxi-sub2-ims-heal.sh
+Restart=no
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

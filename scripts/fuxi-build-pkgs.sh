@@ -3,6 +3,7 @@
 #   scripts/fuxi-build-pkgs.sh [版本]       版本默认 0.<日期>.<时分>，例如 0.20261107.0930
 # 产物：work/apt/
 #   fuxi-device_<版本>_arm64.deb      packaging/fuxi-device（引导工具、服务、udev、UCM…）
+#   fuxi-modem_<版本>_arm64.deb       packaging/fuxi-modem（双卡/IMS/数据卡）+ work/modem-bin（scripts/fuxi-modem-bin-pull.sh）
 #   fuxi-firmware_<版本>_all.deb       work/firmware-pkg（scripts/fuxi-firmware-pull.sh 拉取；专有，不进 git）
 #   linux-image-*-fuxi-*.deb          work/kbuild/*/ 里已有的内核包（硬链接）
 #   Packages Packages.gz Release SHA256SUMS fuxi.sources fuxi-pin（Release 无签名，fuxi.sources 里 Trusted: yes）
@@ -52,6 +53,32 @@ find "$P" -type f ! -perm -u+x -exec chmod 644 {} +
 if grep -rIl "/usr/local/" "$P" --exclude-dir=DEBIAN; then echo "包内仍引用 /usr/local（见上）" >&2; exit 1; fi
 ( cd "$P" && find . -path ./DEBIAN -prune -o -type f -print | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' md5sum ) > "$P/DEBIAN/md5sums"
 build "$P" "$OUT/fuxi-device_${V}_arm64.deb"
+
+echo "== fuxi-modem $V"
+MB="$B/work/modem-bin"
+[ -x "$MB/mm/src/ModemManager" ] && [ -x "$MB/81voltd-sub2" ] || { echo "缺 $MB，先跑 scripts/fuxi-modem-bin-pull.sh" >&2; exit 1; }
+( cd "$MB" && sha256sum -c --quiet SHA256SUMS ) || { echo "$MB/SHA256SUMS 校验失败" >&2; exit 1; }
+P="$TMP/fuxi-modem"
+mkdir -p "$P/usr/libexec/fuxi"
+cp -a "$B/packaging/fuxi-modem/root/." "$P/"
+cp -a "$B/packaging/fuxi-modem/DEBIAN" "$P/DEBIAN"
+cp -a "$MB/mm" "$P/usr/libexec/fuxi/mm"
+install -m755 "$MB/81voltd-sub2" "$P/usr/libexec/fuxi/81voltd-sub2"
+python3 - "$P/DEBIAN/postinst" "$B/packaging/fuxi-modem/migrate.list" <<'EOF2'
+import sys
+p, m = sys.argv[1], open(sys.argv[2]).read().rstrip("\n")
+s = open(p).read()
+assert "@MIGRATE_LIST@" in s
+open(p, "w").write(s.replace("@MIGRATE_LIST@", m))
+EOF2
+sed -i "s/@VERSION@/$V/" "$P/DEBIAN/control"
+find "$P" -type d -exec chmod 755 {} +
+find "$P" -type f -exec chmod 644 {} +
+chmod 755 "$P"/DEBIAN/{postinst,postrm} "$P"/usr/sbin/* "$P"/usr/bin/* "$P"/usr/libexec/fuxi/81voltd-sub2 \
+	"$P"/usr/libexec/fuxi/mm/src/ModemManager "$P"/usr/libexec/fuxi/mm/libmm-glib/libmm-glib.so.0.11.0
+if grep -rIl "/usr/local/" "$P" --exclude-dir=DEBIAN; then echo "包内仍引用 /usr/local（见上）" >&2; exit 1; fi
+( cd "$P" && find . -path ./DEBIAN -prune -o -type f -print | sed 's|^\./||' | LC_ALL=C sort | xargs -d '\n' md5sum ) > "$P/DEBIAN/md5sums"
+build "$P" "$OUT/fuxi-modem_${V}_arm64.deb"
 
 echo "== fuxi-firmware $V"
 FW="$B/work/firmware-pkg"

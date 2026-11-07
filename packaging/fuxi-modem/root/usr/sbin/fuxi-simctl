@@ -329,9 +329,9 @@ def main():
         return 75
     log(f"=== {' '.join(a)} (uid {os.environ.get('PKEXEC_UID', os.getuid())})")
     if a[0] == "data":
-        return run(["/usr/local/sbin/fuxi-datacard", "set", a[1]], 600)
+        return run(["/usr/sbin/fuxi-datacard", "set", a[1]], 600)
     if a[0] == "voice":
-        return run(["/usr/local/sbin/fuxi-sim-pref", "voice", a[1]])
+        return run(["/usr/sbin/fuxi-sim-pref", "voice", a[1]])
     if a[0] == "mode":
         return set_mode(int(a[1]), a[2])
     return reconnect()

@@ -16,12 +16,16 @@
   从本地源 `/srv/fuxi-apt`（`/etc/apt/sources.list.d/fuxi.sources` + `/etc/apt/preferences.d/fuxi`，linux-firmware/generic 内核 pin -1）装。
   主机：`scripts/fuxi-firmware-pull.sh` → `scripts/fuxi-build-pkgs.sh` → rsync work/apt/ → 手机 `apt update && apt install fuxi-device fuxi-firmware`。
   旧手工文件在手机 `/var/backups/fuxi-device-migrate/`；装包前备份 `/root/pre-fuxi-pkg-20261107.tgz`。
+- **通信包（11-07 14:26 重启实测）**：`fuxi-modem`（qmi/keeper/simctl/datacard/sub2/uim 脚本 → /usr/sbin；补丁 ModemManager + 81voltd-sub2 → /usr/libexec/fuxi，
+  二进制由 `scripts/fuxi-modem-bin-pull.sh` 取到 work/modem-bin，不进 git；MM/81voltd 用 /usr/lib drop-in 切换）。双卡 IMS registered、5G 数据、WiFi 正常。
+  旧文件在 `/var/backups/fuxi-modem-migrate/`，装前备份 `/root/pre-fuxi-modem-20261107.tgz`；`/etc/systemd/system/81voltd.service.d/fuxi-debug.conf` 留在 /etc（本地调试）。
+  回退到发行版 MM：`systemctl edit ModemManager` 覆盖 ExecStart=/usr/sbin/ModemManager。
 - 桌面：Denial 0.6.2 默认会话（`fuxi-session denial|phosh` 切换）。
 - 通信：两卡数据/短信/VoLTE 信令/来电通；**通话音频不通（语音 TX -22）**；卡 2 IMS 待查。
 
 ## 下一步（都先问用户）
-1. 设备包第二轮：通信脚本（qmi/keeper/sim/ims/datacard/81voltd-sub2 drop-in）打 `fuxi-modem`；桌面杂项（autorotate/session/sim-settings/polkit）打 `fuxi-desktop`；
-   fstab 根分区 passno=1；未提交（需用户确认）。
+1. 设备包第三轮：桌面杂项（autorotate/session/desktop-app/phosh drop-in/portal）打 `fuxi-desktop`；fstab 根分区 passno=1；
+   清理手机 /usr/local/lib/fuxi-mm（60M 旧构建目录，已不用）、/usr/local/lib/fuxi-81voltd、hexagonrpcd-fuxi-debug、*.bak/*.v* 旧版本（删前问用户）。
 2. 回通信线：卡 2 IMS 只读排查（通信交接 §9.1–9.2）、5G 自动回切、移动卡 APN。
 3. 功能缺口：挂起默认开、alsa-ucm 通话路由、GPU 加速确认；Denial 退出回 Phosh、basic-check 适配。
 4. U-Boot env 手动 booti 条目改指 deb3/新 DTB 名（删 deb2 前必须做）。

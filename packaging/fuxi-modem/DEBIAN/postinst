@@ -1,0 +1,50 @@
+#!/bin/sh
+# fuxi-modem postinst
+#  首次安装：把旧手工文件（/usr/local/sbin、/usr/local/bin、/etc/systemd/system、/etc/polkit-1）中哈希与 migrate.list
+#  一致的移到 /var/backups/fuxi-modem-migrate/（否则 /etc 单元/drop-in 和 PATH 里的 /usr/local 会遮住本包），
+#  原来启用的单元改为启用 /usr/lib 下的同名单元；全新系统按 80-fuxi-modem.preset。
+#  不重启任何服务：正在跑的 ModemManager/81voltd 等下次启动（或重启）才换成 /usr/libexec/fuxi 下的二进制。
+set -e
+BK=/var/backups/fuxi-modem-migrate
+UNITS="fuxi-qmi-proxy fuxi-uim-provision fuxi-modem-keeper fuxi-sub2-msg fuxi-sub2-ims-heal fuxi-datacard"
+
+[ "$1" = configure ] || exit 0
+mkdir -p /var/lib/fuxi
+
+if [ -z "$2" ]; then
+	enabled=""
+	migrated=0
+	for u in $UNITS; do
+		if [ -f "/etc/systemd/system/$u.service" ] && ls /etc/systemd/system/*.wants/"$u.service" >/dev/null 2>&1; then
+			enabled="$enabled $u"
+		fi
+	done
+	while read -r h p; do
+		case "$h" in ''|\#*) continue ;; esac
+		[ -f "$p" ] || continue
+		if [ "$(sha256sum < "$p" | cut -d' ' -f1)" = "$h" ]; then
+			mkdir -p "$BK$(dirname "$p")"
+			mv "$p" "$BK$p"
+			migrated=$((migrated + 1))
+		else
+			echo "fuxi-modem: 警告：$p 与已知旧版不同（本地改过），保留；它会遮住本包的同名文件" >&2
+		fi
+	done <<'MIGRATE'
+@MIGRATE_LIST@
+MIGRATE
+	[ "$migrated" -gt 0 ] && echo "fuxi-modem: 迁走 $migrated 个旧手工文件 → $BK"
+	[ -d /run/systemd/system ] && { systemctl daemon-reload || true; }
+	if [ "$migrated" -gt 0 ] || [ -n "$enabled" ]; then
+		for u in $enabled; do
+			for l in /etc/systemd/system/*.wants/"$u.service"; do
+				[ -L "$l" ] && [ ! -e "$l" ] && rm -f "$l"
+			done
+			systemctl enable "$u.service" >/dev/null 2>&1 || echo "fuxi-modem: 警告：启用 $u 失败" >&2
+		done
+	else
+		for u in $UNITS; do systemctl preset "$u.service" >/dev/null 2>&1 || true; done
+	fi
+fi
+
+[ -d /run/systemd/system ] && { systemctl daemon-reload || true; }
+exit 0

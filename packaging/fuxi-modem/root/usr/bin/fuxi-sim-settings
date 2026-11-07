@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # 双卡设置（GTK4 / libadwaita）：两张卡状态、上网卡、拨号卡、5G 开关、重新连接网络。
-# 所有读写都通过 pkexec /usr/local/sbin/fuxi-simctl（polkit 规则让活动会话里的 fuxi 免密码）。
+# 所有读写都通过 pkexec /usr/sbin/fuxi-simctl（polkit 规则让活动会话里的 fuxi 免密码）。
 import json
 import os
 import sys
@@ -9,7 +9,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk
 
-HELPER = "/usr/local/sbin/fuxi-simctl"
+HELPER = "/usr/sbin/fuxi-simctl"
 REFRESH_S = 10
 IMS_TEXT = {"registered": "VoLTE 已注册", "not-registered": "VoLTE 未注册",
             "registering": "VoLTE 注册中"}
