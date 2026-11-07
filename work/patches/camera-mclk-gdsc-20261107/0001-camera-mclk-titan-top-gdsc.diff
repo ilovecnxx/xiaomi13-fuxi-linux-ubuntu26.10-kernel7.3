@@ -1,0 +1,106 @@
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts
+index ae6165f01..f11315784 100644
+--- a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts
+@@ -1,6 +1,7 @@
+ // SPDX-License-Identifier: BSD-3-Clause
+ /* Xiaomi 13 (fuxi)：相机 bring-up 变体（内容见 sm8550-xiaomi-fuxi-camera.dtsi） */
+ 
+-#include "sm8550-xiaomi-fuxi-min.dts"
++/* 11-07：改为叠在完整日常板级 DTS 上（以前是 -min），相机试验时其它功能照常 */
++#include "sm8550-xiaomi-fuxi.dts"
+ #include <dt-bindings/clock/qcom,sm8550-camcc.h>
+ #include "sm8550-xiaomi-fuxi-camera.dtsi"
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi
+index 74e76de6b..90e7e5cf0 100644
+--- a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi
+@@ -59,6 +59,8 @@ cam_tele_avdd: regulator-cam-tele-avdd {
+ 
+ 	cam0_power: camera-power-cam0 {
+ 		compatible = "xiaomi,fuxi-camera-power";
++		/* MCLK 分支在 TITAN_TOP GDSC 里（厂商 cam_clk-supply = cam_cc_titan_top_gdsc），不开它 MCLK stuck off */
++		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+ 		supply-names = "vio", "vana", "vdig", "custom1", "custom2", "vaf", "bob2";
+ 		vio-supply = <&vreg_l2c_1p8>;
+ 		vana-supply = <&cam_wide_avdd1>;
+@@ -75,6 +77,8 @@ cam0_power: camera-power-cam0 {
+ 
+ 	cam2_power: camera-power-cam2 {
+ 		compatible = "xiaomi,fuxi-camera-power";
++		/* MCLK 分支在 TITAN_TOP GDSC 里（厂商 cam_clk-supply = cam_cc_titan_top_gdsc），不开它 MCLK stuck off */
++		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+ 		supply-names = "vio", "vana", "vdig", "bob2";
+ 		vio-supply = <&vreg_l2c_1p8>;
+ 		vana-supply = <&cam_ultra_avdd>;
+@@ -88,6 +92,8 @@ cam2_power: camera-power-cam2 {
+ 
+ 	cam1_power: camera-power-cam1 {
+ 		compatible = "xiaomi,fuxi-camera-power";
++		/* MCLK 分支在 TITAN_TOP GDSC 里（厂商 cam_clk-supply = cam_cc_titan_top_gdsc），不开它 MCLK stuck off */
++		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+ 		supply-names = "vio", "vana", "vdig";
+ 		vio-supply = <&vreg_l5m_1p8>;
+ 		vana-supply = <&vreg_l3m_2p8>;
+@@ -100,6 +106,8 @@ cam1_power: camera-power-cam1 {
+ 
+ 	cam3_power: camera-power-cam3 {
+ 		compatible = "xiaomi,fuxi-camera-power";
++		/* MCLK 分支在 TITAN_TOP GDSC 里（厂商 cam_clk-supply = cam_cc_titan_top_gdsc），不开它 MCLK stuck off */
++		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+ 		supply-names = "vio", "vana", "vdig", "custom1", "vaf", "bob2", "bob1";
+ 		vio-supply = <&vreg_l2c_1p8>;
+ 		vana-supply = <&cam_tele_avdd>;
+diff --git a/drivers/misc/fuxi-camera-power.c b/drivers/misc/fuxi-camera-power.c
+index 3b33fc428..7472a8be4 100644
+--- a/drivers/misc/fuxi-camera-power.c
++++ b/drivers/misc/fuxi-camera-power.c
+@@ -23,6 +23,7 @@
+ #include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
+ #include <linux/regulator/consumer.h>
+ 
+ #define FUXI_CAM_MAX_SUPPLIES	8
+@@ -43,6 +44,13 @@ static int fuxi_cam_power_on(struct fuxi_cam_power *cp)
+ {
+ 	int i, ret;
+ 
++	/* TITAN_TOP GDSC（power-domains）：MCLK 分支要它上电 */
++	ret = pm_runtime_resume_and_get(cp->dev);
++	if (ret) {
++		dev_err(cp->dev, "failed to power camera GDSC: %d\n", ret);
++		return ret;
++	}
++
+ 	gpiod_set_value_cansleep(cp->reset, 1);
+ 
+ 	for (i = 0; i < cp->num_supplies; i++) {
+@@ -74,6 +82,7 @@ static int fuxi_cam_power_on(struct fuxi_cam_power *cp)
+ err_supplies:
+ 	while (--i >= 0)
+ 		regulator_disable(cp->supplies[i].consumer);
++	pm_runtime_put(cp->dev);
+ 	return ret;
+ }
+ 
+@@ -86,6 +95,7 @@ static void fuxi_cam_power_off(struct fuxi_cam_power *cp)
+ 	clk_disable_unprepare(cp->mclk);
+ 	for (i = cp->num_supplies - 1; i >= 0; i--)
+ 		regulator_disable(cp->supplies[i].consumer);
++	pm_runtime_put(cp->dev);
+ 	dev_info(cp->dev, "powered off\n");
+ }
+ 
+@@ -163,6 +173,10 @@ static int fuxi_cam_power_probe(struct platform_device *pdev)
+ 	if (IS_ERR(cp->reset))
+ 		return dev_err_probe(dev, PTR_ERR(cp->reset), "failed to get reset\n");
+ 
++	ret = devm_pm_runtime_enable(dev);
++	if (ret)
++		return ret;
++
+ 	platform_set_drvdata(pdev, cp);
+ 	return 0;
+ }
