@@ -70,6 +70,9 @@ def sub2_retrying():
 class Keeper:
     def __init__(self):
         self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.manager = Gio.DBusObjectManagerClient.new_for_bus_sync(
+            Gio.BusType.SYSTEM, Gio.DBusObjectManagerClientFlags.DO_NOT_AUTO_START,
+            MM, "/org/freedesktop/ModemManager1", None, None, None)
         self.path = None
         self.unreg_since = None
         self.reject_at = None
@@ -92,12 +95,18 @@ class Keeper:
                                   Gio.DBusCallFlags.NONE, timeout, None)
 
     def modems(self):
-        try:
-            r = self.call("/org/freedesktop/ModemManager1", "org.freedesktop.DBus.ObjectManager",
-                          "GetManagedObjects", timeout=10000)
-        except GLib.Error:
-            return {}
-        return {p: ifs for p, ifs in r.unpack()[0].items() if IF_MODEM in ifs}
+        modems = {}
+        # Gio tracks object removal, owner changes and property updates on the bus.
+        for obj in self.manager.get_objects():
+            if obj.get_interface(IF_MODEM) is None:
+                continue
+            interfaces = {}
+            for name, field in ((IF_MODEM, "State"), (IF_3GPP, "RegistrationState")):
+                proxy = obj.get_interface(name)
+                value = proxy.get_cached_property(field) if proxy is not None else None
+                interfaces[name] = {field: value.unpack()} if value is not None else {}
+            modems[obj.get_object_path()] = interfaces
+        return modems
 
     def on_props(self, _c, _s, path, _i, _sig, params):
         iface, changed, _inv = params.unpack()
