@@ -89,6 +89,7 @@ scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
 scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
 scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
+scripts/fuxi-runtime-audit.sh             # 只读 KVM/TUN API 与启动级别检查；不创建 VM、网卡或修改路由
 scripts/fuxi-gnss-session.sh 30           # 按需限时 LOC 会话，汇总报告，不保存坐标；不是桌面定位服务
 FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）

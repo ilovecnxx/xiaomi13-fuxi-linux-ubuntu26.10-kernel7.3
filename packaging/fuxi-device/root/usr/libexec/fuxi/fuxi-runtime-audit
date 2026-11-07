@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Inspect KVM/TUN prerequisites without creating guests or interfaces."""
+import errno
+import fcntl
+import gzip
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import stat
+import struct
+import subprocess
+
+
+CONFIG_KEYS = ("CONFIG_VIRTUALIZATION", "CONFIG_KVM", "CONFIG_TUN",
+               "CONFIG_NETFILTER", "CONFIG_NF_TABLES")
+CONFIG_LIMIT = 2 * 1024 * 1024
+KVM_GET_API_VERSION = 0xAE00
+TUNGETFEATURES = 0x800454CF
+
+
+def os_error(error):
+    if error.errno == errno.ENOENT:
+        status = "absent"
+    elif error.errno in (errno.EACCES, errno.EPERM):
+        status = "permission_denied"
+    else:
+        status = "failed"
+    return {"status": status, "errno": error.errno}
+
+
+def kernel_config(release, proc=Path("/proc"), boot=Path("/boot")):
+    values = dict.fromkeys(CONFIG_KEYS)
+    errors = []
+    for path, compressed in ((proc / "config.gz", True), (boot / ("config-" + release), False)):
+        try:
+            with (gzip.open(path, "rt", encoding="ascii") if compressed
+                  else path.open(encoding="ascii")) as stream:
+                text = stream.read(CONFIG_LIMIT + 1)
+            if len(text) > CONFIG_LIMIT:
+                errors.append({"source": str(path), "status": "too_large"})
+                continue
+        except (OSError, EOFError, UnicodeError) as error:
+            result = os_error(error) if isinstance(error, OSError) else {"status": "invalid_response"}
+            errors.append({"source": str(path), **result})
+            continue
+        for line in text.splitlines():
+            if line.startswith("# ") and line.endswith(" is not set"):
+                key, value = line[2:-11], "n"
+            else:
+                key, _, value = line.partition("=")
+            if key in values and value in ("y", "m", "n"):
+                values[key] = value
+        return {"status": "ok", "source": str(path), "values": values}
+    return {"status": "unavailable", "values": values, "attempts": errors}
+
+
+def device_api(path, minor, request):
+    """Check the opened device identity before issuing either query ioctl."""
+    fd = None
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if not stat.S_ISCHR(info.st_mode) or (os.major(info.st_rdev), os.minor(info.st_rdev)) != (10, minor):
+            return {"status": "unexpected_device"}
+        if request == KVM_GET_API_VERSION:
+            version = fcntl.ioctl(fd, request)
+            return {"status": "ok" if version == 12 else "unexpected_api", "api_version": version}
+        features = bytearray(4)
+        fcntl.ioctl(fd, request, features, True)
+        mask, = struct.unpack("=I", features)
+        return {"status": "ok", "feature_mask": mask, "iff_tun": bool(mask & 0x1),
+                "iff_no_pi": bool(mask & 0x1000)}
+    except OSError as error:
+        return os_error(error)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def boot_level():
+    try:
+        result = subprocess.run(
+            ["journalctl", "-b", "-k", "--no-pager", "--output=cat",
+             "--grep=All CPU\\(s\\) started at EL"],
+            capture_output=True, text=True, timeout=8, env={**os.environ, "LC_ALL": "C"})
+    except subprocess.TimeoutExpired:
+        return {"status": "timed_out", "level": None}
+    except OSError as error:
+        return {**os_error(error), "level": None}
+    if result.returncode:
+        return {"status": "unavailable", "returncode": result.returncode, "level": None}
+    levels = set(re.findall(r"^CPU: All CPU\(s\) started at (EL[12])$", result.stdout, re.M))
+    if len(levels) != 1:
+        return {"status": "unknown", "level": None}
+    return {"status": "ok", "level": levels.pop()}
+
+
+def collect():
+    release = os.uname().release
+    config = kernel_config(release)
+    kvm = device_api("/dev/kvm", 232, KVM_GET_API_VERSION)
+    tun = device_api("/dev/net/tun", 200, TUNGETFEATURES)
+    level = boot_level()
+    report = {"schema_version": 1, "kernel_release": release, "euid": os.geteuid(),
+              "kernel_config": config, "boot_exception_level": level,
+              "kvm": {**kvm, "guest_execution": "not_tested"},
+              "tun": {**tun, "interface_creation": "not_tested",
+                      "proxy_routing": "not_tested"},
+              "qemu_aarch64_binary_present": shutil.which("qemu-system-aarch64") is not None,
+              "wayland_guest": "not_tested", "findings": []}
+    findings = report["findings"]
+    if level["level"] == "EL1":
+        findings.append("booted_at_el1_enabling_kvm_config_alone_is_insufficient")
+    if config["values"]["CONFIG_VIRTUALIZATION"] == "n":
+        findings.append("running_kernel_virtualization_disabled")
+    if config["values"]["CONFIG_KVM"] == "n":
+        findings.append("running_kernel_kvm_disabled")
+    if kvm["status"] != "ok":
+        findings.append("kvm_api_not_verified")
+    if tun["status"] != "ok" or not tun.get("iff_tun"):
+        findings.append("tun_api_not_verified")
+    if not report["qemu_aarch64_binary_present"]:
+        findings.append("qemu_aarch64_binary_not_found_in_path")
+    return report
+
+
+if __name__ == "__main__":
+    print(json.dumps(collect(), indent=2, sort_keys=True))
