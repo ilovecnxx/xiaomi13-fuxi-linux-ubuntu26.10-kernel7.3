@@ -30,14 +30,25 @@ state=$(systemctl is-system-running 2>/dev/null || true)
 if [ "$state" = running ]; then pass "systemd $state"; else
   fail "systemd $state"; systemctl --failed --no-pager
 fi
-for service in phosh fuxi-firmware-devices bluetooth; do
+if systemctl is-active --quiet denial; then
+  pass 'Denial 桌面 active'
+  for process in deniald; do
+    if pgrep -x "$process" >/dev/null; then pass "$process 进程存在"; else fail "$process 进程缺失"; fi
+  done
+elif systemctl is-active --quiet phosh; then
+  pass 'Phosh 桌面 active'
+  for process in phoc phosh; do
+    if pgrep -x "$process" >/dev/null; then pass "$process 进程存在"; else fail "$process 进程缺失"; fi
+  done
+else
+  fail 'Denial/Phosh 桌面均未运行'
+fi
+for service in fuxi-firmware-devices bluetooth; do
   if systemctl is-active --quiet "$service"; then pass "$service active"; else fail "$service 未运行"; fi
 done
-for process in phoc phosh; do
-  if pgrep -x "$process" >/dev/null; then pass "$process 进程存在"; else fail "$process 进程缺失"; fi
-done
-if systemctl --user --machine=fuxi@.host is-active --quiet mobi.phosh.OSK.service || pgrep -x squeekboard >/dev/null; then
-  pass '屏幕键盘服务已运行（Stevia 或 Squeekboard）'
+if systemctl --user --machine=fuxi@.host is-active --quiet mobi.phosh.OSK.service ||
+   pgrep -x squeekboard >/dev/null || pgrep -x deniald >/dev/null; then
+  pass '屏幕键盘/桌面输入服务已运行'
 else fail '屏幕键盘服务未运行'; fi
 shopt -s nullglob
 policies=(/sys/devices/system/cpu/cpufreq/policy*)
@@ -113,7 +124,10 @@ if [ "$require_sensors" = 1 ]; then
   done
   pid=$(systemctl show hexagonrpcd -p MainPID --value)
   exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-  if [ "$exe" = /usr/local/libexec/hexagonrpcd-fuxi ]; then pass '传感器使用非调试 daemon'; else fail "非预期传感器进程: $exe"; fi
+  case "$exe" in
+    /usr/local/libexec/hexagonrpcd-fuxi|/usr/libexec/fuxi/hexagonrpcd-fuxi) pass '传感器使用 fuxi daemon';;
+    *) fail "非预期传感器进程: $exe";;
+  esac
   if timeout 3 qrtr-lookup 400 | awk '$1 == 400 { found=1 } END { exit !found }'; then pass 'SSC QRTR 400 已发布'; else fail 'SSC QRTR 400 缺失'; fi
   for property in HasAccelerometer HasAmbientLight HasProximity; do
     value=$(timeout 5 busctl get-property net.hadess.SensorProxy /net/hadess/SensorProxy net.hadess.SensorProxy "$property" 2>/dev/null || true)
@@ -129,8 +143,13 @@ if [ "$require_sensors" = 1 ]; then
   done
   crashes=$(journalctl -b -k --no-pager | grep -iE 'adsp.*(fatal|crash)|remoteproc.*crash' || true)
   if [ -z "$crashes" ]; then pass '本次启动未发现 ADSP/remoteproc 崩溃记录'; else fail '本次启动有 ADSP/remoteproc 崩溃记录'; printf '%s\n' "$crashes"; fi
-  restarts=$(systemctl show phosh -p NRestarts --value)
-  if [ "$restarts" = 0 ]; then pass 'Phosh 本次启动无需重试'; else fail "Phosh 重试次数=$restarts"; fi
+  if systemctl is-active --quiet denial; then
+    restarts=$(systemctl show denial -p NRestarts --value)
+    if [ "$restarts" = 0 ]; then pass 'Denial 本次启动无需重试'; else fail "Denial 重试次数=$restarts"; fi
+  else
+    restarts=$(systemctl show phosh -p NRestarts --value)
+    if [ "$restarts" = 0 ]; then pass 'Phosh 本次启动无需重试'; else fail "Phosh 重试次数=$restarts"; fi
+  fi
 fi
 printf '验收结束：失败项=%s；触摸交互、实际充电仍需各自验证；无线 SSH 用 FUXI_HOST=<无线 IP> scripts/fuxi-ssh.sh 复验。\n' "$failures"
 [ "$failures" -eq 0 ]

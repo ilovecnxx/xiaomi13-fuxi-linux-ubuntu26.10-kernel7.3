@@ -1,0 +1,140 @@
+diff --git a/sound/soc/qcom/sc8280xp.c b/sound/soc/qcom/sc8280xp.c
+index 9aae6aadd43da1a75b0f311837efefb5c99edaf5..93ba2fbea62a7f196e33be0649bbb448a7259511 100644
+--- a/sound/soc/qcom/sc8280xp.c
++++ b/sound/soc/qcom/sc8280xp.c
+@@ -91,6 +91,9 @@ struct qcom_snd_soc_common {
+ 	int num_controls;
+ 	unsigned int codec_dai_fmt;
+ 	bool codec_sysclk_set;
++	/* Clock the codecs' PLL from BCLK (e.g. Cirrus CS35L41 on MI2S) */
++	bool codec_sysclk_bclk;
++	bool mi2s_codec_channel_map;
+ 	bool mi2s_mclk_enable;
+ 	bool mi2s_bclk_enable;
+ 	bool wcd_jack;
+@@ -252,6 +255,20 @@ static int sc8280xp_snd_init(struct snd_soc_pcm_runtime *rtd)
+ 		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 17);
+ 		snd_soc_limit_volume(card, "SpkrRight PA Volume", 17);
+ 		break;
++	case SECONDARY_MI2S_RX:
++		/*
++		 * Xiaomi 13: CS35L41 amplifiers run without their DSP speaker
++		 * protection firmware, cap Digital Volume at 0 dB.
++		 */
++		if (data->priv->codec_sysclk_bclk) {
++			ret = snd_soc_limit_volume(card, "B Digital PCM Volume", 816);
++			if (ret < 0)
++				return ret;
++			ret = snd_soc_limit_volume(card, "T Digital PCM Volume", 816);
++			if (ret < 0)
++				return ret;
++		}
++		break;
+ 	case DISPLAY_PORT_RX_0:
+ 		/* DISPLAY_PORT dai ids are not contiguous */
+ 		dp_pcm_id = 0;
+@@ -359,7 +376,7 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
+ 	bool mi2s_bclk_enable = data->priv->mi2s_bclk_enable;
+ 	int mclk_freq;
+ 	int bclk_freq = sc8280xp_get_bclk_freq(params);
+-	int ret;
++	int i, ret;
+ 
+ 	dai_data = sc8280xp_get_dai_data(data->priv, cpu_dai->id);
+ 	mclk_freq = sc8280xp_get_mclk_freq(params);
+@@ -382,10 +399,26 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
+ 			return ret;
+ 
+ 		if (data->priv->codec_dai_fmt) {
+-			ret = snd_soc_dai_set_fmt(codec_dai,
+-						  data->priv->codec_dai_fmt);
+-			if (ret && ret != -ENOTSUPP)
+-				return ret;
++			for_each_rtd_codec_dais(rtd, i, codec_dai) {
++				ret = snd_soc_dai_set_fmt(codec_dai,
++							  data->priv->codec_dai_fmt);
++				if (ret && ret != -EOPNOTSUPP)
++					return ret;
++			}
++			codec_dai = snd_soc_rtd_to_codec(rtd, 0);
++		}
++
++		if (data->priv->mi2s_codec_channel_map) {
++			/* Mono codecs in DT order: first left, second right. */
++			for_each_rtd_codec_dais(rtd, i, codec_dai) {
++				unsigned int slot = i;
++
++				ret = snd_soc_dai_set_channel_map(codec_dai, 0, NULL,
++								  1, &slot);
++				if (ret)
++					return ret;
++			}
++			codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+ 		}
+ 
+ 		if (mi2s_mclk_enable) {
+@@ -411,6 +444,21 @@ static int sc8280xp_snd_hw_params(struct snd_pcm_substream *substream,
+ 			if (ret && ret != -ENOTSUPP)
+ 				return ret;
+ 		}
++
++		if (data->priv->codec_sysclk_bclk) {
++			for_each_rtd_codec_dais(rtd, i, codec_dai) {
++				ret = snd_soc_dai_set_sysclk(codec_dai, 0, bclk_freq,
++							     SND_SOC_CLOCK_IN);
++				if (ret && ret != -EOPNOTSUPP)
++					return ret;
++
++				ret = snd_soc_component_set_sysclk(codec_dai->component,
++								   0, 0, bclk_freq,
++								   SND_SOC_CLOCK_IN);
++				if (ret && ret != -EOPNOTSUPP)
++					return ret;
++			}
++		}
+ 		break;
+ 	case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
+ 	case AIF_TDM_RX_0 ... AIF_TDM_TX_12:
+@@ -710,6 +758,19 @@ static const struct qcom_snd_soc_common sm8550_priv_data = {
+ 			 SND_SOC_DAIFMT_I2S,
+ };
+ 
++static const struct qcom_snd_soc_common xiaomi_fuxi_priv_data = {
++	.driver_name = "sm8550",
++	.dapm_widgets = sc8280xp_dapm_widgets,
++	.num_dapm_widgets = ARRAY_SIZE(sc8280xp_dapm_widgets),
++	.wcd_jack = true,
++	.codec_sysclk_bclk = true,
++	.mi2s_codec_channel_map = true,
++	.mi2s_bclk_enable = true,
++	.codec_dai_fmt = SND_SOC_DAIFMT_BC_FC |
++			 SND_SOC_DAIFMT_NB_NF |
++			 SND_SOC_DAIFMT_I2S,
++};
++
+ static const struct qcom_snd_soc_common sm8650_priv_data = {
+ 	.driver_name = "sm8650",
+ 	.dapm_widgets = sc8280xp_dapm_widgets,
+@@ -750,6 +811,7 @@ static const struct of_device_id snd_sc8280xp_dt_match[] = {
+ 	{ .compatible = "qcom,sm8550-sndcard", .data = &sm8550_priv_data },
+ 	{ .compatible = "qcom,sm8650-sndcard", .data = &sm8650_priv_data },
+ 	{ .compatible = "qcom,sm8750-sndcard", .data = &sm8750_priv_data },
++	{ .compatible = "xiaomi,fuxi-sndcard", .data = &xiaomi_fuxi_priv_data },
+ 	{}
+ };
+ 
+diff --git a/sound/soc/soc-ops.c b/sound/soc/soc-ops.c
+index b3a719604ec74588830ff8c9983a19bfeaf0132c..2447b3e7b96c743c1b709da5ffa3b819ac4f6bfc 100644
+--- a/sound/soc/soc-ops.c
++++ b/sound/soc/soc-ops.c
+@@ -457,7 +457,9 @@ int snd_soc_limit_volume(struct snd_soc_card *card, const char *name, int max)
+ 		struct soc_mixer_control *mc =
+ 			(struct soc_mixer_control *)kctl->private_value;
+ 
+-		if (max <= mc->max - mc->min) {
++		/* SX controls store the step count in max, not a register limit. */
++		if (max <= (kctl->info == snd_soc_info_volsw_sx ?
++			    mc->max : mc->max - mc->min)) {
+ 			mc->platform_max = max;
+ 			ret = snd_soc_clip_to_platform_max(kctl);
+ 		}

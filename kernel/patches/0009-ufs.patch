@@ -1,0 +1,109 @@
+diff --git a/drivers/ufs/core/ufshcd.c b/drivers/ufs/core/ufshcd.c
+index ee643830a57a2f156ee7a9c37f2968cd2259fedf..7e9244213be2829a302e99ddcd82451e8d04f1dc 100644
+--- a/drivers/ufs/core/ufshcd.c
++++ b/drivers/ufs/core/ufshcd.c
+@@ -10938,6 +10938,43 @@ int ufshcd_runtime_resume(struct device *dev)
+ EXPORT_SYMBOL(ufshcd_runtime_resume);
+ #endif /* CONFIG_PM */
+ 
++/*
++ * Drop the link to the lowest clock-scaling gear before shutdown. On SM8550
++ * (UFS HW v5) powering the link down or asserting device reset while it runs
++ * at HS-G5 leaves the next boot hung in the bootloader.
++ */
++static void ufshcd_shutdown_downshift(struct ufs_hba *hba)
++{
++	u32 old_gear = hba->pwr_info.gear_rx;
++	unsigned long freq = 0;
++	struct dev_pm_opp *opp;
++	int ret;
++
++	if (!ufshcd_is_clkscaling_supported(hba) || !hba->devfreq ||
++	    !ufshcd_is_link_active(hba) || old_gear <= UFS_HS_G1)
++		return;
++
++	/* Stop devfreq so nothing scales back up; is_allowed stays true. */
++	if (hba->clk_scaling.is_enabled)
++		ufshcd_suspend_clkscaling(hba);
++
++	opp = dev_pm_opp_find_freq_ceil(hba->dev, &freq);
++	if (IS_ERR(opp)) {
++		ret = PTR_ERR(opp);
++	} else {
++		dev_pm_opp_put(opp);
++		ret = ufshcd_devfreq_scale(hba, freq, false);
++		if (!ret)
++			hba->clk_scaling.target_freq = freq;
++	}
++
++	if (ret)
++		ret = ufshcd_scale_gear(hba, UFS_HS_G1, false);
++
++	dev_info(hba->dev, "shutdown: gear %u -> %u (freq %lu, ret %d)\n",
++		 old_gear, hba->pwr_info.gear_rx, freq, ret);
++}
++
+ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
+ {
+ 	struct ufs_hba *hba = shost_priv(sdev->host);
+@@ -10959,6 +10996,7 @@ static void ufshcd_wl_shutdown(struct scsi_device *sdev)
+ 		scsi_device_set_state(sdev, SDEV_OFFLINE);
+ 		mutex_unlock(&sdev->state_mutex);
+ 	}
++	ufshcd_shutdown_downshift(hba);
+ 	__ufshcd_wl_suspend(hba, UFS_SHUTDOWN_PM);
+ 
+ 	/*
+diff --git a/drivers/ufs/host/ufs-qcom.c b/drivers/ufs/host/ufs-qcom.c
+index 27c87e62f8e98df00f6ec131603eb43b131d2f0d..275cf7f5770cc133bb9674721d3f4708a960f240 100644
+--- a/drivers/ufs/host/ufs-qcom.c
++++ b/drivers/ufs/host/ufs-qcom.c
+@@ -2528,6 +2528,7 @@ static unsigned long ufs_qcom_opp_freq_to_clk_freq(struct ufs_hba *hba,
+ 
+ static u32 ufs_qcom_freq_to_gear_speed(struct ufs_hba *hba, unsigned long freq)
+ {
++	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+ 	u32 gear = UFS_HS_DONT_CHANGE;
+ 	unsigned long unipro_freq;
+ 
+@@ -2540,7 +2541,12 @@ static u32 ufs_qcom_freq_to_gear_speed(struct ufs_hba *hba, unsigned long freq)
+ 		gear = UFS_HS_G5;
+ 		break;
+ 	case 300000000:
+-		gear = UFS_HS_G4;
++		/*
++		 * HW ver 5 (SM8550) runs HS-G5 Rate-A with the UniPro clock at
++		 * 300 MHz; its GCC has no 403 MHz rate. Mapping 300 MHz to G4
++		 * would cap the link at G4 whenever clock scaling scales up.
++		 */
++		gear = host->hw_ver.major == 0x5 ? UFS_HS_G5 : UFS_HS_G4;
+ 		break;
+ 	case 201500000:
+ 		gear = UFS_HS_G3;
+@@ -3081,9 +3087,26 @@ static const struct dev_pm_ops ufs_qcom_pm_ops = {
+ #endif
+ };
+ 
++/*
++ * ufshcd_wl_shutdown() powers the UFS device off and ufs_qcom_suspend() then
++ * leaves the device reset line asserted. The TLMM UFS_RESET setting is not
++ * restored to its power-on value by a warm reset, so the boot ROM would find
++ * the device still held in reset and fall into EDL (seen on SM8550). Release
++ * it, as the downstream driver does.
++ */
++static void ufs_qcom_shutdown(struct platform_device *pdev)
++{
++	struct ufs_hba *hba = platform_get_drvdata(pdev);
++	struct ufs_qcom_host *host = hba ? ufshcd_get_variant(hba) : NULL;
++
++	if (host && host->device_reset)
++		ufs_qcom_device_reset_ctrl(hba, false);
++}
++
+ static struct platform_driver ufs_qcom_pltform = {
+ 	.probe	= ufs_qcom_probe,
+ 	.remove = ufs_qcom_remove,
++	.shutdown = ufs_qcom_shutdown,
+ 	.driver	= {
+ 		.name	= "ufshcd-qcom",
+ 		.pm	= &ufs_qcom_pm_ops,

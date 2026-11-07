@@ -1,0 +1,58 @@
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+index 25987bc58556e717a0495de56265d629a4da5435..a82edcbdc2110ca3ee540a5b3bead34db7dc9b13 100644
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -234,6 +234,8 @@ EXPORT_SYMBOL(ath12k_core_resume_early);
+ 
+ int ath12k_core_resume(struct ath12k_base *ab)
+ {
++	struct wmi_set_current_country_arg arg = {};
++	struct ath12k *ar;
+ 	long time_left;
+ 	int ret;
+ 
+@@ -248,6 +250,21 @@ int ath12k_core_resume(struct ath12k_base *ab)
+ 		return -ETIMEDOUT;
+ 	}
+ 
++	/* Firmware comes back from power down with its default country,
++	 * so restore the one user space set. So far only single_pdev_only
++	 * chips support suspend, so handle the first, and the only, pdev.
++	 */
++	ar = ab->pdevs[0].ar;
++	if (ab->hw_params->current_cc_support &&
++	    ar->alpha2[0] != 0 && ar->alpha2[1] != 0) {
++		memcpy(&arg.alpha2, ar->alpha2, 2);
++		reinit_completion(&ar->regd_update_completed);
++		ret = ath12k_wmi_send_set_current_country_cmd(ar, &arg);
++		if (ret)
++			ath12k_warn(ab, "failed to set country code during resume: %d\n",
++				    ret);
++	}
++
+ 	return 0;
+ }
+ EXPORT_SYMBOL(ath12k_core_resume);
+diff --git a/drivers/net/wireless/ath/ath12k/reg.c b/drivers/net/wireless/ath/ath12k/reg.c
+index 7cf3dbc4fc8a91271cebb7655810dc2e6be988c8..aa7ce10d09f61cdf1bc7fcf20d2f933fe760a348 100644
+--- a/drivers/net/wireless/ath/ath12k/reg.c
++++ b/drivers/net/wireless/ath/ath12k/reg.c
+@@ -323,6 +323,18 @@ int ath12k_regd_update(struct ath12k *ar, bool init)
+ 	}
+ 
+ 	if (supported_bands & WMI_HOST_WLAN_5GHZ_CAP && ar->supports_6ghz) {
++		/* A single pdev covering 5 GHz and 6 GHz (e.g. WCN7850) needs
++		 * the 5 GHz rules too: countries without 6 GHz rules (e.g. CN)
++		 * would otherwise leave only 2 GHz in the frequency range.
++		 */
++		if (reg_cap->low_5ghz_chan < ATH12K_MIN_6GHZ_FREQ) {
++			freq_low = max(reg_cap->low_5ghz_chan, ab->reg_freq_5ghz.start_freq);
++			freq_high = min(reg_cap->high_5ghz_chan, ab->reg_freq_5ghz.end_freq);
++
++			if (freq_low < freq_high)
++				ath12k_mac_update_freq_range(ar, freq_low, freq_high);
++		}
++
+ 		freq_low = max(reg_cap->low_5ghz_chan, ab->reg_freq_6ghz.start_freq);
+ 		freq_high = min(reg_cap->high_5ghz_chan, ab->reg_freq_6ghz.end_freq);
+ 

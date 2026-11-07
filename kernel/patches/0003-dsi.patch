@@ -1,0 +1,59 @@
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index d92659d80f172dc816a3f394cf250d4eac41af65..61c35eb3fadc6230a4692ecddba0bfcc9ca1e7bf 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -129,6 +129,7 @@ struct msm_dsi_host {
+ 	struct clk *dsi_pll_pixel_clk;
+ 
+ 	unsigned long byte_clk_rate;
++	unsigned long hs_rate;
+ 	bool byte_intf_clk_div_2;
+ 	unsigned long pixel_clk_rate;
+ 	unsigned long esc_clk_rate;
+@@ -678,6 +679,17 @@ static void dsi_calc_pclk(struct msm_dsi_host *msm_host, bool is_bonded_dsi)
+ 	msm_host->pixel_clk_rate = dsi_get_pclk_rate(msm_host->mode, msm_host->dsc, is_bonded_dsi);
+ 	msm_host->byte_clk_rate = dsi_byte_clk_get_rate(&msm_host->base, is_bonded_dsi,
+ 							msm_host->mode);
++	if (msm_host->hs_rate && msm_host->byte_clk_rate &&
++	    !msm_host->cphy_mode) {
++		unsigned long old_byte_clk_rate = msm_host->byte_clk_rate;
++
++		msm_host->byte_clk_rate = DIV_ROUND_CLOSEST(msm_host->hs_rate, 8);
++		msm_host->pixel_clk_rate = mult_frac(msm_host->pixel_clk_rate,
++						     msm_host->byte_clk_rate,
++						     old_byte_clk_rate);
++		pr_info("msm-dsi: lane rate %lu Hz, byte clock %lu Hz\n",
++			msm_host->hs_rate, msm_host->byte_clk_rate);
++	}
+ 
+ 	DBG("pclk=%lu, bclk=%lu", msm_host->pixel_clk_rate,
+ 				msm_host->byte_clk_rate);
+@@ -1724,6 +1736,7 @@ static int dsi_host_attach(struct mipi_dsi_host *host,
+ 	msm_host->lanes = dsi->lanes;
+ 	msm_host->format = dsi->format;
+ 	msm_host->mode_flags = dsi->mode_flags;
++	msm_host->hs_rate = dsi->hs_rate;
+ 	if (dsi->dsc) {
+ 		msm_host->dsc = dsi->dsc;
+ 		if (dsi->mode_flags & MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT)
+@@ -2493,6 +2506,7 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
+ {
+ 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+ 	const struct msm_dsi_cfg_handler *cfg_hnd = msm_host->cfg_hnd;
++	u32 test_pattern;
+ 	int ret = 0;
+ 
+ 	mutex_lock(&msm_host->dev_mutex);
+@@ -2532,6 +2546,12 @@ int msm_dsi_host_power_on(struct mipi_dsi_host *host,
+ 
+ 	dsi_timing_setup(msm_host, is_bonded_dsi);
+ 	dsi_sw_reset(msm_host);
++	test_pattern = dsi_read(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL);
++	if (test_pattern) {
++		pr_info("msm-dsi: clear stale test pattern 0x%x\n",
++			test_pattern);
++		dsi_write(msm_host, REG_DSI_TEST_PATTERN_GEN_CTRL, 0);
++	}
+ 	dsi_ctrl_enable(msm_host, phy_shared_timings, phy);
+ 
+ 	msm_host->power_on = true;

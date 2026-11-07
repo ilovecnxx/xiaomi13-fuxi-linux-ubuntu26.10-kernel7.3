@@ -2,9 +2,12 @@
 
 在小米 13（SM8550）上跑**主线内核 + 完整 Ubuntu 用户空间**，做成一台可以日常使用的 Linux 手机。
 不使用 Android vendor kernel、Halium 或 Android HAL；Android 与 Linux 双系统共存，普通开机进 Android，
-需要时写 `recovery_b` 进 Linux。
+首次部署引导层到 `recovery_b`，以后重启到 recovery 进入 Linux。
 
 当前版本：**v0.6.0**（内核 `7.4.0-rc1`，主线 U-Boot + extlinux 引导，内核以 deb 包升级，Ubuntu 26.10）。
+
+开发基线：`7.4.0-rc1-fuxi-std2` 已上机验收，默认 std2、回退 chg3，另留 deb5；固定源码、配置和补丁配方见 `kernel/`。
+标准化收尾记录见 [`验收记录`](docs/标准化收尾验收-20261107.md)，Release 下载仍以各版本说明为准。
 
 ## 当前状态
 
@@ -23,9 +26,9 @@
 | 相机 | ❌ 未完成；MCLK 修法已写（`work/patches/camera-mclk-gdsc-20261107/`），未上机 |
 | 指纹 | ❌ 主线不可行（TrustZone 独占） |
 
-充电实测与限制见 [`docs/充电验收-20261107.md`](docs/充电验收-20261107.md)：墙充可净充电；电脑 USB SDP 输入功率较低，使用中可能净放电。**快充尚未解决，仍为 5 V PD、约 6.9 W 输入**；chg3 已通过电池认证并补齐限流/协议查询接口，但固件实际限流未提高，见 [`快充修复进展`](docs/快充修复进展-20261107.md)与[`开源实现调研`](docs/快充开源实现调研-20261107.md)。
+充电实测与限制见 [`docs/充电验收-20261107.md`](docs/充电验收-20261107.md)：墙充可净充电；电脑 USB SDP 输入功率较低，使用中可能净放电。**快充尚未解决**：多数测量为 5 V、约 4.4-6.9 W，曾短暂测到 8.825 V / 0.903 A；高电量窗口不能代表峰值能力。chg3 的电池认证和受限限流/协议查询接口已纳入标准源码，但固件限流与 VDM 握手问题仍存在，见 [`快充修复进展`](docs/快充修复进展-20261107.md)与[`开源实现调研`](docs/快充开源实现调研-20261107.md)。
 
-细节与逐项证据见 [`docs/`](docs/)，最新交接见 [`docs/交接-新会话-20261107-1652.md`](docs/交接-新会话-20261107-1652.md)，任务摘要见 [`TASKS.md`](TASKS.md)。
+当前维护入口见 [`内核维护与独立升级`](docs/内核维护与独立升级.md)，源码清单与补丁见 [`kernel/`](kernel/README.md)，任务状态见 [`TASKS.md`](TASKS.md)。历次交接保留在 `docs/`，不代替当前操作文档。
 
 ## 下载与安装
 
@@ -53,17 +56,18 @@
 ## 从源码构建
 
 ```bash
-# 日用组合：原生显示 120 Hz + 扬声器/主麦克风 + GPU + 深度空闲
-FUXI_DTB=sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp scripts/fuxi-build-abl.sh <名字>
-
-# 无显示驱动的最小镜像（simpledrm）
-scripts/fuxi-build-abl.sh daily
+# 按固定上游压缩包、校验和与分组补丁重建源码
+python3 scripts/fuxi-kernel-source.py prepare
+# 无网络时：prepare --archive /path/linux-7.4-rc1.tar.gz
+scripts/fuxi-build-deb.sh <唯一名字>
 ```
 
-构建产物在 `work/kbuild/`：`<名字>.img`、`.config`、`.dtb`、`.build.json`。构建脚本自带互斥锁，
-成功或失败都会恢复原始 `.config`；变体镜像是实验用，不要只凭编译成功就替换日常镜像。
+构建产物在 `work/kbuild/<名字>/`：内核 deb、配置、源码记录、`build.json` 与校验和。
+标准源码在 `build/linux-standard/`（不提交第三方源码），默认构建前必须通过完整源码树校验。
+安装内核 deb 后由 initramfs-tools 和设备包钩子更新启动项，日常升级不重刷 recovery_b。
+构建依赖、实验源码入口和补丁维护见 [`kernel/README.md`](kernel/README.md)。
 
-内核源码在 `build/linux/`（**不在仓库内**，由 `scripts/` 拉取并打补丁）。
+`build/linux/`、`fuxi-build-abl.sh` 和 `scripts/legacy/` 属于旧 ABL/shim 路径，仅供历史复现。
 
 ## 验证与访问
 
@@ -84,6 +88,7 @@ python3 -m unittest discover -s scripts/tests -v
 |---|---|
 | `docs/` | 设计、调研、验收记录与历次交接文档 |
 | `scripts/` | 构建、部署、健康检查与回归测试 |
+| `kernel/` | 固定源码清单、分组补丁、作者记录与上游整理计划 |
 | `device-info/` | 本机器件、分区与内核参数快照 |
 | `work/patches/` | 内核与第三方项目的补丁 |
 | `work/rootfs-overlay/` | 用户空间服务与桌面配置 |
@@ -103,5 +108,5 @@ python3 -m unittest discover -s scripts/tests -v
 
 - [`docs/目标-M5.md`](docs/目标-M5.md)：独立可用目标与各外设实验历史
 - [`docs/双系统启动说明.md`](docs/双系统启动说明.md)：启动链、切换与恢复
-- [`docs/交接-新会话-20261103-1940.md`](docs/交接-新会话-20261103-1940.md)：当前最新状态
+- [`docs/内核维护与独立升级.md`](docs/内核维护与独立升级.md)：当前构建、安装、回退与清理流程
 - [`TASKS.md`](TASKS.md)：当前任务与红线

@@ -1,0 +1,195 @@
+diff --git a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+index 795e8ec7e8faf32ecfe1ff1ed06b98b05649361e..483e9e4147b3a0a8219d37924ba51b08d9085a96 100644
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+@@ -426,6 +426,7 @@ static const struct of_device_id qcom_smmu_client_of_match[] __maybe_unused = {
+ 	{ .compatible = "qcom,sm8150-mdss" },
+ 	{ .compatible = "qcom,sm8250-mdss" },
+ 	{ .compatible = "qcom,sm8450-mdss" },
++	{ .compatible = "qcom,sm8550-mdss" },
+ 	{ .compatible = "qcom,x1e80100-mdss" },
+ 	{ }
+ };
+diff --git a/drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c b/drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c
+index 89bc1c89fc85e7d18d6a8d24d2fe3761f851d456..1dc8997739cdc83474b03527adf7c75cdac5d368 100644
+--- a/drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c
++++ b/drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c
+@@ -37,6 +37,7 @@
+ #define EUSB2_TUNE_EUSB_SLEW		0x59
+ #define EUSB2_TUNE_EUSB_EQU		0x5A
+ #define EUSB2_TUNE_EUSB_HS_COMP_CUR	0x5B
++#define EUSB2_TUNE_TBL_NUM		12
+ 
+ static const int squelch_detector[] = {
+ 	[0] = -6000,
+@@ -68,6 +69,9 @@ struct eusb2_repeater {
+ 	struct regulator_bulk_data *vregs;
+ 	const struct eusb2_repeater_cfg *cfg;
+ 	enum phy_mode mode;
++	/* Snapshot of EUSB2_TUNE_USB2_CROSSOVER..EUSB2_TUNE_EUSB_HS_COMP_CUR */
++	u8 init_tune_vals[EUSB2_TUNE_TBL_NUM];
++	bool tune_saved;
+ };
+ 
+ static const char * const pm8550b_vreg_l[] = {
+@@ -138,6 +142,52 @@ static int eusb2_repeater_init_vregs(struct eusb2_repeater *rptr)
+ 	return devm_regulator_bulk_get(dev, num, rptr->vregs);
+ }
+ 
++/*
++ * fuxi: Xiaomi's stock firmware programs a dedicated host-mode tuning
++ * sequence (param-override-seq-host in fuxi-live.dts).  The mainline
++ * defaults leave the USB2 host link unreliable with some devices
++ * (EPROTO, "Device not responding to setup address", uas host reset).
++ * Values are ordered from EUSB2_TUNE_USB2_CROSSOVER (0x50) upwards.
++ */
++static const u8 fuxi_host_tune_vals[EUSB2_TUNE_TBL_NUM] = {
++	0x00,	/* EUSB2_TUNE_USB2_CROSSOVER */
++	0x0f,	/* EUSB2_TUNE_IUSB2 */
++	0x04,	/* EUSB2_TUNE_RES_FSDIF */
++	0x07,	/* EUSB2_TUNE_HSDISC */
++	0x02,	/* EUSB2_TUNE_SQUELCH_U */
++	0x03,	/* EUSB2_TUNE_USB2_SLEW */
++	0x00,	/* EUSB2_TUNE_USB2_EQU */
++	0x07,	/* EUSB2_TUNE_USB2_PREEM */
++	0x02,	/* EUSB2_TUNE_USB2_HS_COMP_CUR */
++	0x03,	/* EUSB2_TUNE_EUSB_SLEW */
++	0x03,	/* EUSB2_TUNE_EUSB_EQU */
++	0x02,	/* EUSB2_TUNE_EUSB_HS_COMP_CUR */
++};
++
++static void eusb2_repeater_write_tune(struct eusb2_repeater *rptr,
++				      const u8 *vals)
++{
++	int i;
++
++	for (i = 0; i < EUSB2_TUNE_TBL_NUM; i++)
++		regmap_write(rptr->regmap,
++			     EUSB2_TUNE_USB2_CROSSOVER + i, vals[i]);
++}
++
++static void eusb2_repeater_save_tune(struct eusb2_repeater *rptr)
++{
++	unsigned int val;
++	int i;
++
++	for (i = 0; i < EUSB2_TUNE_TBL_NUM; i++) {
++		if (regmap_read(rptr->regmap,
++				EUSB2_TUNE_USB2_CROSSOVER + i, &val))
++			return;
++		rptr->init_tune_vals[i] = val;
++	}
++	rptr->tune_saved = true;
++}
++
+ static int eusb2_repeater_init(struct phy *phy)
+ {
+ 	struct eusb2_repeater *rptr = phy_get_drvdata(phy);
+@@ -187,6 +237,8 @@ static int eusb2_repeater_init(struct phy *phy)
+ 				       poll_val & RPTR_OK, 10, 5);
+ 	if (ret)
+ 		dev_err(rptr->dev, "initialization timed-out\n");
++	else
++		eusb2_repeater_save_tune(rptr);
+ 
+ 	return ret;
+ }
+@@ -206,6 +258,8 @@ static int eusb2_repeater_set_mode(struct phy *phy,
+ 		 */
+ 		regmap_write(regmap, EUSB2_FORCE_EN_5, F_CLK_19P2M_EN);
+ 		regmap_write(regmap, EUSB2_FORCE_VAL_5, V_CLK_19P2M_EN);
++		/* fuxi: apply the stock host tuning sequence */
++		eusb2_repeater_write_tune(rptr, fuxi_host_tune_vals);
+ 		break;
+ 	case PHY_MODE_USB_DEVICE:
+ 		/*
+@@ -216,6 +270,9 @@ static int eusb2_repeater_set_mode(struct phy *phy,
+ 		 */
+ 		regmap_write(regmap, EUSB2_FORCE_EN_5, 0);
+ 		regmap_write(regmap, EUSB2_FORCE_VAL_5, 0);
++		/* fuxi: restore the tuning we captured at init time */
++		if (rptr->tune_saved)
++			eusb2_repeater_write_tune(rptr, rptr->init_tune_vals);
+ 		break;
+ 	default:
+ 		return -EINVAL;
+diff --git a/drivers/soc/qcom/pdr_interface.c b/drivers/soc/qcom/pdr_interface.c
+index 6d879e1540b0a43c2db18b83cf4f6c54af4acb10..e48e8473790dd24cdf12a3c6ba95bd7483c60948 100644
+--- a/drivers/soc/qcom/pdr_interface.c
++++ b/drivers/soc/qcom/pdr_interface.c
+@@ -386,6 +386,30 @@ static int pdr_get_domain_list(struct servreg_get_domain_list_req *req,
+ 		return -EREMOTEIO;
+ 	}
+ 
++	if (!strcmp(req->service_name, "tms/servreg")) {
++		unsigned int i;
++
++		pr_info("PDR: %s domain list offset=%u total_valid=%u total=%u list_valid=%u len=%u\n",
++			req->service_name, req->domain_offset,
++			resp->total_domains_valid,
++			resp->total_domains_valid ? resp->total_domains : 0,
++			resp->domain_list_valid,
++			resp->domain_list_valid ? resp->domain_list_len : 0);
++
++		if (!resp->domain_list_valid)
++			return 0;
++
++		for (i = 0; i < resp->domain_list_len; i++) {
++			struct servreg_location_entry *entry = &resp->domain_list[i];
++
++			pr_info("PDR: %s domain[%u] name=%.*s data_valid=%u data=0x%x instance=%u\n",
++				req->service_name, i,
++				(int)strnlen(entry->name, sizeof(entry->name)),
++				entry->name, entry->service_data_valid,
++				entry->service_data, entry->instance);
++		}
++	}
++
+ 	return 0;
+ }
+ 
+@@ -400,6 +424,10 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
+ 	if (!resp)
+ 		return -ENOMEM;
+ 
++	if (!strcmp(pds->service_name, "tms/servreg"))
++		pr_info("PDR: locating service name=%s path=%s\n",
++			pds->service_name, pds->service_path);
++
+ 	/* Prepare req message */
+ 	strscpy(req.service_name, pds->service_name, sizeof(req.service_name));
+ 	req.domain_offset_valid = true;
+@@ -421,6 +449,10 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
+ 				pds->service_data_valid = entry->service_data_valid;
+ 				pds->service_data = entry->service_data;
+ 				pds->instance = entry->instance;
++				if (!strcmp(pds->service_name, "tms/servreg"))
++					pr_info("PDR: matched service name=%s path=%s instance=%u\n",
++						pds->service_name, pds->service_path,
++						pds->instance);
+ 				return 0;
+ 			}
+ 		}
+@@ -435,6 +467,11 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
+ 		domains_read += resp->domain_list_len;
+ 	} while (domains_read < resp->total_domains);
+ 
++	if (ret == -ENXIO && !strcmp(pds->service_name, "tms/servreg"))
++		pr_info("PDR: service name=%s path=%s not found after %d domains (total_valid=%u total=%u)\n",
++			pds->service_name, pds->service_path, domains_read,
++			resp->total_domains_valid, resp->total_domains);
++
+ 	return ret;
+ }
+ 
+@@ -442,8 +479,8 @@ static void pdr_notify_lookup_failure(struct pdr_handle *pdr,
+ 				      struct pdr_service *pds,
+ 				      int err)
+ {
+-	pr_err("PDR: service lookup for %s failed: %d\n",
+-	       pds->service_name, err);
++	pr_err("PDR: service lookup for %s path %s failed: %d\n",
++	       pds->service_name, pds->service_path, err);
+ 
+ 	if (err == -ENXIO)
+ 		return;

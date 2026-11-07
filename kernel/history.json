@@ -1,0 +1,194 @@
+[
+  {
+    "commit": "2d8197a8cf696c798a26a7a3adc48cca1735c504",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "dt-bindings: display: panel: add Xiaomi fuxi M3 38 0c 0a panel\n\n\u5c0f\u7c73 13 \u9762\u677f binding\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "07de9043bf9be87801b50fdaf221a4001c8e51b2",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "drm/panel: add Xiaomi 13 (fuxi) panel driver\n\nfuxi \u539f\u751f DSI \u9762\u677f\u9a71\u52a8\uff08\u591a\u5237\u65b0\u7387\uff09\u3002\u9996\u6b21 prepare \u5148\u65ad\u7535\u51b7\u542f\u52a8\uff0c\u4fee\u5f00\u673a\u540e\u5c4f\u5e55\u7269\u7406\u9ed1\uff08\u539f 853bc768f\uff09\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "c8f4054087a9d4c42a45969bd8d0bbeabf096570",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "drm/msm/dsi: honour mipi_dsi_device hs_rate, clear stale test pattern\n\n\u6309\u9762\u677f\u7ed9\u7684 hs_rate \u8bbe byte clock\uff1bpower_on \u65f6\u6e05\u6389 ABL \u6b8b\u7559\u7684\u6d4b\u8bd5\u56fe\u6837\u3002\u4e24\u4ef6\u4e8b\u9001\u4e0a\u6e38\u524d\u8981\u62c6\u5f00\uff0cpr_info \u964d\u7ea7\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: needs-rework\n\n"
+  },
+  {
+    "commit": "1c351f7e763d0c608200081ba62b2591a28e4d77",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "dt-bindings: input: touchscreen: add ST FTM5\n\nST FTM5 \u89e6\u6478\u63a7\u5236\u5668 binding\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "c89ff4c10fdbb9b7c74010071850a5ff2aa2986e",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "Input: add ST FTM5 touchscreen driver\n\nfuxi \u89e6\u6478\u5c4f\u9a71\u52a8\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "20e1a1f6c312d59ba2046f4a08ef287ed4ba43b2",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "net: ipa: v5.5 modem-owned SMEM filter table and GSI channel halt\n\nfuxi \u57fa\u5e26\uff1aSMEM \u6574\u6bb5\u4e00\u5bf9\u4e00\u6620\u5c04\uff08\u57fa\u5e26\u81ea\u5df1\u5206\u914d IPA filter table\uff09\uff0cv5.5 \u7aef\u70b9\u53f7\u4fee\u6b63\uff0cQMI FnR \u7edf\u8ba1\uff0c\u57fa\u5e26\u79bb\u7ebf\u540e halt \u5176 GSI \u901a\u9053\u3002\n\u7aef\u70b9\u53f7\u6539\u52a8\u4f1a\u5f71\u54cd\u6240\u6709 IPA v5.5 \u5e73\u53f0\uff0c\u9001\u4e0a\u6e38\u524d\u8981\u786e\u8ba4\u53c2\u8003\u673a\u884c\u4e3a\uff0cSMEM \u6620\u5c04\u9700\u6539\u6210\u6309\u5e73\u53f0\u6570\u636e\u9009\u62e9\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: needs-rework\n\n"
+  },
+  {
+    "commit": "2e94b61da6094976245e9d663fc543864f13f26f",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "net: qrtr: send pending HELLO instead of dropping early replies\n\n\u8fdc\u7aef HELLO \u5148\u4e8e\u672c\u7aef HELLO \u88ab\u5904\u7406\u65f6\uff0cflush say_hello \u518d\u53d1\uff0c\u907f\u514d\u4e22 NEW_SERVER\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "b79e9826dbe75b96728d0cb385db6616a59abb5a",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "soc: qcom: pdr_interface: log tms/servreg domain lookup\n\npd-mapper \u8c03\u8bd5\u65e5\u5fd7\uff0c\u53ea\u6253\u5370\u4e0d\u6539\u884c\u4e3a\u3002\u786e\u8ba4\u4e0d\u518d\u9700\u8981\u540e\u5220\u9664\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: local-debug\n\n"
+  },
+  {
+    "commit": "e991c4cceb3d156dcd9859e2a5bc374a1d659ca5",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "firmware: qcom: scm: report PAS init image failures\n\nPAS init \u5404\u5931\u8d25\u70b9\u6253\u5370\u539f\u56e0\uff08\u65f6\u949f/\u5e26\u5bbd/SCM/TZ \u5185\u5b58\uff09\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "474cd76a010549fd3bed7ebe41a74292ac9dd936",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "wifi: ath12k: add 5 GHz rules for single pdev 5/6 GHz chips\n\nWCN7850 \u5355 pdev \u8986\u76d6 5+6 GHz\uff0cCN \u7b49\u65e0 6 GHz \u89c4\u5219\u7684\u56fd\u5bb6\u539f\u6765\u53ea\u5269 2.4 GHz\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "ae575a8a25638811d3f709bd6036a515be0a5986",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "wifi: ath12k: restore user country code after resume\n\n\u56fa\u4ef6\u6389\u7535\u6062\u590d\u540e\u56de\u5230\u9ed8\u8ba4\u56fd\u5bb6\u7801\uff0cresume \u65f6\u6062\u590d\u7528\u6237\u8bbe\u7f6e\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "580a06f5291b489cdbbcfc865ef1843165225024",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "power: supply: qcom_battmgr: handle Xiaomi SM8550 firmware quirks\n\n\u5c0f\u7c73 ADSP \u56fa\u4ef6\u5728 BATT_TEMP \u524d\u63d2\u4e86 BATT_CONSTANT_CURRENT\uff0c\u5c5e\u6027\u53f7\u6574\u4f53 +1\uff1b\u56fa\u4ef6\u5355\u4f4d\u4e3a mAh/\u5206\u949f\uff0c\u8f6c\u6362\u6210 \u00b5Ah/\u79d2\uff08\u539f 7412b8bc3\uff09\u3002\u9700\u6539\u6210\u6309 compatible \u9009\u62e9\u7684 quirk\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: needs-rework\n\n"
+  },
+  {
+    "commit": "00f8387a447ff63c2b4a49b6ba2f2a7cb0fae73f",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "scsi: ufs: qcom: release device reset on shutdown\n\n\u5173\u673a\u540e UFS_RESET \u4fdd\u6301\u62c9\u4f4e\uff0c\u70ed\u91cd\u542f\u65f6 boot ROM \u8fdb EDL\u3002\u53c2\u7167\u4e0b\u6e38\u9a71\u52a8\u5728 shutdown \u65f6\u91ca\u653e\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "a978dfd7dfddf28308410a72e7d32de2769d790a",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "ASoC: soc-ops: fix snd_soc_limit_volume() for SX controls\n\nSX \u63a7\u4ef6\u7684 max \u5b58\u7684\u662f\u6b65\u6570\uff0c\u4e0d\u662f\u5bc4\u5b58\u5668\u4e0a\u9650\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: upstream-candidate\n\n"
+  },
+  {
+    "commit": "bace4fe612ce8c5117aa7caf8023dccfafd64234",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "ASoC: qcom: sc8280xp: CS35L41 on MI2S for Xiaomi 13\n\ncodec PLL \u7528 BCLK\uff1b\u65e0 DSP \u4fdd\u62a4\u56fa\u4ef6\u65f6\u97f3\u91cf\u4e0a\u9650 0 dB\uff1b\u5de6\u53f3\u58f0\u9053\u6309 DT \u987a\u5e8f\u3002\u673a\u578b\u7279\u5224\u9700\u6539\u6210 DT \u5c5e\u6027/\u673a\u578b\u6570\u636e\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: needs-rework\n\n"
+  },
+  {
+    "commit": "5b9d340f7fae14b26e89fc66aabeb770df397d8d",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "misc: add fuxi camera power switch for bring-up\n\n\u76f8\u673a\u6a21\u7ec4 sysfs \u4e0a\u7535\u5f00\u5173\uff0c\u53ea\u7528\u4e8e CCI \u63a2\u6d4b\u4f20\u611f\u5668\uff0c\u6709\u771f\u6b63\u4f20\u611f\u5668\u9a71\u52a8\u540e\u5220\u9664\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: local-hack\n\n"
+  },
+  {
+    "commit": "cd1ae30918649a0a1a37f92f622570e58ac9c4e4",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "arm64: dts: qcom: add Xiaomi 13 (fuxi) and bring-up variants\n\n\u677f\u7ea7 DTS\uff08-min \u4e3a\u57fa\u7840\uff09\u53ca audio/disp/modem/usbc/camera/sleep \u7b49\u529f\u80fd dtsi \u548c\u6d4b\u8bd5\u53d8\u4f53\uff0c\u542b arm/qcom.yaml \u673a\u578b\u6761\u76ee\u3002\nusbc dtsi \u542f\u7528 i2c_master_hub_0\uff0c\u4fee UCSI \u4e00\u76f4 defer\uff0c\u65b0\u589e -audio-disp-usbc \u53d8\u4f53\uff08\u539f 578c1b897\uff09\u3002\n\u9001\u4e0a\u6e38\u524d\u8981\u5408\u5e76\u6210\u5355\u4e2a sm8550-xiaomi-fuxi.dts\uff0c\u6d4b\u8bd5\u53d8\u4f53\u7559\u5728\u672c\u5730\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: needs-rework\n\n"
+  },
+  {
+    "commit": "2be6d1f2f47faeb86ae03469ebb18993ecf66c88",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "arm64: fuxi: built-in board DTB and early screen console\n\nABL \u4f1a\u628a\u5382\u5546 dtbo \u53e0\u5230 boot DTB \u4e0a\uff0c\u4e3b\u7ebf DTB \u4f1a\u5361\u6b7b\uff0c\u6240\u4ee5\u955c\u50cf\u9644\u5382\u5546 DTB \u5f53\u8bf1\u9975\uff0csetup_arch \u6539\u7528\u5185\u5efa\u4e3b\u7ebf DTB\uff1b\u53e6\u5e26 simpledrm \u4e4b\u524d\u7684\u65e9\u671f\u5c4f\u5e55 console\u3002\n\u542f\u52a8\u94fe\u6362\u6210 U-Boot/kexec/UEFI \u540e\u6574\u4e2a\u5220\u9664\u3002\n\n\u62c6\u5206\u81ea c3890463b\uff08\u7d2f\u8ba1\u79fb\u690d\u63d0\u4ea4\uff09\u3002\n\nFuxi-Status: local-hack\n\n"
+  },
+  {
+    "commit": "7f30e4a611db91654d0319149b479848fda319ab",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "scsi: ufs: qcom: keep HS-G5 when UniPro runs at 300 MHz on HW v5\n\nSM8550\uff08UFS HW v5\uff09HS-G5 Rate-A \u7684 UniPro \u65f6\u949f\u662f 300 MHz\uff0cGCC \u6ca1\u6709 403 MHz \u6863\u3002\n\u539f\u6620\u5c04\u628a 300 MHz \u5f53\u6210 G4\uff0c\u65f6\u949f\u8c03\u9891\u4e00\u5347\u6863\u5c31\u628a\u94fe\u8def\u5c01\u9876\u5728 G4\u3002\n\nFuxi-Status: upstream-candidate\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "54130a1df57a353941a8f1dd9de7c8d422cc8892",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "scsi: ufs: core: downshift the link before shutdown\n\nSM8550 \u4e0a\u94fe\u8def\u8dd1\u5728 HS-G5 \u65f6\u76f4\u63a5\u65ad\u7535/\u62c9 device reset\uff0c\u4e0b\u4e00\u6b21\u5f00\u673a\u5361\u5728\u5f15\u5bfc\u7a0b\u5e8f\u3002\n\u5173\u673a\u524d\u5148\u505c devfreq \u5e76\u964d\u5230\u6700\u4f4e\u8c03\u9891\u6863\u3002\n\nFuxi-Status: needs-rework\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "d71c8b3638e86f3c45777916589b18a86def69e3",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "phy: qualcomm: eusb2-repeater: apply fuxi host-mode tuning\n\n\u5382\u5546\u56fa\u4ef6\u7ed9\u4e3b\u673a\u6a21\u5f0f\u5355\u72ec\u4e00\u5957\u8c03\u53c2\uff08fuxi-live.dts \u7684 param-override-seq-host\uff09\u3002\n\u4e3b\u7ebf\u9ed8\u8ba4\u503c\u4e0b\u90e8\u5206 USB2 \u8bbe\u5907\u5728\u4e3b\u673a\u6a21\u5f0f\u4e0d\u7a33\uff08EPROTO\u3001setup address \u65e0\u54cd\u5e94\u3001uas \u590d\u4f4d\uff09\u3002\n\u76ee\u524d\u6309\u673a\u578b\u786c\u7f16\u7801\uff0c\u8981\u6539\u6210 DT \u5c5e\u6027\u624d\u80fd\u4e0a\u6e38\u3002\n\nFuxi-Status: needs-rework\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "3bcf3d04e353d07c767e6f2e980b6deb9e70afec",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "power: supply: qcom_battmgr: fuxi diagnostics debugfs and OTG experiment\n\n\u53ea\u8bfb\u8bca\u65ad\uff1adebugfs \"diag\" \u67e5\u8be2 USB \u5c5e\u6027 0-12\uff080x32\uff09\u548c\u90e8\u5206\u5c0f\u7c73\u5c5e\u6027\uff080x50\uff09\uff1b\nOTG \u5b9e\u9a8c\uff1a\u5199 \"<prop> <value>\" \u53d1 BC_XM_SET\uff080x51\uff09\u3002\n\nFuxi-Status: local-debug\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "58a7eea672b81c435de693754f979e138e362ecb",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "drm/panel: xiaomi-fuxi: debugfs runtime refresh-rate prototype\n\n/sys/kernel/debug/panel-xiaomi-fuxi/rate\uff1a\u4e0d\u91cd\u65b0\u4e0a\u7535\u9762\u677f\uff0c\u53ea\u53d1 xiaomi_fuxi_on() \u91cc\u7684\n\u4e09\u6761\u5382\u5546\u547d\u4ee4\u5207\u5237\u65b0\u7387\uff1b\u4e0d\u6539 CRTC \u65f6\u5e8f\uff0c\u7528\u6765\u9a8c\u8bc1\u4e3b\u673a\u5e27\u8282\u594f\u662f\u5426\u8ddf\u968f\u3002\n\nFuxi-Status: local-debug\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "b5e030ab9b05647fefdd2db470b3adb6e9bf4854",
+    "author": "fuxi-linux-builder",
+    "email": "builder@localhost",
+    "message": "arm64: dts: qcom: fuxi: DisplayPort daily variant and kexec boot shim\n\n- sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc-dp\uff1a\u65e5\u7528 DTB\n  \uff08\u57fa\u5e26+\u97f3\u9891+\u663e\u793a+USB-C\uff09\u52a0 DisplayPort \u63a7\u5236\u5668\uff08USB4/DP combo PHY \u7684 DP alt mode\uff09\u3002\n- sm8550-xiaomi-fuxi-shim\uff1aABL \u4ece recovery_b \u5f15\u5bfc\u7684 kexec \u5f15\u5bfc\u5c42\uff0c\u53ea\u4ece\u6839\u5206\u533a\n  /boot/fuxi \u9009\u5185\u6838+DTB \u518d kexec\uff08\u9879\u76ee scripts/fuxi-shim/\uff09\u3002nolpi\uff0c\u4e0d\u8d77 ADSP\u3001\n  \u4e0d probe \u57fa\u5e26 PAS / rmtfs_mem\u3001\u4e0d\u4e0a\u7535 PCIe\uff08\u7ea6\u675f\u89c1 DTS \u6ce8\u91ca\uff09\u3002\n\nFuxi-Status: local-hack\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "2672dd04407f4f5322fa296a59b33cceecfa143f",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "arm64: dts: qcom: sm8550-xiaomi-fuxi: single consolidated board dts\n\nFold sm8550-xiaomi-fuxi-min.dts and the disp, audio, audio2, modem and\nusbc fragments, plus the DisplayPort controller, into one self-contained\nboard file. It compiles to the same tree as the daily\nsm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc-dp.dtb\n(dtc -s diff: identical phandles, only /chosen/bootargs dropped since the\ncommand line now comes from the bootloader).\n\nThe min-only MDSS sync_state placeholder (iommus deleted, dispcc disabled)\nand the gadget-only USB setup are merged with their overrides instead of\nbeing undone later. camera/sleep stay as separate optional .dtsi files;\nthe old wrapper DTBs are kept because installed kernels reference them.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "c5e33af1eea3dc32c6c8caa3705cd4d428f9d8e7",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "arm64: configs: add fuxi_defconfig\n\nKernel config for the Xiaomi 13 (fuxi, SM8550), taken from the\nsavedefconfig of the 7.4.0-rc1-fuxi-deb2 package build. `make\nfuxi_defconfig` reproduces that package's .config with no differences\n(scripts/diffconfig). The release suffix is passed via LOCALVERSION at\nbuild time.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "803d7ab9c6f5b8b7b9548fae48f1c8ca6b81e0dd",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "arm64: fuxi_defconfig: drop built-in initramfs and cmdline\n\nThe kernel is now booted by U-Boot extlinux with an initramfs-tools\ninitrd and the command line from /etc/kernel/cmdline.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "a5dcbb9ccd807ef7113072b8919b1970c48b7ca6",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "fuxi: splash reserved-memory iommu-addresses + sm8550-mdss identity domain\n\nThe bootloader leaves MDSS autorefresh scanning the splash buffer at\n0xb8000000. Once the SMMU attaches a translating domain to the MDSS SID\n(0x1c00) every fetch faults until DPU takes over, which shows as a\ncorrupted screen for ~0.7 s during boot.\n\n- DTS: describe the splash region with iommu-addresses and point mdss\n  memory-region at it, so a 1:1 direct mapping is requested.\n- arm-smmu-qcom: add qcom,sm8550-mdss to qcom_smmu_client_of_match like\n  the other MDSS generations, so the device starts in an identity domain\n  (the direct mapping alone could not be installed before attach and\n  one fault remained).\n\nTested on Xiaomi 13 (deb4/deb5): context faults 10 -> 1 -> 0, panel and\nDPU work.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n\n"
+  },
+  {
+    "commit": "89846aa3d7b1afc19cc872aa579f9d9beedc8637",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "power: supply: qcom_battmgr: add fuxi battery and MiPPS authentication messages\n\n"
+  },
+  {
+    "commit": "ddd260be19c5ea20f289eae9e8526ad28395ea62",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "power: supply: qcom_battmgr: allow bounded fuxi PD input current votes\n\n"
+  },
+  {
+    "commit": "e3ebcdbc2eb5aedd41d51345af698f041d050890",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "usb: typec: ucsi: bound debugfs response to the protocol buffer size\n\n"
+  },
+  {
+    "commit": "a2b4fad3c54445ce42e79dfe0dc4b8569b5550ec",
+    "author": "codex",
+    "email": "ilovecnxx@gmail.com",
+    "message": "arm64: fuxi: retire direct ABL boot and consolidate maintained configuration\n\n"
+  }
+]

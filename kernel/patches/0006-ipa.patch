@@ -1,0 +1,594 @@
+diff --git a/drivers/net/ipa/data/ipa_data-v5.5.c b/drivers/net/ipa/data/ipa_data-v5.5.c
+index 741ae21d9d78520466f4994b68109e0c07409c1d..8cefca215f0cf9bcd2ab644052a71702984aff43 100644
+--- a/drivers/net/ipa/data/ipa_data-v5.5.c
++++ b/drivers/net/ipa/data/ipa_data-v5.5.c
+@@ -135,7 +135,7 @@ static const struct ipa_gsi_endpoint_data ipa_gsi_endpoint_data[] = {
+ 	[IPA_ENDPOINT_AP_MODEM_RX] = {
+ 		.ee_id		= GSI_EE_AP,
+ 		.channel_id	= 1,
+-		.endpoint_id	= 23,
++		.endpoint_id	= 24,
+ 		.toward_ipa	= false,
+ 		.channel = {
+ 			.tre_count	= 256,
+@@ -168,7 +168,7 @@ static const struct ipa_gsi_endpoint_data ipa_gsi_endpoint_data[] = {
+ 	[IPA_ENDPOINT_MODEM_AP_RX] = {
+ 		.ee_id		= GSI_EE_MODEM,
+ 		.channel_id	= 7,
+-		.endpoint_id	= 21,
++		.endpoint_id	= 22,
+ 		.toward_ipa	= false,
+ 	},
+ 	[IPA_ENDPOINT_MODEM_DL_NLO_TX] = {
+diff --git a/drivers/net/ipa/gsi.c b/drivers/net/ipa/gsi.c
+index 624649484d6275d4a49cc64aa171ce8e24dfe571..9dbbe4c84fa209d8a236b7e64e15774805a87a31 100644
+--- a/drivers/net/ipa/gsi.c
++++ b/drivers/net/ipa/gsi.c
+@@ -89,6 +89,7 @@
+ #define GSI_EVT_RING_INT_MODT		(32 * 1) /* 1ms under 32KHz clock */
+ 
+ #define GSI_CMD_TIMEOUT			50	/* milliseconds */
++#define GSI_GENERIC_CMD_TIMEOUT		5000	/* milliseconds */
+ 
+ #define GSI_CHANNEL_STOP_RETRIES	10
+ #define GSI_CHANNEL_MODEM_HALT_RETRIES	10
+@@ -381,9 +382,9 @@ static u32 gsi_ring_index(struct gsi_ring *ring, u32 offset)
+  * completion to be signaled.  Returns true if the command completes
+  * or false if it times out.
+  */
+-static bool gsi_command(struct gsi *gsi, u32 reg, u32 val)
++static bool gsi_command_timeout(struct gsi *gsi, u32 reg, u32 val, u32 msecs)
+ {
+-	unsigned long timeout = msecs_to_jiffies(GSI_CMD_TIMEOUT);
++	unsigned long timeout = msecs_to_jiffies(msecs);
+ 	struct completion *completion = &gsi->completion;
+ 
+ 	reinit_completion(completion);
+@@ -393,6 +394,11 @@ static bool gsi_command(struct gsi *gsi, u32 reg, u32 val)
+ 	return !!wait_for_completion_timeout(completion, timeout);
+ }
+ 
++static bool gsi_command(struct gsi *gsi, u32 reg, u32 val)
++{
++	return gsi_command_timeout(gsi, reg, val, GSI_CMD_TIMEOUT);
++}
++
+ /* Return the hardware's notion of the current state of an event ring */
+ static enum gsi_evt_ring_state
+ gsi_evt_ring_state(struct gsi *gsi, u32 evt_ring_id)
+@@ -1763,9 +1769,9 @@ static void gsi_channel_teardown_one(struct gsi *gsi, u32 channel_id)
+  * the ability to determine channel state for a modem channel, so we simply
+  * issue the command and wait for it to complete.
+  */
+-static int gsi_generic_command(struct gsi *gsi, u32 channel_id,
+-			       enum gsi_generic_cmd_opcode opcode,
+-			       u8 params)
++static int gsi_generic_command_timeout(struct gsi *gsi, u32 channel_id,
++				       enum gsi_generic_cmd_opcode opcode,
++				       u8 params, u32 msecs)
+ {
+ 	const struct reg *reg;
+ 	bool timeout;
+@@ -1801,7 +1807,7 @@ static int gsi_generic_command(struct gsi *gsi, u32 channel_id,
+ 	if (gsi->version >= IPA_VERSION_4_11)
+ 		val |= reg_encode(reg, GENERIC_PARAMS, params);
+ 
+-	timeout = !gsi_command(gsi, reg_offset(reg), val);
++	timeout = !gsi_command_timeout(gsi, reg_offset(reg), val, msecs);
+ 
+ 	/* Disable the GP_INT1 IRQ type again */
+ 	reg = gsi_reg(gsi, CNTXT_GLOB_IRQ_EN);
+@@ -1816,21 +1822,36 @@ static int gsi_generic_command(struct gsi *gsi, u32 channel_id,
+ 	return -ETIMEDOUT;
+ }
+ 
++static int gsi_generic_command(struct gsi *gsi, u32 channel_id,
++			       enum gsi_generic_cmd_opcode opcode,
++			       u8 params)
++{
++	return gsi_generic_command_timeout(gsi, channel_id, opcode, params,
++					   GSI_CMD_TIMEOUT);
++}
++
+ static int gsi_modem_channel_alloc(struct gsi *gsi, u32 channel_id)
+ {
+ 	return gsi_generic_command(gsi, channel_id,
+ 				   GSI_GENERIC_ALLOCATE_CHANNEL, 0);
+ }
+ 
+-static void gsi_modem_channel_halt(struct gsi *gsi, u32 channel_id)
++void gsi_modem_channel_halt(struct gsi *gsi, u32 channel_id)
+ {
+ 	u32 retries = GSI_CHANNEL_MODEM_HALT_RETRIES;
+ 	int ret;
+ 
+-	do
+-		ret = gsi_generic_command(gsi, channel_id,
+-					  GSI_GENERIC_HALT_CHANNEL, 0);
+-	while (ret == -EAGAIN && retries--);
++	/* The modem may still be draining a channel when it is told to halt;
++	 * give it time to finish between attempts.
++	 */
++	while (true) {
++		ret = gsi_generic_command_timeout(gsi, channel_id,
++						  GSI_GENERIC_HALT_CHANNEL, 0,
++						  GSI_GENERIC_CMD_TIMEOUT);
++		if (ret != -EAGAIN || !retries--)
++			break;
++		usleep_range(5 * USEC_PER_MSEC, 10 * USEC_PER_MSEC);
++	}
+ 
+ 	if (ret)
+ 		dev_err(gsi->dev, "error %d halting modem channel %u\n",
+diff --git a/drivers/net/ipa/gsi.h b/drivers/net/ipa/gsi.h
+index 9d8e05d950e34f6f599c29256b645dcc649a98d6..4b2f8d9bd2d2c838bb00608b2fd7bcbf181686af 100644
+--- a/drivers/net/ipa/gsi.h
++++ b/drivers/net/ipa/gsi.h
+@@ -207,6 +207,13 @@ int gsi_channel_stop(struct gsi *gsi, u32 channel_id);
+ void gsi_modem_channel_flow_control(struct gsi *gsi, u32 channel_id,
+ 				    bool enable);
+ 
++/**
++ * gsi_modem_channel_halt() - Halt a modem GSI channel
++ * @gsi:	GSI pointer returned by gsi_setup()
++ * @channel_id:	Modem channel to halt
++ */
++void gsi_modem_channel_halt(struct gsi *gsi, u32 channel_id);
++
+ /**
+  * gsi_channel_reset() - Reset an allocated GSI channel
+  * @gsi:	GSI pointer
+diff --git a/drivers/net/ipa/ipa.h b/drivers/net/ipa/ipa.h
+index 7ef10a4ff35e1dd4ba2e08bc456028539709cb01..e11413f1e8b43a9f46e7d1e97f67c1e460d68545 100644
+--- a/drivers/net/ipa/ipa.h
++++ b/drivers/net/ipa/ipa.h
+@@ -51,6 +51,7 @@ struct ipa_smp2p;
+  * @imem_size:		Size of IMEM region
+  * @smem_iova:		I/O virtual address of IPA region in SMEM
+  * @smem_size:		Size of SMEM region
++ * @smem_modem_owned:	Modem allocates the SMEM item; whole SMEM is mapped
+  * @zero_addr:		DMA address of preallocated zero-filled memory
+  * @zero_virt:		Virtual address of preallocated zero-filled memory
+  * @zero_size:		Size (bytes) of preallocated zero-filled memory
+@@ -105,6 +106,7 @@ struct ipa {
+ 
+ 	unsigned long smem_iova;
+ 	size_t smem_size;
++	bool smem_modem_owned;
+ 
+ 	dma_addr_t zero_addr;
+ 	void *zero_virt;
+diff --git a/drivers/net/ipa/ipa_endpoint.c b/drivers/net/ipa/ipa_endpoint.c
+index 0bd9b9fbbf56bef9708be9e0391edd08630cb04c..766370f017c309592ea15c305761e59d4a3db5de 100644
+--- a/drivers/net/ipa/ipa_endpoint.c
++++ b/drivers/net/ipa/ipa_endpoint.c
+@@ -596,6 +596,24 @@ void ipa_endpoint_modem_pause_all(struct ipa *ipa, bool enable)
+ 	}
+ }
+ 
++/* Halt all modem GSI channels after a modem crash.  The modem allocates
++ * these channels itself on IPA v5.5, and fails to initialize channel 0
++ * again after a restart if it was left running (seen on Xiaomi 13).
++ */
++void ipa_endpoint_modem_halt_all(struct ipa *ipa)
++{
++	u32 endpoint_id = 0;
++
++	while (endpoint_id < ipa->endpoint_count) {
++		struct ipa_endpoint *endpoint = &ipa->endpoint[endpoint_id++];
++
++		if (endpoint->ee_id != GSI_EE_MODEM)
++			continue;
++
++		gsi_modem_channel_halt(&ipa->gsi, endpoint->channel_id);
++	}
++}
++
+ /* Reset all modem endpoints to use the default exception endpoint */
+ int ipa_endpoint_modem_exception_reset_all(struct ipa *ipa)
+ {
+diff --git a/drivers/net/ipa/ipa_endpoint.h b/drivers/net/ipa/ipa_endpoint.h
+index e7d8ae6c6f6a6ac0510835d537c15075259b9dae..c2aca9a0e706b625ad1dfe64d04722e47a798836 100644
+--- a/drivers/net/ipa/ipa_endpoint.h
++++ b/drivers/net/ipa/ipa_endpoint.h
+@@ -173,6 +173,8 @@ void ipa_endpoint_modem_hol_block_clear_all(struct ipa *ipa);
+ 
+ void ipa_endpoint_modem_pause_all(struct ipa *ipa, bool enable);
+ 
++void ipa_endpoint_modem_halt_all(struct ipa *ipa);
++
+ int ipa_endpoint_modem_exception_reset_all(struct ipa *ipa);
+ 
+ int ipa_endpoint_skb_tx(struct ipa_endpoint *endpoint, struct sk_buff *skb);
+diff --git a/drivers/net/ipa/ipa_mem.c b/drivers/net/ipa/ipa_mem.c
+index 078d32a18dbfdedbae08e4f62b63abb86b7bab26..691f4e104d152a339c13439b954116cebbecc7ef 100644
+--- a/drivers/net/ipa/ipa_mem.c
++++ b/drivers/net/ipa/ipa_mem.c
+@@ -7,6 +7,7 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/io.h>
+ #include <linux/iommu.h>
++#include <linux/of.h>
+ #include <linux/of_address.h>
+ #include <linux/platform_device.h>
+ #include <linux/types.h>
+@@ -509,6 +510,61 @@ static void ipa_imem_exit(struct ipa *ipa)
+ 	ipa->imem_iova = 0;
+ }
+ 
++/* The Xiaomi 13 (fuxi) modem firmware allocates SMEM_IPA_FILTER_TABLE
++ * itself, and asserts if the AP has already allocated it.  The IPA still
++ * reaches that item through the AP's SMMU context, at the physical address
++ * the modem chose.  So map the whole SMEM region one-to-one rather than a
++ * single item allocated here.
++ */
++static int ipa_smem_map_region(struct ipa *ipa)
++{
++	struct device *dev = ipa->dev;
++	struct iommu_domain *domain;
++	struct device_node *np;
++	struct resource res;
++	phys_addr_t phys;
++	size_t size;
++	int ret;
++
++	np = of_find_compatible_node(NULL, NULL, "qcom,smem");
++	if (!np) {
++		dev_err(dev, "no SMEM node found\n");
++		return -ENODEV;
++	}
++
++	ret = of_address_to_resource(np, 0, &res);
++	of_node_put(np);
++	if (ret) {
++		dev_err(dev, "error %d getting SMEM region\n", ret);
++		return ret;
++	}
++
++	domain = iommu_get_domain_for_dev(dev);
++	if (!domain) {
++		dev_err(dev, "no IOMMU domain found for SMEM\n");
++		return -EINVAL;
++	}
++
++	phys = res.start & PAGE_MASK;
++	size = PAGE_ALIGN(resource_size(&res) + res.start - phys);
++
++	ret = iommu_map(domain, phys, phys, size, IOMMU_READ | IOMMU_WRITE,
++			GFP_KERNEL);
++	if (ret) {
++		dev_err(dev, "error %d mapping SMEM region\n", ret);
++		return ret;
++	}
++
++	ipa->smem_iova = phys;
++	ipa->smem_size = size;
++	ipa->smem_modem_owned = true;
++
++	dev_info(dev, "fuxi: mapped SMEM %pa size %#zx, item %u left to modem\n",
++		 &phys, size, SMEM_IPA_FILTER_TABLE);
++
++	return 0;
++}
++
+ /**
+  * ipa_smem_init() - Initialize SMEM memory used by the IPA
+  * @ipa:	IPA pointer
+@@ -539,6 +595,9 @@ static int ipa_smem_init(struct ipa *ipa, size_t size)
+ 	if (!size)
+ 		return 0;	/* SMEM memory not used */
+ 
++	if (of_machine_is_compatible("xiaomi,fuxi"))
++		return ipa_smem_map_region(ipa);
++
+ 	/* SMEM is memory shared between the AP and another system entity
+ 	 * (in this case, the modem).  An allocation from SMEM is persistent
+ 	 * until the AP reboots; there is no way to free an allocated SMEM
+@@ -547,7 +606,13 @@ static int ipa_smem_init(struct ipa *ipa, size_t size)
+ 	 * The item might have already been allocated, in which case we
+ 	 * use it unless the size isn't what we expect.
+ 	 */
++	/* fuxi diag: SMEM free space in the modem partition around the alloc */
++	dev_info(dev, "fuxi: smem free before alloc %d\n",
++		 qcom_smem_get_free_space(QCOM_SMEM_HOST_MODEM));
+ 	ret = qcom_smem_alloc(QCOM_SMEM_HOST_MODEM, SMEM_IPA_FILTER_TABLE, size);
++	dev_info(dev, "fuxi: smem alloc item %u size %zu ret %d, free after %d\n",
++		 SMEM_IPA_FILTER_TABLE, size, ret,
++		 qcom_smem_get_free_space(QCOM_SMEM_HOST_MODEM));
+ 	if (ret && ret != -EEXIST) {
+ 		dev_err(dev, "error %d allocating size %zu SMEM item\n",
+ 			ret, size);
+@@ -612,6 +677,7 @@ static void ipa_smem_exit(struct ipa *ipa)
+ 
+ 	ipa->smem_size = 0;
+ 	ipa->smem_iova = 0;
++	ipa->smem_modem_owned = false;
+ }
+ 
+ /* Perform memory region-related initialization */
+diff --git a/drivers/net/ipa/ipa_modem.c b/drivers/net/ipa/ipa_modem.c
+index d84c1dbd3b1a845de51d5d506d7405a5756cc3aa..39f30e8a74c6a53f0777c68352e6f77fa502274f 100644
+--- a/drivers/net/ipa/ipa_modem.c
++++ b/drivers/net/ipa/ipa_modem.c
+@@ -9,6 +9,7 @@
+ #include <linux/if_arp.h>
+ #include <linux/if_rmnet.h>
+ #include <linux/netdevice.h>
++#include <linux/of.h>
+ #include <linux/pm_runtime.h>
+ #include <linux/skbuff.h>
+ #include <net/pkt_sched.h>
+@@ -448,6 +449,29 @@ static void ipa_modem_crashed(struct ipa *ipa)
+ 	(void)pm_runtime_put_autosuspend(dev);
+ }
+ 
++/* The modem allocates its own GSI channels on fuxi, and they must be
++ * halted once the modem is offline so it can allocate them again on
++ * its next boot.
++ */
++static void ipa_modem_offline(struct ipa *ipa)
++{
++	struct device *dev = ipa->dev;
++	int ret;
++
++	ret = pm_runtime_get_sync(dev);
++	if (ret < 0) {
++		dev_err(dev, "error %d getting power to halt modem channels\n",
++			ret);
++		goto out_power_put;
++	}
++
++	ipa_endpoint_modem_halt_all(ipa);
++	dev_info(dev, "fuxi: halted modem GSI channels\n");
++
++out_power_put:
++	(void)pm_runtime_put_autosuspend(dev);
++}
++
+ static int ipa_modem_notify(struct notifier_block *nb, unsigned long action,
+ 			    void *data)
+ {
+@@ -475,6 +499,9 @@ static int ipa_modem_notify(struct notifier_block *nb, unsigned long action,
+ 
+ 	case QCOM_SSR_AFTER_SHUTDOWN:
+ 		dev_info(dev, "received modem offline event\n");
++		if (ipa->setup_complete &&
++		    of_machine_is_compatible("xiaomi,fuxi"))
++			ipa_modem_offline(ipa);
+ 		break;
+ 
+ 	default:
+diff --git a/drivers/net/ipa/ipa_qmi.c b/drivers/net/ipa/ipa_qmi.c
+index d771f3a71f94f93838c11da834c5b0e2ac9c0ad5..cb2a2ae1c4ce060720ac4be9541d5a2c46a0dcf5 100644
+--- a/drivers/net/ipa/ipa_qmi.c
++++ b/drivers/net/ipa/ipa_qmi.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <linux/qrtr.h>
++#include <linux/sizes.h>
+ #include <linux/string.h>
+ #include <linux/types.h>
+ 
+@@ -13,6 +14,12 @@
+ #include "ipa_modem.h"
+ #include "ipa_qmi_msg.h"
+ 
++/* Modem's share of the filter/route statistics counters (IPA v5.0+) */
++#define IPA_QMI_MODEM_FNR_START	128
++#define IPA_QMI_MODEM_FNR_COUNT	52
++#define IPA_QMI_FNR_ENTRY_SZ	16
++#define IPA_QMI_PER_STATS_SZ	SZ_2K
++
+ /**
+  * DOC: AP/Modem QMI Handshake
+  *
+@@ -394,6 +401,32 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
+ 		}
+ 	}
+ 
++	/* IPA v5.0+ modem firmware checks the SMEM size and FnR range */
++	if (ipa->version >= IPA_VERSION_5_0) {
++		mem = ipa_mem_find(ipa, IPA_MEM_STATS_FILTER_ROUTE);
++		if (mem && mem->size) {
++			req.hw_filter_stats_info_valid = 1;
++			req.hw_filter_stats_info.start = mem->offset;
++			req.hw_filter_stats_info.size =
++				IPA_QMI_MODEM_FNR_COUNT * IPA_QMI_FNR_ENTRY_SZ;
++			req.hw_filter_stats_info.start_index =
++				IPA_QMI_MODEM_FNR_START;
++			req.hw_filter_stats_info.end_index =
++				IPA_QMI_MODEM_FNR_START +
++				IPA_QMI_MODEM_FNR_COUNT - 1;
++		}
++
++		if (ipa->smem_size && !ipa->smem_modem_owned) {
++			req.smem_info_valid = 1;
++			req.smem_info.size = ipa->smem_size;
++
++			/* First 2KB of the SMEM item hold peripheral stats */
++			req.per_stats_smem_info_valid = 1;
++			req.per_stats_smem_info.start = ipa->smem_iova;
++			req.per_stats_smem_info.size = IPA_QMI_PER_STATS_SZ;
++		}
++	}
++
+ 	return &req;
+ }
+ 
+diff --git a/drivers/net/ipa/ipa_qmi_msg.c b/drivers/net/ipa/ipa_qmi_msg.c
+index 51dc13a577a5fb21d4fbb99783eda6ef66bff53a..19967a14b4fe567994a59077cb2a4a08261f834b 100644
+--- a/drivers/net/ipa/ipa_qmi_msg.c
++++ b/drivers/net/ipa/ipa_qmi_msg.c
+@@ -250,6 +250,43 @@ const struct qmi_elem_info ipa_mem_range_ei[] = {
+ 	},
+ };
+ 
++/* QMI message structure definition for struct ipa_filter_stats_info */
++const struct qmi_elem_info ipa_filter_stats_info_ei[] = {
++	{
++		.data_type	= QMI_UNSIGNED_4_BYTE,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_filter_stats_info, start),
++		.offset		= offsetof(struct ipa_filter_stats_info, start),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_4_BYTE,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_filter_stats_info, size),
++		.offset		= offsetof(struct ipa_filter_stats_info, size),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_filter_stats_info, start_index),
++		.offset		= offsetof(struct ipa_filter_stats_info,
++					   start_index),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_filter_stats_info, end_index),
++		.offset		= offsetof(struct ipa_filter_stats_info,
++					   end_index),
++	},
++	{
++		.data_type	= QMI_EOTI,
++	},
++};
++
+ /* QMI message structure definition for struct ipa_init_modem_driver_req */
+ const struct qmi_elem_info ipa_init_modem_driver_req_ei[] = {
+ 	{
+@@ -640,6 +677,69 @@ const struct qmi_elem_info ipa_init_modem_driver_req_ei[] = {
+ 		.offset		= offsetof(struct ipa_init_modem_driver_req,
+ 					   hw_stats_drop_size),
+ 	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     hw_filter_stats_info_valid),
++		.tlv_type	= 0x23,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   hw_filter_stats_info_valid),
++	},
++	{
++		.data_type	= QMI_STRUCT,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     hw_filter_stats_info),
++		.tlv_type	= 0x23,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   hw_filter_stats_info),
++		.ei_array	= ipa_filter_stats_info_ei,
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     smem_info_valid),
++		.tlv_type	= 0x24,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   smem_info_valid),
++	},
++	{
++		.data_type	= QMI_STRUCT,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     smem_info),
++		.tlv_type	= 0x24,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   smem_info),
++		.ei_array	= ipa_mem_range_ei,
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     per_stats_smem_info_valid),
++		.tlv_type	= 0x25,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   per_stats_smem_info_valid),
++	},
++	{
++		.data_type	= QMI_STRUCT,
++		.elem_len	= 1,
++		.elem_size	=
++			sizeof_field(struct ipa_init_modem_driver_req,
++				     per_stats_smem_info),
++		.tlv_type	= 0x25,
++		.offset		= offsetof(struct ipa_init_modem_driver_req,
++					   per_stats_smem_info),
++		.ei_array	= ipa_mem_range_ei,
++	},
+ 	{
+ 		.data_type	= QMI_EOTI,
+ 	},
+diff --git a/drivers/net/ipa/ipa_qmi_msg.h b/drivers/net/ipa/ipa_qmi_msg.h
+index 644b8c27108b61b36704e6b4823e3dd44d5658ad..d3f3aeb76cbf381843f1700d927b3a65fbb2767c 100644
+--- a/drivers/net/ipa/ipa_qmi_msg.h
++++ b/drivers/net/ipa/ipa_qmi_msg.h
+@@ -27,7 +27,7 @@
+  */
+ #define IPA_QMI_INDICATION_REGISTER_REQ_SZ	20	/* -> server handle */
+ #define IPA_QMI_INDICATION_REGISTER_RSP_SZ	7	/* <- server handle */
+-#define IPA_QMI_INIT_DRIVER_REQ_SZ		162	/* client handle -> */
++#define IPA_QMI_INIT_DRIVER_REQ_SZ		197	/* client handle -> */
+ #define IPA_QMI_INIT_DRIVER_RSP_SZ		25	/* client handle <- */
+ #define IPA_QMI_INIT_COMPLETE_IND_SZ		7	/* <- server handle */
+ #define IPA_QMI_DRIVER_INIT_COMPLETE_REQ_SZ	4	/* -> server handle */
+@@ -119,6 +119,17 @@ struct ipa_mem_range {
+ 	u32 size;
+ };
+ 
++/* This defines the modem's portion of the filter/route statistics
++ * region: its offset and size in IPA memory, and the range of
++ * statistics counter indexes it may use.
++ */
++struct ipa_filter_stats_info {
++	u32 start;
++	u32 size;
++	u8 start_index;
++	u8 end_index;
++};
++
+ /* The message for the IPA_QMI_INIT_DRIVER request contains information
+  * from the AP that affects modem initialization.
+  */
+@@ -216,6 +227,18 @@ struct ipa_init_modem_driver_req {
+ 	u32			hw_stats_drop_base_addr;
+ 	u8			hw_stats_drop_size_valid;
+ 	u32			hw_stats_drop_size;
++
++	/* Modem filter/route (FnR) statistics range (IPA v5.0 and above) */
++	u8			hw_filter_stats_info_valid;
++	struct ipa_filter_stats_info hw_filter_stats_info;
++
++	/* Size of the SMEM_IPA_FILTER_TABLE item the AP allocated */
++	u8			smem_info_valid;
++	struct ipa_mem_range	smem_info;
++
++	/* Peripheral statistics block at the start of that SMEM item */
++	u8			per_stats_smem_info_valid;
++	struct ipa_mem_range	per_stats_smem_info;
+ };
+ 
+ /* The response to a IPA_QMI_INIT_DRIVER request begins with a standard
+@@ -256,6 +279,7 @@ extern const struct qmi_elem_info ipa_init_complete_ind_ei[];
+ extern const struct qmi_elem_info ipa_mem_bounds_ei[];
+ extern const struct qmi_elem_info ipa_mem_array_ei[];
+ extern const struct qmi_elem_info ipa_mem_range_ei[];
++extern const struct qmi_elem_info ipa_filter_stats_info_ei[];
+ extern const struct qmi_elem_info ipa_init_modem_driver_req_ei[];
+ extern const struct qmi_elem_info ipa_init_modem_driver_rsp_ei[];
+ 

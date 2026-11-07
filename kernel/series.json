@@ -1,0 +1,16 @@
+[
+  {"name": "panel", "status": "candidate", "paths": ["Documentation/devicetree/bindings/display/panel/xiaomi,fuxi-m3-38-0c-0a.yaml", "drivers/gpu/drm/panel/"]},
+  {"name": "touchscreen", "status": "candidate", "paths": ["Documentation/devicetree/bindings/input/touchscreen/st,ftm5.yaml", "drivers/input/touchscreen/"]},
+  {"name": "dsi", "status": "candidate", "paths": ["drivers/gpu/drm/msm/dsi/"]},
+  {"name": "audio", "status": "needs-split", "paths": ["sound/soc/"]},
+  {"name": "qrtr", "status": "candidate", "paths": ["net/qrtr/"]},
+  {"name": "ipa", "status": "needs-split", "paths": ["drivers/net/ipa/"]},
+  {"name": "scm", "status": "candidate", "paths": ["drivers/firmware/qcom/"]},
+  {"name": "ath12k", "status": "candidate", "paths": ["drivers/net/wireless/ath/ath12k/"]},
+  {"name": "ufs", "status": "needs-split", "paths": ["drivers/ufs/"]},
+  {"name": "charging", "status": "local", "paths": ["drivers/power/supply/qcom_battmgr.c", "drivers/usb/typec/ucsi/debugfs.c"]},
+  {"name": "platform", "status": "local", "paths": ["drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c", "drivers/soc/qcom/pdr_interface.c", "drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c"]},
+  {"name": "camera-bringup", "status": "local", "paths": ["drivers/misc/"]},
+  {"name": "board", "status": "needs-bindings-review", "paths": ["Documentation/devicetree/bindings/arm/qcom.yaml", "arch/arm64/boot/dts/qcom/"]},
+  {"name": "config", "status": "local", "paths": ["arch/arm64/configs/fuxi_defconfig"]}
+]

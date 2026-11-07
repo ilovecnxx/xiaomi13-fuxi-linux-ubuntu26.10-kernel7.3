@@ -6,13 +6,13 @@
 #   fuxi-modem_<版本>_arm64.deb       packaging/fuxi-modem（双卡/IMS/数据卡）+ work/modem-bin（scripts/fuxi-modem-bin-pull.sh）
 #   fuxi-desktop_<版本>_all.deb       packaging/fuxi-desktop（Denial/Phosh/Plasma 会话单元、fuxi-session、portal 配置）
 #   fuxi-firmware_<版本>_all.deb       work/firmware-pkg（scripts/fuxi-firmware-pull.sh 拉取；专有，不进 git）
-#   linux-image-*-fuxi-*.deb          work/kbuild/*/ 里已有的内核包（硬链接）
+#   linux-image-*-fuxi-*.deb          仅 packaging/apt/kernels.list 中已验收的内核包（硬链接）
 #   Packages Packages.gz Release SHA256SUMS fuxi.sources fuxi-pin（Release 无签名，fuxi.sources 里 Trusted: yes）
 # 手机上：rsync work/apt/ → /srv/fuxi-apt/，fuxi.sources → /etc/apt/sources.list.d/，fuxi-pin → /etc/apt/preferences.d/fuxi
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 V="${1:-0.$(date +%Y%m%d.%H%M)}"
-OUT="$B/work/apt"
+OUT="${FUXI_APT_OUT:-$B/work/apt}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$OUT"
@@ -121,10 +121,29 @@ else
 fi
 
 echo "== 内核包"
-for k in "$B"/work/kbuild/*/linux-image-*-fuxi-*_arm64.deb; do
+while read -r name rest; do
+	case "$name" in ''|\#*) continue ;; *[!a-z0-9.]*|.*) echo "非法内核构建名: $name" >&2; exit 1 ;; esac
+	found=0
+	for k in "$B/work/kbuild/$name"/linux-image-*-fuxi-*_arm64.deb; do
+		[ -e "$k" ] || continue
+		found=1
+		ln -f "$k" "$OUT/" 2>/dev/null || cp "$k" "$OUT/"
+		echo "   $(basename "$k")"
+	done
+	[ "$found" = 1 ] || { echo "缺少已验收内核包 $name" >&2; exit 1; }
+done < "$B/packaging/apt/kernels.list"
+# 防止旧源目录中的实验内核继续进入 Packages。留存于源目录之外，便于追溯。
+for k in "$OUT"/linux-image-*-fuxi-*_arm64.deb; do
 	[ -e "$k" ] || continue
-	[ -e "$OUT/$(basename "$k")" ] || ln "$k" "$OUT/" 2>/dev/null || cp "$k" "$OUT/"
-	echo "   $(basename "$k")"
+	approved=0
+	while read -r name rest; do
+		case "$name" in ''|\#*) continue ;; esac
+		if [ -e "$B/work/kbuild/$name/$(basename "$k")" ]; then approved=1; break; fi
+	done < "$B/packaging/apt/kernels.list"
+	if [ "$approved" = 0 ]; then
+		mkdir -p "$B/work/archive/apt-kernels"
+		mv "$k" "$B/work/archive/apt-kernels/"
+	fi
 done
 
 echo "== 索引"

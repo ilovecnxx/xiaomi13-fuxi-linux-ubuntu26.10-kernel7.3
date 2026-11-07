@@ -8,12 +8,12 @@
 #     fastboot flash、EFI 变量文件存储（往它认为的 ESP 写 ubootefi.var）；环境换成 scripts/fuxi-uboot/fuxi.env
 #   唯一的写盘：env 里受保护的启动计数块（/boot/fuxi/bootcount 的 4 KiB 数据块，见 packaging/fuxi-device/root/usr/sbin/fuxi-bootcount）
 # 用法: scripts/fuxi-build-uboot.sh [名字，默认 uboot0]  （uboot2 起 booti/extlinux 实测进桌面，11-07）   源码：FUXI_UBOOT=~/.cache/u-boot
-#       FUXI_UBOOT_DTB=<主线 dtb 路径>（默认 7.4 树的日常 DTB）
+#       FUXI_UBOOT_DTB=<主线 dtb 路径>（默认标准内核构建的板级 DTB）
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${1:-uboot0}"
 U="${FUXI_UBOOT:-$HOME/.cache/u-boot}"
-DTB="${FUXI_UBOOT_DTB:-$HOME/.cache/fuxi-74/wt/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc-dp.dtb}"
+DTB="${FUXI_UBOOT_DTB:-$B/work/kbuild/standard-out/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dtb}"
 BAIT_DTB="$B/build/edk2-msm/Platform/Xiaomi/sm8550/FdtBlob_compat/fuxi.dtb"
 O="$B/work/kbuild/uboot-out"
 L="$B/work/claude-logs/uboot-build.log"

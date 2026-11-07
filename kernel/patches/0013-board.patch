@@ -1,0 +1,1755 @@
+diff --git a/Documentation/devicetree/bindings/arm/qcom.yaml b/Documentation/devicetree/bindings/arm/qcom.yaml
+index 121ca557ce1effdc95e9e97210bd9a63673f8ba4..ae96dd89d6f2ed0ddb8a665cec13c28ae6ece933 100644
+--- a/Documentation/devicetree/bindings/arm/qcom.yaml
++++ b/Documentation/devicetree/bindings/arm/qcom.yaml
+@@ -1173,6 +1173,7 @@ properties:
+               - qcom,sm8550-hdk
+               - qcom,sm8550-mtp
+               - qcom,sm8550-qrd
++              - xiaomi,fuxi
+               - samsung,q5q
+               - sony,pdx234
+           - const: qcom,sm8550
+@@ -1415,6 +1416,7 @@ allOf:
+               - qcom,sm7225
+               - qcom,sm8150
+               - qcom,sm8250
++              - xiaomi,fuxi
+     then:
+       properties:
+         qcom,board-id: true
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 88230c4e00ea91ea2132f8d5ff2b971b5f682559..ec13c0b63278f4bbe12d1cda17b073e60aab40dd 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -437,6 +437,9 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-hdk-display-card.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-hdk-rear-camera-card.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-hdk.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-mtp.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-camera.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-sleep.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-qrd.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-samsung-q5q.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-sony-xperia-yodo-pdx234.dtb
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5b77a21765f0f033fe3612dea21eff8ce5a77f8e
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts
+@@ -0,0 +1,6 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* Xiaomi 13 (fuxi)：相机 bring-up 变体（内容见 sm8550-xiaomi-fuxi-camera.dtsi） */
++
++#include "sm8550-xiaomi-fuxi.dts"
++#include <dt-bindings/clock/qcom,sm8550-camcc.h>
++#include "sm8550-xiaomi-fuxi-camera.dtsi"
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi
+new file mode 100644
+index 0000000000000000000000000000000000000000..74e76de6bf96da6719b61945d5f8fbea8db7349a
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi
+@@ -0,0 +1,255 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Xiaomi 13 (fuxi)：相机第一步——给四个模组上电并用 CCI（i2c-dev）读传感器 ID。
++ * 全部取自厂商 DTB（work/device-info/fuxi-live.dts 的 qcom,cci0/1 与 qcom,cam-sensor0..3）：
++ *
++ *   模组        CCI          MCLK            复位      CSIPHY  供电（厂商名 → 主线）
++ *   cam0 主摄   cci0 主机1   MCLK2 GPIO102   GPIO118   2       vio L2C 1.8、vana GPIO69 开关 2.8、vdig L2M 1.104、
++ *               （带 OIS/马达/EEPROM）                            custom1 GPIO66 开关 1.8、custom2 L7M 3.1、vaf L4M 3.1、BOB2
++ *   cam2 超广角 cci0 主机0   MCLK1 GPIO101   GPIO117   0       vio L2C、vana GPIO91 开关 2.8、vdig L1C 1.2、BOB2
++ *   cam1 前摄   cci1 主机1   MCLK4 GPIO104   GPIO120   4       vio L5M 1.8、vana L3M 2.8、vdig L1M 1.104
++ *               （主机1 走 AON CCI 引脚 GPIO208/209）
++ *   cam3 长焦   cci1 主机0   MCLK3 GPIO103   GPIO119   ?       vio L2C、vana GPIO57 开关 2.8、vdig L11B 1.056、
++ *               （带 OIS）                                        custom1 L16B 3.1、vaf L14B 3.1、BOB2、BOB1
++ *
++ * 电压按厂商 rgltr-min/max-voltage 改写主线 DTS 里（从 MTP 抄来的）几路 LDO 的范围；这些 LDO 在别的 DTS 里都没有用户。
++ * 上电/读 ID 用测试驱动 drivers/misc/fuxi-camera-power.c（sysfs power），脚本 scripts/fuxi-camera-probe.sh。
++ * 传感器型号确定后再写/移植传感器驱动，接 CAMSS（主线已支持 sm8550-camss）。
++ */
++
++/ {
++	cam_wide_avdd1: regulator-cam-wide-avdd1 {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_wide_avdd1";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 69 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vreg_bob2>;
++	};
++
++	cam_wide_avdd2: regulator-cam-wide-avdd2 {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_wide_avdd2";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&tlmm 66 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++	};
++
++	cam_ultra_avdd: regulator-cam-ultra-avdd {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_ultra_avdd";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 91 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vreg_bob2>;
++	};
++
++	cam_tele_avdd: regulator-cam-tele-avdd {
++		compatible = "regulator-fixed";
++		regulator-name = "cam_tele_avdd";
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++		gpio = <&tlmm 57 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vreg_bob2>;
++	};
++
++	cam0_power: camera-power-cam0 {
++		compatible = "xiaomi,fuxi-camera-power";
++		supply-names = "vio", "vana", "vdig", "custom1", "custom2", "vaf", "bob2";
++		vio-supply = <&vreg_l2c_1p8>;
++		vana-supply = <&cam_wide_avdd1>;
++		vdig-supply = <&vreg_l2m_1p056>;
++		custom1-supply = <&cam_wide_avdd2>;
++		custom2-supply = <&vreg_l7m_2p9>;
++		vaf-supply = <&vreg_l4m_2p8>;
++		bob2-supply = <&vreg_bob2>;
++		clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		reset-gpios = <&tlmm 118 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_mclk2_default>;
++		pinctrl-names = "default";
++	};
++
++	cam2_power: camera-power-cam2 {
++		compatible = "xiaomi,fuxi-camera-power";
++		supply-names = "vio", "vana", "vdig", "bob2";
++		vio-supply = <&vreg_l2c_1p8>;
++		vana-supply = <&cam_ultra_avdd>;
++		vdig-supply = <&vreg_l1c_1p2>;
++		bob2-supply = <&vreg_bob2>;
++		clocks = <&camcc CAM_CC_MCLK1_CLK>;
++		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_mclk1_default>;
++		pinctrl-names = "default";
++	};
++
++	cam1_power: camera-power-cam1 {
++		compatible = "xiaomi,fuxi-camera-power";
++		supply-names = "vio", "vana", "vdig";
++		vio-supply = <&vreg_l5m_1p8>;
++		vana-supply = <&vreg_l3m_2p8>;
++		vdig-supply = <&vreg_l1m_1p056>;
++		clocks = <&camcc CAM_CC_MCLK4_CLK>;
++		reset-gpios = <&tlmm 120 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_mclk4_default>;
++		pinctrl-names = "default";
++	};
++
++	cam3_power: camera-power-cam3 {
++		compatible = "xiaomi,fuxi-camera-power";
++		supply-names = "vio", "vana", "vdig", "custom1", "vaf", "bob2", "bob1";
++		vio-supply = <&vreg_l2c_1p8>;
++		vana-supply = <&cam_tele_avdd>;
++		vdig-supply = <&vreg_l11b_1p2>;
++		custom1-supply = <&vreg_l16b_2p8>;
++		vaf-supply = <&vreg_l14b_3p2>;
++		bob2-supply = <&vreg_bob2>;
++		bob1-supply = <&vreg_bob1>;
++		clocks = <&camcc CAM_CC_MCLK3_CLK>;
++		reset-gpios = <&tlmm 119 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_mclk3_default>;
++		pinctrl-names = "default";
++	};
++};
++
++&apps_rsc {
++	/* PM8550VS "c"：厂商 pm_v6c_l1（1.2 V）、pm_v6c_l2（1.8 V），主 DTS 只写了 L3C（cmd-db 里有 ldoc1/ldoc2） */
++	regulators-1 {
++		vreg_l1c_1p2: ldo1 {
++			regulator-name = "vreg_l1c_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2c_1p8: ldo2 {
++			regulator-name = "vreg_l2c_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++};
++
++/* 按厂商相机供电的电压改写（标签名沿用主 DTS，电压以这里为准） */
++&vreg_l1m_1p056 {
++	regulator-min-microvolt = <1104000>;
++	regulator-max-microvolt = <1104000>;
++};
++
++&vreg_l2m_1p056 {
++	regulator-min-microvolt = <1104000>;
++	regulator-max-microvolt = <1104000>;
++};
++
++&vreg_l4m_2p8 {
++	regulator-min-microvolt = <3104000>;
++	regulator-max-microvolt = <3104000>;
++};
++
++&vreg_l7m_2p9 {
++	regulator-min-microvolt = <3104000>;
++	regulator-max-microvolt = <3104000>;
++};
++
++&vreg_l11b_1p2 {
++	regulator-min-microvolt = <1056000>;
++	regulator-max-microvolt = <1056000>;
++};
++
++&vreg_l14b_3p2 {
++	regulator-min-microvolt = <3104000>;
++	regulator-max-microvolt = <3104000>;
++};
++
++&vreg_l16b_2p8 {
++	regulator-min-microvolt = <3104000>;
++	regulator-max-microvolt = <3104000>;
++};
++
++&cci0 {
++	status = "okay";
++};
++
++&cci0_i2c0 {
++	clock-frequency = <400000>;
++};
++
++&cci0_i2c1 {
++	clock-frequency = <400000>;
++};
++
++&cci1 {
++	pinctrl-0 = <&cci1_0_default>, <&cci1_1_aon_default>;
++	pinctrl-1 = <&cci1_0_sleep>, <&cci1_1_aon_sleep>;
++	status = "okay";
++
++	/* 前摄在 CCI1 主机 1（厂商 cci1 m1_active：AON CCI，GPIO208/209） */
++	cci1_i2c1: i2c-bus@1 {
++		reg = <1>;
++		clock-frequency = <400000>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++	};
++};
++
++&cci1_i2c0 {
++	clock-frequency = <400000>;
++};
++
++&tlmm {
++	cci1_1_aon_default: cci1-1-aon-default-state {
++		pins = "gpio208", "gpio209";
++		function = "aon_cci";
++		drive-strength = <2>;
++		bias-pull-up;
++	};
++
++	cci1_1_aon_sleep: cci1-1-aon-sleep-state {
++		pins = "gpio208", "gpio209";
++		function = "aon_cci";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++
++	cam_mclk1_default: cam-mclk1-default-state {
++		pins = "gpio101";
++		function = "cam_mclk";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	cam_mclk2_default: cam-mclk2-default-state {
++		pins = "gpio102";
++		function = "cam_mclk";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	cam_mclk3_default: cam-mclk3-default-state {
++		pins = "gpio103";
++		function = "cam_mclk";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	cam_mclk4_default: cam-mclk4-default-state {
++		pins = "gpio104";
++		function = "cam_aon_mclk4";
++		drive-strength = <2>;
++		bias-disable;
++	};
++};
++
++/*
++ * CAMSS（CSIPHY/CSID/VFE）：先只打开、不接传感器端点，验证 camcc/GDSC/互连/供电能起来。
++ * CSIPHY 供电对应厂商 csi-vdd-0p9 = pm_v6e_l1、csi-vdd-1p2 = pm_v6e_l3。
++ */
++&camss {
++	vdda-phy-supply = <&vreg_l1e_0p88>;
++	vdda-pll-supply = <&vreg_l3e_1p2>;
++	status = "okay";
++};
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dts
+new file mode 100644
+index 0000000000000000000000000000000000000000..17065cd9c32eb140da2537fe7dca606858eee4fa
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dts
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* Xiaomi 13 (fuxi)：省电测试变体 = 主 DTS + CPU 深度空闲（见 sm8550-xiaomi-fuxi-sleep.dtsi） */
++
++#include "sm8550-xiaomi-fuxi.dts"
++#include "sm8550-xiaomi-fuxi-sleep.dtsi"
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dtsi b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dtsi
+new file mode 100644
+index 0000000000000000000000000000000000000000..6affd25a42334658b74f32c7d1c3c7c4ee5c33da
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dtsi
+@@ -0,0 +1,12 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Xiaomi 13 (fuxi)：省电测试片段——去掉 cpuidle.off=1（让 CPU 进 PSCI 深度空闲/集群断电），
++ * 配合 FUXI_PM=1 + 变体配置里的 SUSPEND（s2idle）。其余启动参数与主 DTS 相同（长度保持一致）。
++ * 风险：M2 阶段为排除问题才关掉 cpuidle；如果空闲时卡死/重启，长按电源回 Android，日志看 pstore。
++ */
++
++/ {
++	chosen {
++		bootargs = "loglevel=7 log_buf_len=2M panic=0 clk_ignore_unused pd_ignore_unused regulator_ignore_unused arm-smmu.disable_bypass=0 fbcon=font:TER16x32 console=tty0 fuxi.fb=0xB8000000,1080,2400,1080,32 rdinit=/init g_cdc.idVendor=0x0525 g_cdc.idProduct=0xa4a7 g_cdc.dev_addr=02:f0:c5:13:00:02 g_cdc.host_addr=02:f0:c5:13:00:01                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              ";
++	};
++};
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts
+new file mode 100644
+index 0000000000000000000000000000000000000000..6c05b3700273b9ce6451806d3d844d1dac183bc4
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts
+@@ -0,0 +1,1413 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/*
++ * Xiaomi 13 (fuxi) board DTS.
++ *
++ * Consolidated from sm8550-xiaomi-fuxi-min.dts plus the disp, audio, audio2,
++ * modem and usbc fragments and the DisplayPort controller (USB-C DP alt mode);
++ * compiles to the same tree as the daily
++ * sm8550-xiaomi-fuxi-r120idle-mic-rupdclk-modem-audio-disp-usbc-dp.dtb
++ * except that /chosen/bootargs is gone: the kernel command line now comes
++ * from the bootloader (U-Boot extlinux).  Camera and system-sleep bits stay in
++ * sm8550-xiaomi-fuxi-{camera,sleep}.dtsi as optional overlays-by-include.
++ */
++
++/dts-v1/;
++
++#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
++#include "sm8550.dtsi"
++#include "pm8010.dtsi"
++#include "pm8550.dtsi"
++#include "pm8550b.dtsi"
++#define PMK8550VE_SID 5
++#include "pm8550ve.dtsi"
++#include "pm8550vs.dtsi"
++#include "pmk8550.dtsi"
++#include "pmr735d_a.dtsi"
++
++
++/ {
++	model = "Xiaomi 13 (fuxi) minimal";
++	compatible = "xiaomi,fuxi", "qcom,sm8550";
++	chassis-type = "handset";
++
++	/* ABL 按这两项从 boot 镜像里挑 DTB（值取自厂商 fuxi DTB）；没有它们 ABL 报 Load Error */
++	qcom,msm-id = <519 0x20000>, <536 0x20000>;
++	qcom,board-id = <0x10008 0>;
++
++	/* 音量上：PM8550 GPIO6，低有效（厂商 DTB gpio_keys/vol_up；与 sm8550-qrd 相同） */
++	gpio-keys {
++		compatible = "gpio-keys";
++
++		pinctrl-0 = <&volume_up_n>;
++		pinctrl-names = "default";
++
++		key-volume-up {
++			label = "Volume Up";
++			linux,code = <KEY_VOLUMEUP>;
++			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
++			debounce-interval = <15>;
++			linux,can-disable;
++			wakeup-source;
++		};
++	};
++
++	/*
++	 * 电池/充电：ADSP 上的 battmgr 经 pmic_glink 暴露电量与充电状态。
++	 * 暂不接 USB-C connector（不编 UCSI），USB 保持固定 peripheral，免得 ADSP 切换角色断开 USB 网络。
++	 */
++	pmic-glink {
++		compatible = "qcom,sm8550-pmic-glink", "qcom,pmic-glink";
++		#address-cells = <1>;
++		#size-cells = <0>;
++	};
++
++	aliases {
++		serial1 = &uart14;
++	};
++
++	/*
++	 * WiFi/蓝牙：WCN7850（Kiwi）。引脚与 sm8550-qrd 完全相同（厂商 DTB cnss/bt_kiwi：
++	 * wlan-en GPIO80、bt-en GPIO81、sw-ctrl GPIO82；PCIe0 perst GPIO94、wake GPIO96），
++	 * 供电对应关系同 QRD（只是 fuxi DTS 里的标签名不同）。
++	 */
++	wcn7850-pmu {
++		compatible = "qcom,wcn7850-pmu";
++
++		pinctrl-0 = <&wlan_en>, <&bt_default>, <&pmk8550_sleep_clk>;
++		pinctrl-names = "default";
++
++		wlan-enable-gpios = <&tlmm 80 GPIO_ACTIVE_HIGH>;
++		bt-enable-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
++
++		vdd-supply = <&vreg_s5g_0p8>;
++		vddio-supply = <&vreg_l15b_1p8>;
++		vddaon-supply = <&vreg_s2g_0p8>;
++		vdddig-supply = <&vreg_s4e_0p9>;
++		vddrfa1p2-supply = <&vreg_s4g_1p3>;
++		vddrfa1p8-supply = <&vreg_s6g_1p8>;
++
++		regulators {
++			vreg_pmu_rfa_cmn: ldo0 {
++				regulator-name = "vreg_pmu_rfa_cmn";
++			};
++
++			vreg_pmu_aon_0p59: ldo1 {
++				regulator-name = "vreg_pmu_aon_0p59";
++			};
++
++			vreg_pmu_wlcx_0p8: ldo2 {
++				regulator-name = "vreg_pmu_wlcx_0p8";
++			};
++
++			vreg_pmu_wlmx_0p85: ldo3 {
++				regulator-name = "vreg_pmu_wlmx_0p85";
++			};
++
++			vreg_pmu_btcmx_0p85: ldo4 {
++				regulator-name = "vreg_pmu_btcmx_0p85";
++			};
++
++			vreg_pmu_rfa_0p8: ldo5 {
++				regulator-name = "vreg_pmu_rfa_0p8";
++			};
++
++			vreg_pmu_rfa_1p2: ldo6 {
++				regulator-name = "vreg_pmu_rfa_1p2";
++			};
++
++			vreg_pmu_rfa_1p8: ldo7 {
++				regulator-name = "vreg_pmu_rfa_1p8";
++			};
++
++			vreg_pmu_pcie_0p9: ldo8 {
++				regulator-name = "vreg_pmu_pcie_0p9";
++			};
++
++			vreg_pmu_pcie_1p8: ldo9 {
++				regulator-name = "vreg_pmu_pcie_1p8";
++			};
++		};
++	};
++
++	chosen {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/*
++		 * bootloader（ABL/UEFI）留下的帧缓冲：1080x2400 XRGB8888，stride 4320。
++		 * 面板是 DSI command mode，MDSS autorefresh 持续从这里取帧；simpledrm 接管它
++		 * 当作标准显示设备（/dev/dri/card0 + fbcon）。内存在 reserved-memory 里保留。
++		 */
++		framebuffer0: framebuffer@b8000000 {
++			compatible = "simple-framebuffer";
++			reg = <0x0 0xb8000000 0x0 0x9e3400>;
++			width = <1080>;
++			height = <2400>;
++			stride = <(1080 * 4)>;
++			format = "x8r8g8b8";
++		};
++	};
++
++	/*
++	 * 内存与固件保留区按"运行中系统"的 DTB（/sys/firmware/fdt，ABL 按本机 DDR 改写过，
++	 * 存档 work/device-info/fuxi-live.dts）：这台是 12 GB 版本。之前这里的布局来自不匹配的
++	 * 厂商 DTB：少了 4 GB，还把 0x8b9d00000 等几段非内存/受保护区声明成了内存。
++	 * 内建 DTB 忽略 ABL 的改写，所以这份布局只对这台机器有效。
++	 */
++	memory@80000000 {
++		device_type = "memory";
++		reg = <0x0 0x80000000 0x0 0x00e00000>,
++		      <0x0 0x811d0000 0x0 0x56e30000>,
++		      <0x0 0xd8140000 0x0 0x00020000>,
++		      <0x0 0xe7cb0000 0x0 0x18350000>,
++		      <0x8 0x80000000 0x0 0x39d00000>,
++		      <0x8 0xb9f00000 0x0 0x01e00000>,
++		      <0x8 0xc0000000 0x0 0xc0000000>,
++		      <0x9 0x80000000 0x1 0x80000000>;
++	};
++
++	/*
++	 * 固件保留区以 sm8550.dtsi 为准（与本机固件布局一致），只补运行中 DTB 里多出来的几段，
++	 * 尺寸不同的在文件末尾按标签改。
++	 */
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/*
++		 * 厂商 DTB 的 ramoops@0xa7000000：热重启后保留上一轮的内核日志（/sys/fs/pstore），
++		 * 用来查卡死/重启原因。4 MB = 2 MB console + 2 MB pmsg，与 Android 一致。
++		 */
++		ramoops@a7000000 {
++			compatible = "ramoops";
++			reg = <0x0 0xa7000000 0x0 0x400000>;
++			console-size = <0x200000>;
++			pmsg-size = <0x200000>;
++		};
++
++		/* 厂商 DTB 的 cont_splash_region：bootloader 帧缓冲，不能给内核当普通内存用 */
++		/*
++		 * iommu-addresses：SMMU 一挂上就给 mdss 建 1:1 直通映射，MDSS autorefresh 在
++		 * DPU 接管前继续读 splash 不再触发 SID 0x1c00 context fault（开机花屏）。
++		 */
++		cont_splash_mem: splash-region@b8000000 {
++			reg = <0x0 0xb8000000 0x0 0x2b00000>;
++			iommu-addresses = <&mdss 0x0 0xb8000000 0x0 0x2b00000>;
++			no-map;
++		};
++
++		xbl-ramdump-region@81200000 {
++			reg = <0x0 0x81200000 0x0 0x280000>;
++			no-map;
++		};
++
++		chipinfo-region@81cf4000 {
++			reg = <0x0 0x81cf4000 0x0 0x1000>;
++			no-map;
++		};
++
++		dump-display-region@a4a80000 {
++			reg = <0x0 0xa4a80000 0x0 0x800>;
++			no-map;
++		};
++
++		llcc-lpi-region@ff800000 {
++			reg = <0x0 0xff800000 0x0 0x600000>;
++			no-map;
++		};
++	};
++
++	vph_pwr: vph-pwr-regulator {
++		compatible = "regulator-fixed";
++		regulator-name = "vph_pwr";
++		regulator-min-microvolt = <3700000>;
++		regulator-max-microvolt = <3700000>;
++		regulator-always-on;
++		regulator-boot-on;
++	};
++};
++
++&apps_rsc {
++	regulators-0 {
++		compatible = "qcom,pm8550-rpmh-regulators";
++		qcom,pmic-id = "b";
++
++		vdd-bob1-supply = <&vph_pwr>;
++		vdd-bob2-supply = <&vph_pwr>;
++		vdd-l1-l4-l10-supply = <&vreg_s6g_1p8>;
++		vdd-l2-l13-l14-supply = <&vreg_bob1>;
++		vdd-l3-supply = <&vreg_s4g_1p3>;
++		vdd-l5-l16-supply = <&vreg_bob1>;
++		vdd-l6-l7-supply = <&vreg_bob1>;
++		vdd-l8-l9-supply = <&vreg_bob1>;
++		vdd-l11-supply = <&vreg_s4g_1p3>;
++		vdd-l12-supply = <&vreg_s6g_1p8>;
++		vdd-l15-supply = <&vreg_s6g_1p8>;
++		vdd-l17-supply = <&vreg_bob2>;
++
++		vreg_bob1: bob1 {
++			regulator-name = "vreg_bob1";
++			regulator-min-microvolt = <3296000>;
++			regulator-max-microvolt = <3960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_bob2: bob2 {
++			regulator-name = "vreg_bob2";
++			regulator-min-microvolt = <2720000>;
++			regulator-max-microvolt = <3960000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l1b_1p8: ldo1 {
++			regulator-name = "vreg_l1b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2b_3p0: ldo2 {
++			regulator-name = "vreg_l2b_3p0";
++			regulator-min-microvolt = <3008000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l5b_3p1: ldo5 {
++			regulator-name = "vreg_l5b_3p1";
++			regulator-min-microvolt = <3104000>;
++			regulator-max-microvolt = <3104000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l6b_1p8: ldo6 {
++			regulator-name = "vreg_l6b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l7b_1p8: ldo7 {
++			regulator-name = "vreg_l7b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l8b_1p8: ldo8 {
++			regulator-name = "vreg_l8b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l9b_2p9: ldo9 {
++			regulator-name = "vreg_l9b_2p9";
++			regulator-min-microvolt = <2960000>;
++			regulator-max-microvolt = <3008000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l11b_1p2: ldo11 {
++			regulator-name = "vreg_l11b_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1504000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l12b_1p8: ldo12 {
++			regulator-name = "vreg_l12b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l13b_3p0: ldo13 {
++			regulator-name = "vreg_l13b_3p0";
++			regulator-min-microvolt = <3000000>;
++			regulator-max-microvolt = <3000000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l14b_3p2: ldo14 {
++			regulator-name = "vreg_l14b_3p2";
++			regulator-min-microvolt = <3200000>;
++			regulator-max-microvolt = <3200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l15b_1p8: ldo15 {
++			regulator-name = "vreg_l15b_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l16b_2p8: ldo16 {
++			regulator-name = "vreg_l16b_2p8";
++			regulator-min-microvolt = <2800000>;
++			regulator-max-microvolt = <2800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l17b_2p5: ldo17 {
++			regulator-name = "vreg_l17b_2p5";
++			regulator-min-microvolt = <2504000>;
++			regulator-max-microvolt = <2504000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-1 {
++		compatible = "qcom,pm8550vs-rpmh-regulators";
++		qcom,pmic-id = "c";
++
++		vdd-l3-supply = <&vreg_s4e_0p9>;
++
++		vreg_l3c_0p91: ldo3 {
++			regulator-name = "vreg_l3c_0p9";
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-2 {
++		compatible = "qcom,pm8550vs-rpmh-regulators";
++		qcom,pmic-id = "d";
++
++		vdd-l1-supply = <&vreg_s4e_0p9>;
++
++		vreg_l1d_0p88: ldo1 {
++			regulator-name = "vreg_l1d_0p88";
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <920000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-3 {
++		compatible = "qcom,pm8550vs-rpmh-regulators";
++		qcom,pmic-id = "e";
++
++		vdd-l1-supply = <&vreg_s4e_0p9>;
++		vdd-l2-supply = <&vreg_s4e_0p9>;
++		vdd-l3-supply = <&vreg_s4g_1p3>;
++		vdd-s4-supply = <&vph_pwr>;
++		vdd-s5-supply = <&vph_pwr>;
++
++		vreg_s4e_0p9: smps4 {
++			regulator-name = "vreg_s4e_0p9";
++			regulator-min-microvolt = <904000>;
++			regulator-max-microvolt = <984000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_s5e_1p1: smps5 {
++			regulator-name = "vreg_s5e_1p1";
++			regulator-min-microvolt = <1080000>;
++			regulator-max-microvolt = <1120000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l1e_0p88: ldo1 {
++			regulator-name = "vreg_l1e_0p88";
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <880000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2e_0p9: ldo2 {
++			regulator-name = "vreg_l2e_0p9";
++			regulator-min-microvolt = <904000>;
++			regulator-max-microvolt = <970000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l3e_1p2: ldo3 {
++			regulator-name = "vreg_l3e_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-4 {
++		compatible = "qcom,pm8550ve-rpmh-regulators";
++		qcom,pmic-id = "f";
++
++		vdd-l1-supply = <&vreg_s4e_0p9>;
++		vdd-l2-supply = <&vreg_s4e_0p9>;
++		vdd-l3-supply = <&vreg_s4e_0p9>;
++		vdd-s4-supply = <&vph_pwr>;
++
++		vreg_s4f_0p5: smps4 {
++			regulator-name = "vreg_s4f_0p5";
++			regulator-min-microvolt = <500000>;
++			regulator-max-microvolt = <700000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l1f_0p9: ldo1 {
++			regulator-name = "vreg_l1f_0p9";
++			regulator-min-microvolt = <912000>;
++			regulator-max-microvolt = <912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2f_0p88: ldo2 {
++			regulator-name = "vreg_l2f_0p88";
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l3f_0p91: ldo3 {
++			regulator-name = "vreg_l3f_0p91";
++			regulator-min-microvolt = <880000>;
++			regulator-max-microvolt = <912000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-5 {
++		compatible = "qcom,pm8550vs-rpmh-regulators";
++		qcom,pmic-id = "g";
++
++		vdd-l1-supply = <&vreg_s4g_1p3>;
++		vdd-l2-supply = <&vreg_s4g_1p3>;
++		vdd-l3-supply = <&vreg_s4g_1p3>;
++		vdd-s1-supply = <&vph_pwr>;
++		vdd-s2-supply = <&vph_pwr>;
++		vdd-s3-supply = <&vph_pwr>;
++		vdd-s4-supply = <&vph_pwr>;
++		vdd-s5-supply = <&vph_pwr>;
++		vdd-s6-supply = <&vph_pwr>;
++
++		vreg_s1g_1p2: smps1 {
++			regulator-name = "vreg_s1g_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1300000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_s2g_0p8: smps2 {
++			regulator-name = "vreg_s2g_0p8";
++			regulator-min-microvolt = <800000>;
++			regulator-max-microvolt = <1000000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/*
++		 * fuxi 的 cmd-db 没有 smpg3（work/device-info/cmd-db-fuxi.txt），
++		 * 保留 MTP 的 smps3 会让整块 regulators-5 以 -ENODEV 静默失败。
++		 */
++
++		vreg_s4g_1p3: smps4 {
++			regulator-name = "vreg_s4g_1p3";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1352000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_s5g_0p8: smps5 {
++			regulator-name = "vreg_s5g_0p8";
++			regulator-min-microvolt = <500000>;
++			regulator-max-microvolt = <1004000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_s6g_1p8: smps6 {
++			regulator-name = "vreg_s6g_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <2000000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l1g_1p2: ldo1 {
++			regulator-name = "vreg_l1g_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2g_1p2: ldo2 {
++			regulator-name = "vreg_l2g_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l3g_1p2: ldo3 {
++			regulator-name = "vreg_l3g_1p2";
++			regulator-min-microvolt = <1200000>;
++			regulator-max-microvolt = <1200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	regulators-6 {
++		compatible = "qcom,pm8010-rpmh-regulators";
++		qcom,pmic-id = "m";
++
++		vdd-l1-l2-supply = <&vreg_s4g_1p3>;
++		vdd-l3-l4-supply = <&vreg_bob2>;
++		vdd-l5-supply = <&vreg_s6g_1p8>;
++		vdd-l6-supply = <&vreg_s6g_1p8>;
++		vdd-l7-supply = <&vreg_bob1>;
++
++		vreg_l1m_1p056: ldo1 {
++			regulator-name = "vreg_l1m_1p056";
++			regulator-min-microvolt = <1056000>;
++			regulator-max-microvolt = <1056000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l2m_1p056: ldo2 {
++			regulator-name = "vreg_l2m_1p056";
++			regulator-min-microvolt = <1056000>;
++			regulator-max-microvolt = <1056000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l3m_2p8: ldo3 {
++			regulator-name = "vreg_l3m_2p8";
++			regulator-min-microvolt = <2800000>;
++			regulator-max-microvolt = <2800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l4m_2p8: ldo4 {
++			regulator-name = "vreg_l4m_2p8";
++			regulator-min-microvolt = <2800000>;
++			regulator-max-microvolt = <2800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l5m_1p8: ldo5 {
++			regulator-name = "vreg_l5m_1p8";
++			regulator-min-microvolt = <1800000>;
++			regulator-max-microvolt = <1800000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		/* 只给触摸屏 avdd 用；厂商 pm8010m_l6 默认 3.2V（范围 1.8–3.2V） */
++		vreg_l6m_3p2: ldo6 {
++			regulator-name = "vreg_l6m_3p2";
++			regulator-min-microvolt = <3200000>;
++			regulator-max-microvolt = <3200000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++
++		vreg_l7m_2p9: ldo7 {
++			regulator-name = "vreg_l7m_2p9";
++			regulator-min-microvolt = <2800000>;
++			regulator-max-microvolt = <2904000>;
++			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
++		};
++	};
++
++	/* PMIC "n"（第二颗 PM8010）在 fuxi 的 cmd-db 里没有任何资源：去掉 regulators-7 */
++};
++
++/*
++ * fuxi 只有一颗 PM8010（USID 0xc）、一颗 PMR735D（0xa）：0xb/0xd 不存在（cmd-db 里也没有
++ * PMIC "n" 的资源），probe 会报 spmi 通道错误并打调用栈。pmr735d_b.dtsi 不包含；pm8010.dtsi
++ * 里的第二颗关掉，连同它的温度区。
++ */
++&pm8010_n {
++	status = "disabled";
++};
++
++/ {
++	thermal-zones {
++		/delete-node/ pm8010-n-thermal;
++	};
++};
++
++/*
++ * ===== USB-C: dwc3 dual-role (OTG) + USB3 through the QMP USB4/DP combo PHY =====
++ * Role and orientation come from pmic_glink (ADSP); see the USB-C section below.
++ */
++&usb_1 {
++	dr_mode = "otg";
++	phys = <&usb_1_hsphy>, <&usb_dp_qmpphy QMP_USB43DP_USB3_PHY>;
++	phy-names = "usb2-phy", "usb3-phy";
++	status = "okay";
++};
++
++&usb_1_hsphy {
++	vdd-supply = <&vreg_l1e_0p88>;
++	vdda12-supply = <&vreg_l3e_1p2>;
++
++	phys = <&pm8550b_eusb2_repeater>;
++
++	status = "okay";
++};
++
++/* repeater 在 PM8550B 上（SPMI 总线），供电同 sm8550-qrd */
++&pm8550b_eusb2_repeater {
++	vdd18-supply = <&vreg_l15b_1p8>;
++	vdd3-supply = <&vreg_l5b_3p1>;
++};
++
++&usb_dp_qmpphy {
++	vdda-phy-supply = <&vreg_l3f_0p91>;
++	vdda-pll-supply = <&vreg_l3e_1p2>;
++
++	status = "okay";
++};
++
++/*
++ * ===== UFS（M3）=====
++ * 与 Android 实时 DTB（work/device-info/fuxi-live.dts，ufshc@1d84000）逐项核对过：
++ * vcc=pm_humu_l17(l17b 2.504V)/1.3A、vccq=pm_v6g_l1(l1g)/1.2A、reset GPIO 210；
++ * PHY vdda-phy=l1d、vdda-pll=l3e。与 sm8550-mtp 相同。
++ */
++&ufs_mem_hc {
++	reset-gpios = <&tlmm 210 GPIO_ACTIVE_LOW>;
++	vcc-supply = <&vreg_l17b_2p5>;
++	vcc-max-microamp = <1300000>;
++	vccq-supply = <&vreg_l1g_1p2>;
++	vccq-max-microamp = <1200000>;
++	vdd-hba-supply = <&vreg_l3g_1p2>;
++
++	status = "okay";
++};
++
++&ufs_mem_phy {
++	vdda-phy-supply = <&vreg_l1d_0p88>;
++	vdda-pll-supply = <&vreg_l3e_1p2>;
++
++	status = "okay";
++};
++
++/* 电源键与音量下（PMK8550 PON 的 resin），同 sm8550-qrd */
++&pon_pwrkey {
++	status = "okay";
++};
++
++&pon_resin {
++	linux,code = <KEY_VOLUMEDOWN>;
++
++	status = "okay";
++};
++
++&pm8550_gpios {
++	volume_up_n: volume-up-n-state {
++		pins = "gpio6";
++		function = "normal";
++		power-source = <1>;
++		bias-pull-up;
++		input-enable;
++	};
++};
++
++/*
++ * 触摸屏：ST FTM5（SPI，QUP0 SE4 = spi4，GPIO44-47），驱动 drivers/input/touchscreen/st-ftm5.c。
++ * 取自厂商 DTB spi@a90000/fts@0："st,spi"、12 MHz、irq GPIO25 低电平、reset GPIO24（拉低复位）、
++ * vdd = l12b（pm_humu_l12）、avdd = l6m（pm8010m_l6）。坐标是 1/10 像素（1080x2400 屏）。
++ */
++&gpi_dma1 {
++	status = "okay";
++};
++
++&qupv3_id_0 {
++	status = "okay";
++};
++
++&spi4 {
++	status = "okay";
++
++	touchscreen@0 {
++		compatible = "st,ftm5";
++		reg = <0>;
++		spi-max-frequency = <12000000>;
++
++		interrupts-extended = <&tlmm 25 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
++
++		vdd-supply = <&vreg_l12b_1p8>;
++		avdd-supply = <&vreg_l6m_3p2>;
++
++		pinctrl-0 = <&ts_default>;
++		pinctrl-names = "default";
++
++		touchscreen-size-x = <10800>;
++		touchscreen-size-y = <24000>;
++	};
++};
++
++&pcie0 {
++	pinctrl-0 = <&pcie0_default_state>;
++	pinctrl-names = "default";
++
++	status = "okay";
++};
++
++&pcie0_phy {
++	vdda-phy-supply = <&vreg_l1e_0p88>;
++	vdda-pll-supply = <&vreg_l3e_1p2>;
++
++	status = "okay";
++};
++
++&pcie0_port0 {
++	reset-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
++	wake-gpios = <&tlmm 96 GPIO_ACTIVE_LOW>;
++
++	wifi@0 {
++		compatible = "pci17cb,1107";
++		reg = <0x10000 0x0 0x0 0x0 0x0>;
++
++		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
++		vddaon-supply = <&vreg_pmu_aon_0p59>;
++		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
++		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
++		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
++		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
++		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
++		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
++		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
++	};
++};
++
++/* QUP2（0x8c0000，主线叫 qupv3_id_1）：uart14 蓝牙、i2c8 扬声器功放都在它下面 */
++&qupv3_id_1 {
++	status = "okay";
++};
++
++&uart14 {
++	status = "okay";
++
++	bluetooth {
++		compatible = "qcom,wcn7850-bt";
++
++		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
++		vddaon-supply = <&vreg_pmu_aon_0p59>;
++		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
++		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
++		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
++		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
++		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
++
++		max-speed = <3200000>;
++	};
++};
++
++&pmk8550_gpios {
++	pmk8550_sleep_clk: sleep-clk-state {
++		pins = "gpio3";
++		function = "func1";
++		input-disable;
++		output-enable;
++		bias-disable;
++		power-source = <0>;
++	};
++};
++
++&xo_board {
++	clock-frequency = <76800000>;
++};
++
++&sleep_clk {
++	clock-frequency = <32000>;
++};
++
++/*
++ * GPIO 32-39 归 TrustZone（厂商 kalama DTB: qcom,gpios-reserved = <32..39>）。
++ * 缺这一行时 TLMM probe 读这些引脚的寄存器触发 XPU 违规：黑屏 + 整机卡死 + 看门狗复位。
++ */
++&tlmm {
++	gpio-reserved-ranges = <32 8>;
++
++	bt_default: bt-default-state {
++		bt-en-pins {
++			pins = "gpio81";
++			function = "gpio";
++			drive-strength = <16>;
++			bias-disable;
++		};
++
++		sw-ctrl-pins {
++			pins = "gpio82";
++			function = "gpio";
++			bias-pull-down;
++		};
++	};
++
++	wlan_en: wlan-en-state {
++		pins = "gpio80";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-down;
++	};
++
++	/* 厂商 mi_ts_active：GPIO24（reset）、GPIO25（irq），上拉、8 mA */
++	ts_default: ts-default-state {
++		pins = "gpio24", "gpio25";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-up;
++	};
++};
++
++/*
++ * ADSP：固件从 Android 的 /vendor/firmware_mnt/image 复制（adsp.mdt + .bNN、adsp_dtb.mdt + .bNN），
++ * 放在 Ubuntu 的 /lib/firmware/qcom/sm8550/xiaomi/fuxi/。initramfs 阶段 probe 时找不到固件，
++ * 由 Ubuntu 里的 fuxi-remoteproc.service 在根文件系统挂好后启动。
++ */
++&remoteproc_adsp {
++	firmware-name = "qcom/sm8550/xiaomi/fuxi/adsp.mdt",
++			"qcom/sm8550/xiaomi/fuxi/adsp_dtb.mdt";
++	status = "okay";
++};
++
++/* 运行中 DTB 里比 sm8550.dtsi 大的两段（Xiaomi 固件更大） */
++&adspslpi_mem {
++	reg = <0x0 0x9ea00000 0x0 0x4680000>;
++};
++
++&hwfence_shbuf {
++	reg = <0x0 0xe6440000 0x0 0x2dd000>;
++};
++
++/* ======== Display: MSM DPU + DSI0 + panel-xiaomi-fuxi ======== */
++
++/ {
++	/* 面板三路电源都是 GPIO 控制的负载开关（厂商 display_panel_vddio/vci/vddd），开机时已打开 */
++	panel_vddio_1p8: regulator-panel-vddio {
++		compatible = "regulator-fixed";
++		regulator-name = "panel_vddio_1p8";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		gpio = <&tlmm 126 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++	};
++
++	panel_vci_3p0: regulator-panel-vci {
++		compatible = "regulator-fixed";
++		regulator-name = "panel_vci_3p0";
++		regulator-min-microvolt = <3000000>;
++		regulator-max-microvolt = <3000000>;
++		gpio = <&tlmm 127 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++	};
++
++	panel_vddd_1p5: regulator-panel-vddd {
++		compatible = "regulator-fixed";
++		regulator-name = "panel_vddd_1p5";
++		regulator-min-microvolt = <1500000>;
++		regulator-max-microvolt = <1500000>;
++		gpio = <&tlmm 42 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		regulator-boot-on;
++	};
++};
++
++&dispcc {
++	status = "okay";
++};
++
++/*
++ * 原生显示变体只让 MSM DPU/DSI 作为 DRM 输出。保留启动 framebuffer 的保留内存与
++ * fuxi 早期 console，但不注册第二张 simpledrm 卡，避免桌面选中旧 bootloader 输出。
++ */
++&framebuffer0 {
++	status = "disabled";
++};
++
++&mdss {
++	memory-region = <&cont_splash_mem>;
++	status = "okay";
++};
++
++&mdss_dsi0 {
++	vdda-supply = <&vreg_l3e_1p2>;
++	status = "okay";
++
++	panel@0 {
++		compatible = "xiaomi,fuxi-m3-38-0c-0a";
++		reg = <0>;
++
++		pinctrl-0 = <&sde_dsi_active>, <&sde_te>;
++		pinctrl-1 = <&sde_dsi_suspend>, <&sde_te>;
++		pinctrl-names = "default", "sleep";
++
++		reset-gpios = <&tlmm 133 GPIO_ACTIVE_LOW>;
++
++		vddio-supply = <&panel_vddio_1p8>;
++		vddd-supply = <&panel_vddd_1p5>;
++		vci-supply = <&panel_vci_3p0>;
++
++		port {
++			panel0_in: endpoint {
++				remote-endpoint = <&mdss_dsi0_out>;
++			};
++		};
++	};
++};
++
++&mdss_dsi0_out {
++	remote-endpoint = <&panel0_in>;
++	data-lanes = <0 1 2 3>;
++};
++
++&mdss_dsi0_phy {
++	vdds-supply = <&vreg_l1e_0p88>;
++	status = "okay";
++};
++
++&tlmm {
++	sde_dsi_active: sde-dsi-active-state {
++		pins = "gpio133";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-disable;
++	};
++
++	sde_dsi_suspend: sde-dsi-suspend-state {
++		pins = "gpio133";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++
++	/* 厂商 sde_te_active：GPIO86 mdp_vsync */
++	sde_te: sde-te-state {
++		pins = "gpio86";
++		function = "mdp_vsync";
++		drive-strength = <2>;
++		bias-pull-down;
++	};
++};
++
++/*
++ * GPU：Adreno 740。a740_sqe.fw、gmu_gen70200.bin 放 /lib/firmware/qcom/；签名的 zap shader 取自 Android
++ * /vendor/firmware（a740_zap.mdt + .bNN），放 /lib/firmware/qcom/sm8550/xiaomi/fuxi/。
++ * 固件在第一次打开 GPU 时才加载（那时根文件系统已挂好）。
++ */
++&gpu {
++	status = "okay";
++};
++
++&gpu_zap_shader {
++	firmware-name = "qcom/sm8550/xiaomi/fuxi/a740_zap.mdt";
++};
++
++/* ======== Audio: 2x CS35L41 speakers on SECONDARY_MI2S ======== */
++
++/ {
++	/*
++	 * 上扬声器兼听筒：厂商在 T 功放上挂了 rcv_gpio_high/low（GPIO68），通话听筒模式拉高。
++	 * 用 simple-audio-mux 把 GPIO68 暴露成 ALSA 控件 "RCV MUX"（Speaker/Earpiece），由 UCM 切换。
++	 */
++	rcv_switch: audio-mux-rcv {
++		compatible = "simple-audio-mux";
++		mux-gpios = <&tlmm 68 GPIO_ACTIVE_HIGH>;
++		state-labels = "Speaker", "Earpiece";
++		sound-name-prefix = "RCV";
++		pinctrl-0 = <&rcv_switch_default>;
++		pinctrl-names = "default";
++	};
++
++	sound: sound {
++		compatible = "xiaomi,fuxi-sndcard";
++		model = "Xiaomi-13";
++		pinctrl-0 = <&i2s1_default>;
++		pinctrl-names = "default";
++		aux-devs = <&rcv_switch>;
++
++		speaker-dai-link {
++			link-name = "Secondary MI2S Playback";
++
++			codec {
++				sound-dai = <&spk_amp_t 0>, <&spk_amp_b 0>;
++			};
++
++			cpu {
++				sound-dai = <&q6apmbedai SECONDARY_MI2S_RX>;
++			};
++
++			platform {
++				sound-dai = <&q6apm>;
++			};
++		};
++	};
++};
++
++&gpi_dma2 {
++	status = "okay";
++};
++
++&i2c8 {
++	clock-frequency = <400000>;
++	/*
++	 * fuxi 的 QUP2 SE0 走 GPIO0/1（"mirb" 那组），不是 sm8550.dtsi 默认的 GPIO56/57（mira）；
++	 * GPIO57 在本机是长焦相机的 AVDD 开关（厂商 camera_tele_avdd_ldo）。厂商 qupv3_se8_i2c_*_active。
++	 */
++	pinctrl-0 = <&qup_i2c8_mirb_data_clk>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	spk_amp_b: speaker-amp@40 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x40>;
++		interrupts-extended = <&tlmm 99 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 183 GPIO_ACTIVE_HIGH>;	/* 驱动置 1 = 解除复位 */
++		pinctrl-0 = <&spk_amp_b_default>;
++		pinctrl-names = "default";
++		sound-name-prefix = "B";
++		/* DSP 固件名 cirrus/cs35l41-dsp1-spk-prot-xiaomi-fuxi-B.{wmfw,bin}（打开 "B DSP1 Preload Switch" 才加载） */
++		cirrus,subsystem-id = "xiaomi-fuxi";
++		#sound-dai-cells = <1>;
++
++		cirrus,boost-peak-milliamp = <4000>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <4>;
++		cirrus,gpio2-output-enable;
++	};
++
++	spk_amp_t: speaker-amp@42 {
++		compatible = "cirrus,cs35l41";
++		reg = <0x42>;
++		interrupts-extended = <&tlmm 98 IRQ_TYPE_LEVEL_LOW>;
++		reset-gpios = <&tlmm 182 GPIO_ACTIVE_HIGH>;	/* 驱动置 1 = 解除复位 */
++		pinctrl-0 = <&spk_amp_t_default>;
++		pinctrl-names = "default";
++		sound-name-prefix = "T";
++		cirrus,subsystem-id = "xiaomi-fuxi";
++		#sound-dai-cells = <1>;
++
++		cirrus,boost-peak-milliamp = <4000>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++		cirrus,gpio2-src-select = <4>;
++		cirrus,gpio2-output-enable;
++	};
++};
++
++&q6apmbedai {
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	dai@12 {
++		reg = <SECONDARY_MI2S_RX>;
++		clocks = <&q6prmcc LPASS_CLK_ID_SEC_MI2S_IBIT LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
++		clock-names = "bclk";
++	};
++};
++
++&tlmm {
++	qup_i2c8_mirb_data_clk: qup-i2c8-mirb-data-clk-state {
++		sda-pins {
++			pins = "gpio0";
++			function = "qup2_se0_l0_mirb";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++
++		scl-pins {
++			pins = "gpio1";
++			function = "qup2_se0_l1_mirb";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
++
++	/* 厂商 tdm1_*_active：i2s1_* 功能、8 mA、无上下拉 */
++	i2s1_default: i2s1-default-state {
++		sck-pins {
++			pins = "gpio121";
++			function = "i2s1_sck";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		data0-pins {
++			pins = "gpio122";
++			function = "i2s1_data0";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		ws-pins {
++			pins = "gpio123";
++			function = "i2s1_ws";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		data1-pins {
++			pins = "gpio124";
++			function = "i2s1_data1";
++			drive-strength = <8>;
++			bias-disable;
++		};
++	};
++
++	/* 厂商 rcv_gpio_low（默认扬声器模式） */
++	rcv_switch_default: rcv-switch-default-state {
++		pins = "gpio68";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++		output-low;
++	};
++
++	/* 厂商 cirrus_reset_default_0 / cirrus_irq_default_0 */
++	spk_amp_b_default: spk-amp-b-default-state {
++		reset-pins {
++			pins = "gpio183";
++			function = "gpio";
++			drive-strength = <16>;
++			bias-disable;
++		};
++
++		irq-pins {
++			pins = "gpio99";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
++
++	spk_amp_t_default: spk-amp-t-default-state {
++		reset-pins {
++			pins = "gpio182";
++			function = "gpio";
++			drive-strength = <16>;
++			bias-disable;
++		};
++
++		irq-pins {
++			pins = "gpio98";
++			function = "gpio";
++			drive-strength = <2>;
++			bias-pull-up;
++		};
++	};
++};
++
++/* ======== Audio: WCD9385 codec (analog mics, USB-C headset) ======== */
++
++/ {
++	wcd938x: audio-codec {
++		compatible = "qcom,wcd9385-codec";
++
++		pinctrl-0 = <&wcd_default>;
++		pinctrl-names = "default";
++
++		qcom,micbias1-microvolt = <2750000>;
++		qcom,micbias2-microvolt = <2750000>;
++		qcom,micbias3-microvolt = <2750000>;
++		qcom,micbias4-microvolt = <2750000>;
++		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000 500000 500000 500000 500000>;
++		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
++		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
++		qcom,rx-device = <&wcd_rx>;
++		qcom,tx-device = <&wcd_tx>;
++
++		reset-gpios = <&tlmm 108 GPIO_ACTIVE_LOW>;
++
++		vdd-buck-supply = <&vreg_l15b_1p8>;
++		vdd-rxtx-supply = <&vreg_l15b_1p8>;
++		vdd-io-supply = <&vreg_l15b_1p8>;
++		vdd-mic-bias-supply = <&vreg_bob1>;
++
++		#sound-dai-cells = <1>;
++	};
++};
++
++&sound {
++	/* 厂商 qcom,audio-routing 里与 WCD 模拟麦克风/耳机相关的部分 */
++	audio-routing = "IN1_HPHL", "HPHL_OUT",
++			"IN2_HPHR", "HPHR_OUT",
++			"AMIC1", "MIC BIAS1",
++			"AMIC2", "MIC BIAS2",
++			"AMIC3", "MIC BIAS3",
++			"AMIC4", "MIC BIAS3",
++			"AMIC5", "MIC BIAS4",
++			"TX SWR_INPUT0", "ADC1_OUTPUT",
++			"TX SWR_INPUT1", "ADC2_OUTPUT",
++			"TX SWR_INPUT0", "ADC3_OUTPUT",
++			"TX SWR_INPUT1", "ADC4_OUTPUT";
++
++	wcd-playback-dai-link {
++		link-name = "WCD Playback";
++
++		cpu {
++			sound-dai = <&q6apmbedai RX_CODEC_DMA_RX_0>;
++		};
++
++		codec {
++			sound-dai = <&wcd938x 0>, <&swr1 0>, <&lpass_rxmacro 0>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++
++	wcd-capture-dai-link {
++		link-name = "WCD Capture";
++
++		cpu {
++			sound-dai = <&q6apmbedai TX_CODEC_DMA_TX_3>;
++		};
++
++		codec {
++			sound-dai = <&wcd938x 1>, <&swr2 0>, <&lpass_txmacro 0>;
++		};
++
++		platform {
++			sound-dai = <&q6apm>;
++		};
++	};
++};
++
++&swr1 {
++	status = "okay";
++
++	/* WCD9385 RX */
++	wcd_rx: codec@0,4 {
++		compatible = "sdw20217010d00";
++		reg = <0 4>;
++		qcom,rx-port-mapping = <1 2 3 4 5>;
++	};
++};
++
++&swr2 {
++	status = "okay";
++
++	/* WCD9385 TX */
++	wcd_tx: codec@0,3 {
++		compatible = "sdw20217010d00";
++		reg = <0 3>;
++		qcom,tx-port-mapping = <2 2 3 4>;
++	};
++};
++
++&tlmm {
++	/* 厂商 wcd938x_reset_active：GPIO108 */
++	wcd_default: wcd-reset-n-active-state {
++		pins = "gpio108";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++		output-low;
++	};
++};
++
++/* ======== Modem: IPA + MPSS ======== */
++
++/*
++ * 厂商 DTB 的 ipa_smmu_ap（SID 0x4a0）用 qcom,additional-mapping 直通映射 IMEM 0x146a8000/0x2000，
++ * sm8550.dtsi 的 modem-tables@8000 对应 0x14688000。modem11 实测 IPA 访问 iova 0x146a9080 触发
++ * SMMU context fault（SID 0x4a0），随后基带报 IPA_IRQ_STTS 0x1（BAD_SNOC_ACCESS）。按厂商地址映射。
++ */
++&{/soc@0/sram@14680000} {
++	ipa_modem_tables_fuxi: modem-tables@28000 {
++		reg = <0x28000 0x2000>;
++	};
++};
++
++&ipa {
++	firmware-name = "qcom/sm8550/xiaomi/fuxi/ipa_fws.mdt";
++	sram = <&ipa_modem_tables_fuxi>;
++	status = "okay";
++};
++
++&remoteproc_mpss {
++	firmware-name = "qcom/sm8550/xiaomi/fuxi/modem.mdt",
++			"qcom/sm8550/xiaomi/fuxi/modem_dtb.mdt";
++	status = "okay";
++};
++
++/* ======== USB-C: pmic_glink connector, FSA4480, DP alt mode ======== */
++
++/ {
++	pmic-glink {
++		orientation-gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
++
++		connector@0 {
++			compatible = "usb-c-connector";
++			reg = <0>;
++			power-role = "dual";
++			data-role = "dual";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					pmic_glink_hs_in: endpoint {
++						remote-endpoint = <&usb_1_dwc3_hs>;
++					};
++				};
++
++				port@1 {
++					reg = <1>;
++
++					pmic_glink_ss_in: endpoint {
++						remote-endpoint = <&usb_dp_qmpphy_out>;
++					};
++				};
++
++				port@2 {
++					reg = <2>;
++
++					pmic_glink_sbu: endpoint {
++						remote-endpoint = <&fsa4480_sbu_mux>;
++					};
++				};
++			};
++		};
++	};
++};
++
++/* Parent QUP of i2c_hub_2; stock: qcom,qupv3_i2c_geni_se@9c0000 / i2c@988000 / fsa4480@42. */
++&i2c_master_hub_0 {
++	status = "okay";
++};
++
++&i2c_hub_2 {
++	status = "okay";
++
++	typec-mux@42 {
++		compatible = "fcs,fsa4480";
++		reg = <0x42>;
++
++		vcc-supply = <&vreg_bob1>;
++
++		mode-switch;
++		orientation-switch;
++
++		port {
++			fsa4480_sbu_mux: endpoint {
++				remote-endpoint = <&pmic_glink_sbu>;
++			};
++		};
++	};
++};
++
++&usb_1_dwc3_hs {
++	remote-endpoint = <&pmic_glink_hs_in>;
++};
++
++&usb_dp_qmpphy_out {
++	remote-endpoint = <&pmic_glink_ss_in>;
++};
++
++&mdss_dp0 {
++	status = "okay";
++};

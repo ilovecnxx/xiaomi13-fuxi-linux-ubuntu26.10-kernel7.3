@@ -1,0 +1,25 @@
+diff --git a/net/qrtr/af_qrtr.c b/net/qrtr/af_qrtr.c
+index e7b3647424b8f170ad63d3c4a488180fb8add649..095726d4a1536fb2e1011a5bbd843e43a73dfba8 100644
+--- a/net/qrtr/af_qrtr.c
++++ b/net/qrtr/af_qrtr.c
+@@ -351,9 +351,18 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
+ 
+ 	mutex_lock(&node->ep_lock);
+ 	if (!node->hello_sent && type != QRTR_TYPE_HELLO) {
++		/* The remote's HELLO may be handled by the name service before
++		 * our own HELLO went out; push it out now rather than dropping
++		 * the reply (e.g. the NEW_SERVER announcements).
++		 */
+ 		mutex_unlock(&node->ep_lock);
+-		kfree_skb(skb);
+-		return -EAGAIN;
++		flush_delayed_work(&node->say_hello);
++		mutex_lock(&node->ep_lock);
++		if (!node->hello_sent) {
++			mutex_unlock(&node->ep_lock);
++			kfree_skb(skb);
++			return -EAGAIN;
++		}
+ 	}
+ 	mutex_unlock(&node->ep_lock);
+ 

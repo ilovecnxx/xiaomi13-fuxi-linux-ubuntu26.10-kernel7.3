@@ -1,4 +1,5 @@
 #!/bin/bash
+# 历史 ABL 直启入口；当前 U-Boot/extlinux 内核使用 scripts/fuxi-build-deb.sh。
 # ABL 直接引导的 boot 镜像（不经过自制 UEFI）：
 #   boot.img header v1，kernel 字段 = Image.gz + 厂商 fuxi DTB（"诱饵"）
 #   - ABL 按 msm-id/board-id 挑 DTB，并把 dtbo 分区的 overlay 叠上去；叠到主线 DTB 上会卡死
@@ -97,7 +98,7 @@ if [ "${2:-}" != "--no-kernel" ]; then
     done
     [ ${#miss[@]} -eq 0 ] || { echo "[config] 这些选项没能打开（依赖不满足）：${miss[*]}"; exit 1; }
   fi
-  # FUXI_INITRAMFS=<cpio 清单文件>：换掉内建 initramfs（引导层 shim 用自己的 init + kexec，见 fuxi-build-shim.sh）
+  # FUXI_INITRAMFS=<cpio 清单文件>：换掉内建 initramfs（旧 shim 用 init + kexec，见 legacy/fuxi-build-shim.sh）
   if [ -n "${FUXI_INITRAMFS:-}" ]; then
     ./scripts/config --set-str INITRAMFS_SOURCE "$FUXI_INITRAMFS"
   fi

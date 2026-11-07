@@ -1,41 +1,49 @@
-# TASKS（2026-11-07 17:10，相机第 1 步暂停）
+# 当前任务与验收状态
 
-**最新交接：`docs/交接-新会话-20261107-1652.md`（B/C/D/E 推进 + deb5；下一步相机）**
-上一份：`docs/交接-新会话-20261107-1522.md`；E 调研：`docs/调研-E收尾-20261107.md`；相机：`docs/相机调研.md`
-通信线：`docs/交接-新会话-20261106-2325.md`；引导层：`docs/计划-标准化启动-20261107.md`。Telegram chat_id 1699534680：所有进度都要转发。
+当前请求：完成项目标准化收尾，提交并同步充电已有成果。充电故障排查暂停。
 
-## 目标
-小米 13（fuxi）主线 Linux 成为可日用的完整手机 + 桌面；内核以 deb 独立升级、标准引导、设备支持全部打包。
+## 维护入口
 
-## 当前状态
-- 引导：ABL → recovery_b = uboot7（b78e2462…）→ extlinux → chg3（default）/ deb5（fallback），2 次未确认自动回退。
-- chg3 = 收敛树 a5dcbb9cc + 认证接口（89846aa3d）+ 有界 PD 限流 setter（ddd260be1）+ UCSI 查询长度修复（e3ebcdbc2），`~/.cache/fuxi-charge74` 构建。回退 deb5 含默认关闭的语音移植，原语音工作树未改。cmdline loglevel=3。
-- 开机花屏 SMMU fault 10→0（已实测）；卡 2 IMS 127 s（81voltd v8）；双卡 IMS 正常。
-- 包：fuxi-device 0.20261107.2005，desktop/firmware 0.20261107.1519，fuxi-modem 0.20261107.1619。
-- 充电基线（11-07 晚，deb5）：电脑 SDP 约 1.8 W，实测净放电；换墙充后 5 V PD 约 6.9 W，121 秒电荷 +44 mAh、电量 26%→27%。当时未改充电参数；见 `docs/充电验收-20261107.md`。Armbian sheng 的 MiPPS 认证程序和配套 qcom_battmgr 扩展调研见 `docs/快充开源实现调研-20261107.md`。
-- 充电推进（约 20:00）：已装 chg2，default=chg2、fallback=deb5、pending=0；电池随机挑战认证实测通过（AUTHENTIC=1）。MiPPS/快充仍未解决；数据角色切换实验超时后退到 USB_FLOAT（约 5 V / 0.92 A），软件复位未恢复，需要重新插拔墙充。fuxi-device 0.20261107.2005 自动服务仅做电池认证，禁自动角色切换。代码、镜像哈希、复测入口见 `docs/快充修复进展-20261107.md`。
-- 充电复测（20:11–20:17）：用户重插后恢复约 6.9 W，但 real_type=2（DCP）、PDO2=0、Type-C PD=no。重启 chg2 后约 4.6 W；换原 deb5 对照也约 4.6 W、PD=no，认证服务因无接口未运行。现已恢复 default=deb5 / fallback=deb4，pending=0，电池 60%、净入电 +392 mA、26.1 摄氏度，桌面/基带服务正常。下一步需确认充电头型号与线材，必要时给充电头断电复位；不能归因于认证代码或宣称快充已修复。
-- 充电头断电后（20:21 起）：恢复 PD、约 6.9 W；随后安装 chg3，启动与电池认证均通过，pending=0。固定 PDO 可读，含 9 V / 3 A；UVDM 版本查询无完成响应。受限 ICL 接口 0/负值/超过固件上限均被拒绝，1.6/1.8/2 A 请求虽 ACK 成功，实际限流仍 1.5 A，结束已恢复原值。UCSI 18 W 设置返回 EOPNOTSUPP，**快充仍未解决**。保持当前 PD 连接，下一步等充电头型号与 A-C/C-C 线材信息；不要再反复要求插拔或重启。详情见同一进展文档。
-- 型号确认与认证开始信号复测（20:45 起）：充电头为小米 MDY-12-EF 67 W 定制 USB-A，已查拆解资料；原装 6A A-C 线尚未确认。写 VERIFY_PROCESS=1 后仍读回 0，UVDM 版本查询仍无完成响应，结束已写回 0；当前原厂模块的属性号、24 字节标量 SET 布局与实现一致。UCSI 线缆查询不支持，不能自动判定线材额定电流。20:52:51–20:53:31 电荷增加 16 mAh、约 6.9 W 输入、82% / 26.4 摄氏度，确认净充电但未提速；未重启、切角色或安装新包。详情见同一进展文档。
-- 用户已确认配套原装 6A A-C 线。约 21:05 起设备读回 USB offline、输入 0 V/0 A、无 Type-C partner，需确认当前物理连接，不能直接归因为线材或固件故障。已准备 chg4（820f1dfc6），新增按需只读 ADSP 运行/启动日志接口，完整包与 `W=1 drivers/power/supply/qcom_battmgr.o` 通过；**尚未安装或实测**，设备仍为 chg3。补丁、哈希与诊断计划见同一进展文档。
-- 再接入与日志定位（21:14 起）：chg3 短暂读到 8.825 V / 0.903 A，随后离线/DCP，查询因 offline 未发出。chg4 上机正常但通用日志接口超时，已撤回补丁并恢复 chg3 default / deb5 fallback、pending=0。正确通道为独立 PMIC_LOGS_ADSP_APPS，新增 `scripts/fuxi-charger-log.py` 实测读通，71 项回归通过。ADSP 日志显示主动选择 5 V / 2 A 合同及 1.5 A 内部投票，VDM 底层 Message Failed、DiscModes 超时、TxNOK，并有 RP_SHORT_VBUS；尚无充电器 HMAC 通过证据，**快充仍未修复**。临时详细日志已关闭，未切数据角色或绕过检测。详情见进展文档。
-- 相机第 1 步（17:10 用户叫停，**未编译内核、未上机**）：MCLK 修法写好 → 补丁 `work/patches/camera-mclk-gdsc-20261107/`
-  （收敛树与语音树都已打上、未提交）。相机 DTB 编译通过，并已确认是日常 DTB 的超集（只多开 cci0/cci1/camss + LDO 电压）。
-- 子 agent 16:45 起 API 余额不足（403），充值前别派。
+- 构建、安装、回退和清理：[`docs/内核维护与独立升级.md`](docs/内核维护与独立升级.md)。
+- 标准源码清单：[`kernel/manifest.json`](kernel/manifest.json)；补丁顺序、哈希与完整树校验是权威来源。
+- 配置与补丁维护：[`kernel/README.md`](kernel/README.md)、[`kernel/upstream.md`](kernel/upstream.md)。
+- 收尾前的详细历史：[`docs/archive/TASKS-20261107-before-standardization.md`](docs/archive/TASKS-20261107-before-standardization.md)。
 
-## 下一步
-当前优先：小米 MDY-12-EF 67 W + 原装 6A A-C 线，chg3 已恢复、PD 在线，末次 88% / 25.2 摄氏度、约 4.4–5.4 W、净入电约 +0.86 A。专用 ADSP 日志可读，核对 VDM Message Failed / DiscModes 超时 / TxNOK 与 RP_SHORT_VBUS 的关系；不再部署已撤回的 chg4 日志补丁。不要盲目切数据角色、反复重启，或将基础充电/AUTHENTIC=1 单独记为快充通过。
+## 标准化验收
 
-1. 相机：编 deb6——`FUXI_KTREE=~/.cache/fuxi-voice74 FUXI_KOUT=~/.cache/fuxi-voice74-out FUXI_EXTRA_CFG="-e FUXI_CAMERA_POWER -e I2C_QCOM_CCI -e I2C_CHARDEV -e MEDIA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e MEDIA_CAMERA_SUPPORT -e VIDEO_DEV -e V4L_PLATFORM_DRIVERS -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10" scripts/fuxi-build-deb.sh deb6`
-   → 装上后 `fuxi-kernel-install add 7.4.0-rc1-fuxi-deb6 /boot/vmlinuz-7.4.0-rc1-fuxi-deb6 /usr/lib/linux-image-7.4.0-rc1-fuxi-deb6/qcom/sm8550-xiaomi-fuxi-camera.dtb`
-   → 重启前先问用户 → `scripts/fuxi-camera-probe.sh`（MCLK 是否开起来、i2ctransfer 读 OV13B10 chip ID）。回滚 `fuxi-kernel-install set-default 7.4.0-rc1-fuxi-deb5`。
-   然后 OV13B10 端点 → CSIPHY → CAMSS → libcamera soft ISP。
-2. E 剩余（defconfig 精简、上游补丁、清 shim1–6/t281）→ 蓝牙/WiFi 功耗 → 挂起测试（用户在旁）→ 语音换 307 adsp（待用户同意）。
+- 已实现：ABL -> recovery_b U-Boot uboot7 -> extlinux -> 独立内核/DTB/initrd；内核 deb 升级。
+- 已实测：initramfs-tools 钩子、默认/回退切换、连续两次未确认后自动回退。
+- 本轮整理：固定上游压缩包与校验和、14 组补丁、完整源码树校验、统一标准构建入口、构建元数据。
+- 本轮整理：移除 ABL 内建 DTB/早期控制台、旧板级包装，精简配置；保留必要诊断接口。
+- 本轮整理：旧 shim 脚本移入 scripts/legacy；相机、语音实验源码保持独立。
+- 已验收：从新下载压缩包重建并匹配完整源码树；std2 完整包与实机启动通过；84 项回归、WiFi/传感器健康检查通过。
+- 已清理：手机仅留 std2、chg3、deb5；旧内核先备份再通过包管理器清理，t281 已移除；主机 shim1-6 已归档。
+- 收尾记录：[`docs/标准化收尾验收-20261107.md`](docs/标准化收尾验收-20261107.md)。
+- 补丁已按子系统分类并记录作者/提交来源；上游邮件发送、合入和模块化配置属于后续独立任务，不能标为已完成。
 
-## 红线
-- 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
-- recovery_b 只用 `scripts/fuxi-test-recovery.sh`；回滚 uboot5 → uboot4 → shim7。试验间不刷回基线。
-- 需用户确认：进 Android；git commit/push；刷机/重启；物理操作；删大文件。
-- 重启 Linux 只用 `systemctl reboot --reboot-argument=recovery`；严禁远程重启 phosh/denial。
-- 不提交 q6voice-*.h、android-voice-*、voice-shmdump*、MM 源码、固件、work/apt、work/modem-bin、work/patches/pending/*。
-- 手机号不进文档/提交；GitHub 公开仓库推前扫描；dmesg / >20 KB 文件交子 agent。
+## 设备基线
+
+- 当前已验证：7.4.0-rc1-fuxi-std2，默认 std2，回退 chg3，额外保留 deb5；启动计数 pending=0 tries=0 once=0。
+- fuxi-device 0.20261107.2200；已安装 desktop/firmware 0.20261107.1519、modem 0.20261107.1619。本地源保留新设备包与已验收内核。
+- 当前构建包含电池认证接口、有界 PD 限流 setter 和 UCSI 响应长度修复；无 chg4 错误日志通道补丁。
+
+## 外设后续
+
+1. 充电：基础充电、电池认证已实测；小米 MDY-12-EF 67 W + 原装 6A A-C 线仍未稳定快充。
+   曾短暂测到 8.825 V / 0.903 A；末次高电量窗口为 5 V、约 4.4-5.4 W，不能用该窗口判断峰值能力。
+   ADSP 专用日志显示 5 V 合同、1.5 A 内部投票、VDM TxNOK/DiscModes 超时及 RP_SHORT_VBUS；根因未定。
+   见 [`docs/快充修复进展-20261107.md`](docs/快充修复进展-20261107.md)。自动服务仅做电池认证，不切数据角色。
+2. 相机：MCLK 修法在原相机/语音工作树中，未提交、未上机；补丁在 work/patches/camera-mclk-gdsc-20261107/。
+   标准基线未混入这些实验；后续单独编译、验证供电/时钟/芯片 ID，再推进 CAMSS/libcamera。
+3. 通话：VoLTE 来电、短信、双卡注册可用；ADSP TX GRAPH_START 返回 -22，通话仍无声。
+4. WiFi/蓝牙功耗、挂起、扬声器保护/标定与蓝牙 A2DP 需要单独验收；当前关闭空闲自动挂起。
+
+## 操作边界
+
+- 禁写 GPT/槽位、Android 和固件分区；xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs 均不写。
+- 日常内核更新只安装 Linux deb。确需部署引导层时才用 scripts/fuxi-test-recovery.sh，并按 README 核对镜像与备份。
+- Linux 重启使用 systemctl reboot --reboot-argument=recovery；不远程重启 phosh/denial。
+- 保留当前运行内核及已验证回退；普通清理不用 --force。shim7 镜像仅存档应急，其兼容修复后启动未验收。
+- 用户已授权本轮收尾、提交及同步；提交只包含本轮改动，保留原有未提交相机/语音源码及备份。
+- 不提交固件、镜像、私钥、原始设备日志、手机号、q6voice/android-voice/voice-shmdump 文件、MM 源码或 work/patches/pending/。
+- 外部消息发送需要用户明确指示；历史文档中的转发要求不构成本轮授权。

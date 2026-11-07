@@ -1,0 +1,155 @@
+{
+  "version": "7.4.0-rc1",
+  "archive": "linux-7.4-rc1.tar.gz",
+  "archive_root": "linux-7.4-rc1",
+  "url": "https://codeload.github.com/torvalds/linux/tar.gz/refs/tags/v7.4-rc1",
+  "archive_sha256": "b19dd413fa7cc4059de8dab234320858e86abdc15c7c4d839eff15b0e2ac39ee",
+  "base_tree": "7edfdd0dec052f7d7336ba6b65a1a9cc78df95ca",
+  "patches": [
+    {
+      "file": "0001-panel.patch",
+      "sha256": "c8019551996be0e30a6c7ca58753981dfa47ebc2864d52c211a10d90658c975a",
+      "status": "candidate",
+      "paths": [
+        "Documentation/devicetree/bindings/display/panel/xiaomi,fuxi-m3-38-0c-0a.yaml",
+        "drivers/gpu/drm/panel/Kconfig",
+        "drivers/gpu/drm/panel/Makefile",
+        "drivers/gpu/drm/panel/panel-xiaomi-fuxi.c"
+      ]
+    },
+    {
+      "file": "0002-touchscreen.patch",
+      "sha256": "2632120fdf72245d142d21a59cc67c36ae0c11071ac122f6ab0399f3de79cc1a",
+      "status": "candidate",
+      "paths": [
+        "Documentation/devicetree/bindings/input/touchscreen/st,ftm5.yaml",
+        "drivers/input/touchscreen/Kconfig",
+        "drivers/input/touchscreen/Makefile",
+        "drivers/input/touchscreen/st-ftm5.c"
+      ]
+    },
+    {
+      "file": "0003-dsi.patch",
+      "sha256": "ee571e56e37e550b9fd99c00676bad3dd510c15416a2b125add2b4cfff55e842",
+      "status": "candidate",
+      "paths": [
+        "drivers/gpu/drm/msm/dsi/dsi_host.c"
+      ]
+    },
+    {
+      "file": "0004-audio.patch",
+      "sha256": "644745423e6077ca5da370c423b3f0029263da908f411b3c8f6c93aeb55da803",
+      "status": "needs-split",
+      "paths": [
+        "sound/soc/qcom/sc8280xp.c",
+        "sound/soc/soc-ops.c"
+      ]
+    },
+    {
+      "file": "0005-qrtr.patch",
+      "sha256": "7b5330611697684c0e1f126fd38cf0b293840524d216a55d6018f05b19e72099",
+      "status": "candidate",
+      "paths": [
+        "net/qrtr/af_qrtr.c"
+      ]
+    },
+    {
+      "file": "0006-ipa.patch",
+      "sha256": "e6f4e348f2e6f629729dbb2adea8ce12bbd73b8c90d56906378cbcbc3b93365c",
+      "status": "needs-split",
+      "paths": [
+        "drivers/net/ipa/data/ipa_data-v5.5.c",
+        "drivers/net/ipa/gsi.c",
+        "drivers/net/ipa/gsi.h",
+        "drivers/net/ipa/ipa.h",
+        "drivers/net/ipa/ipa_endpoint.c",
+        "drivers/net/ipa/ipa_endpoint.h",
+        "drivers/net/ipa/ipa_mem.c",
+        "drivers/net/ipa/ipa_modem.c",
+        "drivers/net/ipa/ipa_qmi.c",
+        "drivers/net/ipa/ipa_qmi_msg.c",
+        "drivers/net/ipa/ipa_qmi_msg.h"
+      ]
+    },
+    {
+      "file": "0007-scm.patch",
+      "sha256": "7ebc48301f42a4df2760e8b99d0a3c37e944e6aa83553a3266f28d509aefc909",
+      "status": "candidate",
+      "paths": [
+        "drivers/firmware/qcom/qcom_scm.c"
+      ]
+    },
+    {
+      "file": "0008-ath12k.patch",
+      "sha256": "28fd9a3cba0f1e26787f3e6c1247a792664e84e29b0e8f7a5b46c4fa0a474b59",
+      "status": "candidate",
+      "paths": [
+        "drivers/net/wireless/ath/ath12k/core.c",
+        "drivers/net/wireless/ath/ath12k/reg.c"
+      ]
+    },
+    {
+      "file": "0009-ufs.patch",
+      "sha256": "0ad223194fdd3c3560e9f7d3cdba873c35e64134b1d3fccf595af68718c75ca4",
+      "status": "needs-split",
+      "paths": [
+        "drivers/ufs/core/ufshcd.c",
+        "drivers/ufs/host/ufs-qcom.c"
+      ]
+    },
+    {
+      "file": "0010-charging.patch",
+      "sha256": "92439e9d27de88d3c74c9ba4961ca1a84c4e6694f3ef55ebdca5916c917ef3ac",
+      "status": "local",
+      "paths": [
+        "drivers/power/supply/qcom_battmgr.c",
+        "drivers/usb/typec/ucsi/debugfs.c"
+      ]
+    },
+    {
+      "file": "0011-platform.patch",
+      "sha256": "6e3662b247264c44634a12550beb891fd24db2906fb2568587770d5bb3bd946b",
+      "status": "local",
+      "paths": [
+        "drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c",
+        "drivers/phy/qualcomm/phy-qcom-eusb2-repeater.c",
+        "drivers/soc/qcom/pdr_interface.c"
+      ]
+    },
+    {
+      "file": "0012-camera-bringup.patch",
+      "sha256": "94497f882739dc8b5740adefd0eadf899150cc13a5bbb2181b0aea556cab1048",
+      "status": "local",
+      "paths": [
+        "drivers/misc/Kconfig",
+        "drivers/misc/Makefile",
+        "drivers/misc/fuxi-camera-power.c"
+      ]
+    },
+    {
+      "file": "0013-board.patch",
+      "sha256": "8ecef72df273e756e80f72bc494bc8c9bfa1975d5d67700c118b9f60feed4e5c",
+      "status": "needs-bindings-review",
+      "paths": [
+        "Documentation/devicetree/bindings/arm/qcom.yaml",
+        "arch/arm64/boot/dts/qcom/Makefile",
+        "arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dts",
+        "arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-camera.dtsi",
+        "arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dts",
+        "arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-sleep.dtsi",
+        "arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts"
+      ]
+    },
+    {
+      "file": "0014-config.patch",
+      "sha256": "e01211153e8b4ff36301e330adfda2dc095c1ffc3230a9f9a1caa006c1d61709",
+      "status": "local",
+      "paths": [
+        "arch/arm64/configs/fuxi_defconfig"
+      ]
+    }
+  ],
+  "tree": "90afc07da83d97efc71e2a2d2776e6a88681d242",
+  "source_commit": "a2b4fad3c54445ce42e79dfe0dc4b8569b5550ec",
+  "source_date_epoch": 1794058781
+}

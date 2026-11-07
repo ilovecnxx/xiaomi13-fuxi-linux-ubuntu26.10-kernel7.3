@@ -1,4 +1,5 @@
 #!/bin/bash
+# 历史 EDK2 实验入口；日常独立内核升级使用 scripts/fuxi-build-deb.sh。
 # 构建一版测试镜像：内核 Image + fuxi-min.dtb（含内置 initramfs）→ EDK2 固件 → work/kbuild/boot-fuxi-<名字>.img
 # 用法: scripts/fuxi-build.sh <名字> [--no-kernel]
 #   内核 cmdline 在 FuxiLinuxBoot.c 的 AsciiSPrint 里；只改 cmdline 时可加 --no-kernel

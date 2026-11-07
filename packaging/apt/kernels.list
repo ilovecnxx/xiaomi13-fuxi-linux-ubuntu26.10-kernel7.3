@@ -1,0 +1,5 @@
+# Only device-validated kernel builds belong in the local apt repository.
+# One work/kbuild/<name>/ directory per line. Update after boot validation.
+std2
+chg3
+deb5

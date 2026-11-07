@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Historical probe path; maintained kernel builds use fuxi-build-deb.sh.
 # Build a temporary fuxi Linux kernel probe and legacy fastboot boot image.
 # This only writes workspace build artifacts; it never invokes adb or fastboot.
 set -euo pipefail

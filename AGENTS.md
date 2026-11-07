@@ -2,13 +2,15 @@
 
 ## Project Structure & Module Organization
 
-This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development harness. `build/linux/` contains the kernel source; `scripts/` holds build, device, deployment, and diagnostic tools, with host-side unit tests in `scripts/tests/`. `work/rootfs-overlay/` contains Linux userspace configuration and services. `docs/` records design, test results, and handoffs; `work/` stores generated builds, logs, device state, and experiments. `tools/` contains supporting utilities. Check `README.md` and `TASKS.md` for current project status before starting device work.
+This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development harness. `kernel/` pins the maintained source archive and subsystem patches; `build/linux-standard/` is reconstructed from that recipe. `build/linux/` and `scripts/legacy/` retain historical ABL/shim work. `scripts/` holds build, device, deployment, and diagnostic tools, with host-side unit tests in `scripts/tests/`. `work/rootfs-overlay/` contains Linux userspace configuration and services. `docs/` records design, test results, and handoffs; `work/` stores generated builds, logs, device state, and experiments. `tools/` contains supporting utilities. Check `README.md` and `TASKS.md` for current project status before starting device work.
 
 ## Build, Test, and Development Commands
 
 - `python3 -m unittest discover -s scripts/tests -v` runs the host-side regression suite.
-- `FUXI_DTB=<variant> scripts/fuxi-build-abl.sh <name>` builds a tracked ABL image and its config, DTB, and JSON metadata under `work/kbuild/`.
-- For a focused kernel check, run `make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 sound/soc/qcom/qdsp6/` from `build/linux/`.
+- `python3 scripts/fuxi-kernel-source.py prepare` reconstructs and verifies `build/linux-standard/` from the pinned archive and patches.
+- `scripts/fuxi-build-deb.sh <name>` builds the independently installable kernel deb, config, provenance and checksums under `work/kbuild/<name>/`.
+- `FUXI_DTB=<variant> scripts/fuxi-build-abl.sh <name>` is the historical ABL image build path; it is not the normal kernel update workflow.
+- For a focused kernel check, use `make -C build/linux-standard O=<output> ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- W=1 <subsystem>/` with a configured output tree.
 - `scripts/fuxi-health.sh` performs read-only checks against the connected Linux device.
 
 Routine Android/Linux system switching may be performed automatically with the documented `adb reboot recovery`, Linux `systemctl reboot`, and test scripts when the task requires it. Image deployment through `scripts/fuxi-test-recovery.sh` reboots the phone and writes `recovery_b`; verify the target image and current recovery instructions in `README.md` before running it. Do not write Android or firmware partitions; follow the explicit safety boundaries in `TASKS.md`.

@@ -1,0 +1,816 @@
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index 636d6f6acecc5e5e9b945aa823a67ebd61a6f707..e2515fe70cf3af0da547d6a44dc7989ef82fe6ec 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -5,10 +5,15 @@
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
+ #include <linux/auxiliary_bus.h>
++#include <linux/debugfs.h>
++#include <linux/fs.h>
++#include <linux/seq_file.h>
++#include <linux/sprintf.h>
+ #include <linux/devm-helpers.h>
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/nvmem-consumer.h>
++#include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+@@ -16,6 +21,8 @@
+ #include <linux/soc/qcom/pmic_glink.h>
+ #include <linux/math.h>
+ #include <linux/units.h>
++#include <linux/unaligned.h>
++#include <linux/hex.h>
+ 
+ #define BATTMGR_CHEMISTRY_LEN	4
+ #define BATTMGR_STRING_LEN	128
+@@ -99,6 +106,10 @@ enum qcom_battmgr_variant {
+ #define WLS_BOOST_EN			6
+ 
+ #define BATTMGR_CHG_CTRL_LIMIT_EN	0x48
++/* Xiaomi SM8550 firmware unsolicited message, every ~10 s; meaning unknown */
++#define BATTMGR_XM_UNSOLICITED		0x50
++#define BATTMGR_XM_PROPERTY_SET		0x51
++#define BATTMGR_XM_PROP_AUTHENTIC	3
+ #define CHARGE_CTRL_START_THR_MIN	50
+ #define CHARGE_CTRL_START_THR_MAX	95
+ #define CHARGE_CTRL_END_THR_MIN		55
+@@ -313,6 +324,8 @@ struct qcom_battmgr {
+ 	struct pmic_glink_client *client;
+ 
+ 	enum qcom_battmgr_variant variant;
++	/* firmware has BATT_CONSTANT_CURRENT before BATT_TEMP, see qcom_battmgr_prop_to_fw() */
++	bool shifted_props;
+ 
+ 	struct power_supply *ac_psy;
+ 	struct power_supply *bat_psy;
+@@ -334,6 +347,21 @@ struct qcom_battmgr {
+ 
+ 	struct work_struct enable_work;
+ 
++	/* fuxi diagnostics: capture of one raw GET reply (debugfs "diag") */
++	bool raw_pending;
++	u32 raw_opcode;
++	u32 raw_prop;
++	u32 raw_value;
++	u32 raw_result;
++	size_t raw_len;
++
++	bool xm_pending;
++	u32 xm_opcode;
++	u32 xm_property;
++	u8 xm_data[40];
++	size_t xm_len;
++	u8 verify_slave;
++
+ 	/*
+ 	 * @lock is used to prevent concurrent power supply requests to the
+ 	 * firmware, as it then stops responding.
+@@ -452,6 +480,26 @@ static const u8 sm8350_bat_prop_map[] = {
+ 	[POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD] = BATT_CHG_CTRL_END_THR,
+ };
+ 
++/*
++ * Xiaomi's SM8550 ADSP firmware inserts BATT_CONSTANT_CURRENT after
++ * BATT_CHG_CTRL_LIM_MAX, so every battery property from BATT_TEMP on is one
++ * higher than in the reference firmware.
++ */
++static unsigned int qcom_battmgr_prop_to_fw(struct qcom_battmgr *battmgr,
++					    unsigned int prop)
++{
++	return battmgr->shifted_props && prop >= BATT_TEMP ? prop + 1 : prop;
++}
++
++static unsigned int qcom_battmgr_prop_from_fw(struct qcom_battmgr *battmgr,
++					      unsigned int prop)
++{
++	if (!battmgr->shifted_props || prop < BATT_TEMP)
++		return prop;
++	/* BATT_TEMP's slot is the constant current property, which is not used */
++	return prop == BATT_TEMP ? UINT_MAX : prop - 1;
++}
++
+ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
+ 					  enum power_supply_property psp)
+ {
+@@ -464,7 +512,8 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
+ 	prop = sm8350_bat_prop_map[psp];
+ 
+ 	mutex_lock(&battmgr->lock);
+-	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, prop, 0);
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
++					    qcom_battmgr_prop_to_fw(battmgr, prop), 0);
+ 	mutex_unlock(&battmgr->lock);
+ 
+ 	return ret;
+@@ -563,6 +612,9 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ 		val->intval = battmgr->status.current_now;
+ 		break;
+ 	case POWER_SUPPLY_PROP_POWER_NOW:
++		/* Xiaomi firmware reports a constant 10 W placeholder here */
++		if (battmgr->shifted_props)
++			return -ENODATA;
+ 		val->intval = battmgr->status.power_now;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+@@ -623,9 +675,16 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+ 		val->intval = battmgr->status.soh_percent;
+ 		break;
+ 	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG:
++		/* 65535 and -1 mean "unknown" on Xiaomi firmware */
++		if (battmgr->shifted_props &&
++		    battmgr->status.discharge_time >= U16_MAX)
++			return -ENODATA;
+ 		val->intval = battmgr->status.discharge_time;
+ 		break;
+ 	case POWER_SUPPLY_PROP_TIME_TO_FULL_AVG:
++		if (battmgr->shifted_props &&
++		    battmgr->status.charge_time >= U16_MAX)
++			return -ENODATA;
+ 		val->intval = battmgr->status.charge_time;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+@@ -1076,12 +1135,69 @@ static const enum power_supply_property sm8350_usb_props[] = {
+ 	POWER_SUPPLY_PROP_USB_TYPE,
+ };
+ 
++static int qcom_battmgr_usb_set_property(struct power_supply *psy,
++				       enum power_supply_property psp,
++				       const union power_supply_propval *val)
++{
++	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
++	int ret;
++
++	if (!battmgr->shifted_props || psp != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT ||
++	    val->intval <= 0)
++		return -EINVAL;
++
++	mutex_lock(&battmgr->lock);
++	if (!battmgr->service_up) {
++		ret = -EAGAIN;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_ONLINE, 0);
++	if (ret)
++		goto out;
++	if (!battmgr->usb.online) {
++		ret = -ENODEV;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_ADAP_TYPE, 0);
++	if (ret)
++		goto out;
++	if (battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD) {
++		ret = -EOPNOTSUPP;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_CURR_MAX, 0);
++	if (ret)
++		goto out;
++	if (val->intval > battmgr->usb.current_max) {
++		ret = -ERANGE;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
++					  USB_INPUT_CURR_LIMIT, val->intval);
++out:
++	mutex_unlock(&battmgr->lock);
++	return ret;
++}
++
++static int qcom_battmgr_usb_property_is_writeable(struct power_supply *psy,
++					       enum power_supply_property psp)
++{
++	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
++
++	return battmgr->shifted_props && psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
++}
++
+ static const struct power_supply_desc sm8350_usb_psy_desc = {
+ 	.name = "qcom-battmgr-usb",
+ 	.type = POWER_SUPPLY_TYPE_USB,
+ 	.properties = sm8350_usb_props,
+ 	.num_properties = ARRAY_SIZE(sm8350_usb_props),
+ 	.get_property = qcom_battmgr_usb_get_property,
++	.set_property = qcom_battmgr_usb_set_property,
++	.property_is_writeable = qcom_battmgr_usb_property_is_writeable,
+ 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
+@@ -1149,6 +1265,16 @@ static int qcom_battmgr_wls_get_property(struct power_supply *psy,
+ 		val->intval = battmgr->wireless.voltage_max;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CURRENT_NOW:
++		/* Xiaomi firmware mirrors the USB input current when no pad is present */
++		if (battmgr->shifted_props) {
++			ret = qcom_battmgr_wls_sm8350_update(battmgr, POWER_SUPPLY_PROP_ONLINE);
++			if (ret < 0)
++				return ret;
++			if (!battmgr->wireless.online) {
++				val->intval = 0;
++				break;
++			}
++		}
+ 		val->intval = battmgr->wireless.current_now;
+ 		break;
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+@@ -1218,6 +1344,11 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
+ 	case NOTIF_WLS_PROPERTY:
+ 		power_supply_changed(battmgr->wls_psy);
+ 		break;
++	case BATTMGR_XM_UNSOLICITED:
++		/* Xiaomi firmware also sends 0x50 as a notification at boot */
++		if (battmgr->shifted_props)
++			break;
++		fallthrough;
+ 	default:
+ 		dev_err(battmgr->dev, "unknown notification: %#x\n", notification);
+ 		break;
+@@ -1406,9 +1537,59 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 		return;
+ 	}
+ 
++	if (battmgr->shifted_props && READ_ONCE(battmgr->xm_pending) &&
++	    (opcode == BATTMGR_XM_UNSOLICITED || opcode == BATTMGR_XM_PROPERTY_SET)) {
++		/* SET ACKs do not reliably echo a property; GET replies do. */
++		if (opcode != battmgr->xm_opcode ||
++		    (opcode == BATTMGR_XM_UNSOLICITED &&
++		     le32_to_cpu(resp->intval.property) != battmgr->xm_property))
++			return;
++
++		if (payload_len != 12 && payload_len != 20 && payload_len != 40) {
++			battmgr->error = -ENODATA;
++		} else {
++			memcpy(battmgr->xm_data, &resp->intval.property, payload_len);
++			battmgr->xm_len = payload_len;
++			if (payload_len == sizeof(resp->intval) && resp->intval.result)
++				battmgr->error = -EREMOTEIO;
++		}
++		WRITE_ONCE(battmgr->xm_pending, false);
++		complete(&battmgr->ack);
++		return;
++	}
++
++	if (READ_ONCE(battmgr->raw_pending) && opcode == battmgr->raw_opcode) {
++		u32 rprop = le32_to_cpu(resp->intval.property);
++
++		if (opcode == BATTMGR_XM_PROPERTY_SET) {
++			/* SET reply layout is not known; take whatever came back */
++			battmgr->raw_value = payload_len >= 8 ? le32_to_cpu(resp->intval.value) : 0;
++			battmgr->raw_result = payload_len >= sizeof(resp->intval) ?
++					      le32_to_cpu(resp->intval.result) : 0;
++			battmgr->raw_prop = rprop;
++			battmgr->raw_len = payload_len;
++			WRITE_ONCE(battmgr->raw_pending, false);
++			battmgr->error = 0;
++			complete(&battmgr->ack);
++			return;
++		}
++		if (payload_len >= sizeof(resp->intval) && rprop == battmgr->raw_prop) {
++			battmgr->raw_value = le32_to_cpu(resp->intval.value);
++			battmgr->raw_result = le32_to_cpu(resp->intval.result);
++			battmgr->raw_len = payload_len;
++			WRITE_ONCE(battmgr->raw_pending, false);
++			battmgr->error = 0;
++			complete(&battmgr->ack);
++			return;
++		}
++		dev_info(battmgr->dev, "diag: skip %#x len %zu prop %u (want %u)\n",
++			 opcode, payload_len, rprop, battmgr->raw_prop);
++	}
++
+ 	switch (opcode) {
+ 	case BATTMGR_BAT_PROPERTY_GET:
+-		property = le32_to_cpu(resp->intval.property);
++		property = qcom_battmgr_prop_from_fw(battmgr,
++						     le32_to_cpu(resp->intval.property));
+ 		if (property == BATT_MODEL_NAME) {
+ 			if (payload_len != sizeof(resp->strval)) {
+ 				dev_warn(battmgr->dev,
+@@ -1461,6 +1642,9 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 			break;
+ 		case BATT_CURR_NOW:
+ 			battmgr->status.current_now = le32_to_cpu(resp->intval.value);
++			/* Xiaomi firmware reports discharge as positive; the ABI wants negative */
++			if (battmgr->shifted_props)
++				battmgr->status.current_now = -(int)battmgr->status.current_now;
+ 			break;
+ 		case BATT_TEMP:
+ 			val = le32_to_cpu(resp->intval.value);
+@@ -1471,24 +1655,38 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 			break;
+ 		case BATT_CHG_COUNTER:
+ 			battmgr->info.charge_count = le32_to_cpu(resp->intval.value);
++			/* Xiaomi firmware reports mAh */
++			if (battmgr->shifted_props)
++				battmgr->info.charge_count *= 1000;
+ 			break;
+ 		case BATT_CYCLE_COUNT:
+ 			battmgr->info.cycle_count = le32_to_cpu(resp->intval.value);
+ 			break;
+ 		case BATT_CHG_FULL_DESIGN:
+ 			battmgr->info.design_capacity = le32_to_cpu(resp->intval.value);
++			/* accept mAh as well as uAh from Xiaomi firmware */
++			if (battmgr->shifted_props && battmgr->info.design_capacity < 100000)
++				battmgr->info.design_capacity *= 1000;
+ 			break;
+ 		case BATT_CHG_FULL:
+ 			battmgr->info.last_full_capacity = le32_to_cpu(resp->intval.value);
++			if (battmgr->shifted_props && battmgr->info.last_full_capacity < 100000)
++				battmgr->info.last_full_capacity *= 1000;
+ 			break;
+ 		case BATT_MODEL_NAME:
+ 			strscpy(battmgr->info.model_number, resp->strval.model, BATTMGR_STRING_LEN);
+ 			break;
+ 		case BATT_TTF_AVG:
+ 			battmgr->status.charge_time = le32_to_cpu(resp->intval.value);
++			/* Xiaomi firmware reports minutes */
++			if (battmgr->shifted_props && battmgr->status.charge_time < U16_MAX)
++				battmgr->status.charge_time *= 60;
+ 			break;
+ 		case BATT_TTE_AVG:
+ 			battmgr->status.discharge_time = le32_to_cpu(resp->intval.value);
++			/* also minutes: 825 at 1142 mAh / 74 mA ≈ 15 h */
++			if (battmgr->shifted_props && battmgr->status.discharge_time < U16_MAX)
++				battmgr->status.discharge_time *= 60;
+ 			break;
+ 		case BATT_RESISTANCE:
+ 			battmgr->status.resistance = le32_to_cpu(resp->intval.value);
+@@ -1548,6 +1746,13 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 			break;
+ 		}
+ 		break;
++	case BATTMGR_USB_PROPERTY_SET:
++		if (payload_len != sizeof(resp->intval)) {
++			battmgr->error = -ENODATA;
++		} else {
++			battmgr->error = resp->intval.result ? -EREMOTEIO : 0;
++		}
++		break;
+ 	case BATTMGR_WLS_PROPERTY_GET:
+ 		property = le32_to_cpu(resp->intval.property);
+ 		if (payload_len != sizeof(resp->intval)) {
+@@ -1587,6 +1792,11 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 	case BATTMGR_CHG_CTRL_LIMIT_EN:
+ 		battmgr->error = 0;
+ 		break;
++	case BATTMGR_XM_UNSOLICITED:
++		/* not a reply, so it must not complete a pending request */
++		if (battmgr->shifted_props)
++			return;
++		fallthrough;
+ 	default:
+ 		dev_warn(battmgr->dev, "unknown message %#x\n", opcode);
+ 		break;
+@@ -1611,6 +1821,9 @@ static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
+ 		qcom_battmgr_sm8350_callback(battmgr, data, len);
+ }
+ 
++static int qcom_battmgr_raw_req(struct qcom_battmgr *battmgr, u32 opcode,
++				u32 prop, u32 val, u32 *value, u32 *result);
++
+ static void qcom_battmgr_enable_worker(struct work_struct *work)
+ {
+ 	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, enable_work);
+@@ -1638,6 +1851,385 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
+ 	}
+ }
+ 
++/*
++ * fuxi diagnostics (read-only): GET-type queries only, results via debugfs.
++ * Reading "diag" queries USB props 0-12 (0x32) and selected Xiaomi props (0x50).
++ */
++static int qcom_battmgr_raw_req(struct qcom_battmgr *battmgr, u32 opcode,
++				u32 prop, u32 val, u32 *value, u32 *result)
++{
++	int ret;
++
++	mutex_lock(&battmgr->lock);
++	battmgr->raw_opcode = opcode;
++	battmgr->raw_prop = prop;
++	battmgr->raw_len = 0;
++	WRITE_ONCE(battmgr->raw_pending, true);
++	ret = qcom_battmgr_request_property(battmgr, opcode, prop, val);
++	WRITE_ONCE(battmgr->raw_pending, false);
++	*value = battmgr->raw_value;
++	*result = battmgr->raw_result;
++	mutex_unlock(&battmgr->lock);
++
++	return ret;
++}
++
++static const struct {
++	u32 id;
++	const char *name;
++} qcom_battmgr_xm_diag_props[] = {
++	{ 0, "RESISTANCE_ID" }, { 2, "CONNECTOR_TEMP" }, { 3, "AUTHENTIC" },
++	{ 4, "BATT_ADAPT_POWER_MATCH" }, { 5, "CHIP_OK" }, { 6, "VBUS_DISABLE" },
++	{ 7, "REAL_TYPE" },
++	{ 12, "VERIFY_PROCESS" }, { 21, "CURRENT_STATE" }, { 22, "ADAPTER_ID" },
++	{ 23, "ADAPTER_SVID" }, { 24, "PD_VERIFED" }, { 25, "PDO2" },
++	{ 26, "UVDM_STATE" }, { 27, "BQ2597X_CHIP_OK" }, { 32, "BQ2597X_BUS_VOLTAGE" },
++	{ 41, "CC_ORIENTATION" }, { 42, "INPUT_SUSPEND" }, { 43, "FASTCHGMODE" },
++	{ 49, "QUICK_CHARGE_TYPE" }, { 50, "APDO_MAX" }, { 51, "POWER_MAX" },
++	{ 97, "TYPEC_MODE" }, { 108, "CC_SHORT_VBUS" }, { 109, "OTG_UI_SUPPORT" },
++	{ 111, "CC_TOGGLE" },
++};
++
++static void qcom_battmgr_diag_one(struct seq_file *s, struct qcom_battmgr *battmgr,
++				  u32 opcode, u32 prop, const char *name)
++{
++	u32 value = 0, result = 0;
++	int ret = qcom_battmgr_raw_req(battmgr, opcode, prop, 0, &value, &result);
++
++	if (ret)
++		seq_printf(s, "%#x %2u %-24s err %d\n", opcode, prop, name, ret);
++	else
++		seq_printf(s, "%#x %2u %-24s %u (%#x) res %u len %zu\n", opcode, prop,
++			   name, value, value, result, battmgr->raw_len);
++}
++
++static int qcom_battmgr_diag_show(struct seq_file *s, void *unused)
++{
++	static const char * const usb_names[] = {
++		"ONLINE", "VOLT_NOW", "VOLT_MAX", "CURR_NOW", "CURR_MAX",
++		"INPUT_CURR_LIMIT", "TYPE", "ADAP_TYPE", "MOISTURE_DET_EN",
++		"MOISTURE_DET_STS", "TEMP", "REAL_TYPE", "TYPEC_COMPLIANT",
++	};
++	struct qcom_battmgr *battmgr = s->private;
++	int i;
++
++	if (!battmgr->service_up)
++		return -EAGAIN;
++
++	for (i = 0; i < ARRAY_SIZE(usb_names); i++)
++		qcom_battmgr_diag_one(s, battmgr, BATTMGR_USB_PROPERTY_GET, i,
++				      usb_names[i]);
++	for (i = 0; i < ARRAY_SIZE(qcom_battmgr_xm_diag_props); i++)
++		qcom_battmgr_diag_one(s, battmgr, BATTMGR_XM_UNSOLICITED,
++				      qcom_battmgr_xm_diag_props[i].id,
++				      qcom_battmgr_xm_diag_props[i].name);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_diag);
++
++/*
++ * fuxi OTG experiment: write "<prop> <value>" to send BC_XM_SET (0x51).
++ * e.g. echo 6 0 > /sys/kernel/debug/qcom_battmgr/xm_set
++ */
++static ssize_t qcom_battmgr_xm_set_write(struct file *file, const char __user *ubuf,
++					 size_t count, loff_t *ppos)
++{
++	struct qcom_battmgr *battmgr = file->private_data;
++	char buf[32];
++	u32 prop, value, reply = 0, result = 0;
++	int ret;
++
++	if (count == 0 || count >= sizeof(buf))
++		return -EINVAL;
++
++	if (copy_from_user(buf, ubuf, count))
++		return -EFAULT;
++	buf[count] = '\0';
++
++	if (sscanf(buf, "%u %u", &prop, &value) != 2)
++		return -EINVAL;
++
++	if (!battmgr->service_up)
++		return -EAGAIN;
++
++	ret = qcom_battmgr_raw_req(battmgr, BATTMGR_XM_PROPERTY_SET, prop, value,
++				   &reply, &result);
++	dev_info(battmgr->dev,
++		 "xm_set prop %u value %u: ret %d reply %u result %u len %zu\n",
++		 prop, value, ret, reply, result, battmgr->raw_len);
++
++	return ret ? ret : count;
++}
++
++static const struct file_operations qcom_battmgr_xm_set_fops = {
++	.open = simple_open,
++	.write = qcom_battmgr_xm_set_write,
++	.llseek = noop_llseek,
++};
++
++/* Xiaomi wire formats follow MiCode fuxi and ianchb/sheng-7.2.2 (GPL-2.0). */
++static int qcom_battmgr_xm_exchange(struct qcom_battmgr *battmgr, u32 opcode,
++				  u32 property, void *request, size_t size,
++				  void *reply, size_t reply_size)
++{
++	int ret;
++
++	mutex_lock(&battmgr->lock);
++	if (!battmgr->service_up) {
++		ret = -EAGAIN;
++		goto out;
++	}
++	battmgr->xm_opcode = opcode;
++	battmgr->xm_property = property;
++	battmgr->xm_len = 0;
++	WRITE_ONCE(battmgr->xm_pending, true);
++	ret = qcom_battmgr_request(battmgr, request, size);
++	WRITE_ONCE(battmgr->xm_pending, false);
++	if (!ret && reply_size) {
++		if (battmgr->xm_len < sizeof(__le32) + reply_size)
++			ret = -ENODATA;
++		else
++			memcpy(reply, battmgr->xm_data + sizeof(__le32), reply_size);
++	}
++out:
++	mutex_unlock(&battmgr->lock);
++	return ret;
++}
++
++static int qcom_battmgr_xm_scalar(struct qcom_battmgr *battmgr, u32 opcode,
++				u32 property, u32 *value)
++{
++	struct qcom_battmgr_property_request request = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
++		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
++		.hdr.opcode = cpu_to_le32(opcode),
++		.property = cpu_to_le32(property),
++		.value = cpu_to_le32(*value),
++	};
++	__le32 reply;
++	int ret;
++
++	ret = qcom_battmgr_xm_exchange(battmgr, opcode, property, &request,
++				     sizeof(request), &reply,
++				     opcode == BATTMGR_XM_UNSOLICITED ? sizeof(reply) : 0);
++	if (!ret && opcode == BATTMGR_XM_UNSOLICITED)
++		*value = le32_to_cpu(reply);
++	return ret;
++}
++
++struct qcom_battmgr_xm_attr {
++	struct device_attribute attr;
++	u32 property;
++};
++
++static ssize_t xm_prop_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct qcom_battmgr_xm_attr *xm = container_of(attr, struct qcom_battmgr_xm_attr, attr);
++	u32 value = 0;
++	int ret;
++
++	ret = qcom_battmgr_xm_scalar(dev_get_drvdata(dev), BATTMGR_XM_UNSOLICITED,
++				    xm->property, &value);
++	return ret ? ret : sysfs_emit(buf, "%u\n", value);
++}
++
++static ssize_t xm_prop_store(struct device *dev, struct device_attribute *attr,
++			     const char *buf, size_t count)
++{
++	struct qcom_battmgr_xm_attr *xm = container_of(attr, struct qcom_battmgr_xm_attr, attr);
++	u32 value;
++	int ret;
++
++	ret = kstrtou32(buf, 0, &value);
++	if (ret)
++		return ret;
++	if (value > 1)
++		return -EINVAL;
++	ret = qcom_battmgr_xm_scalar(dev_get_drvdata(dev), BATTMGR_XM_PROPERTY_SET,
++				    xm->property, &value);
++	return ret ? ret : count;
++}
++
++#define XM_ATTR(_name, _prop, _mode, _store) \
++	static struct qcom_battmgr_xm_attr xm_##_name = { \
++		.attr = __ATTR(_name, _mode, xm_prop_show, _store), .property = _prop, \
++	}
++
++XM_ATTR(authentic, 3, 0600, xm_prop_store);
++XM_ATTR(verify_process, 12, 0600, xm_prop_store);
++XM_ATTR(pd_verifed, 24, 0600, xm_prop_store);
++XM_ATTR(real_type, 7, 0444, NULL);
++XM_ATTR(adapter_id, 22, 0444, NULL);
++XM_ATTR(adapter_svid, 23, 0444, NULL);
++XM_ATTR(pdo2, 25, 0444, NULL);
++XM_ATTR(fastchg_mode, 43, 0444, NULL);
++XM_ATTR(quick_charge_type, 49, 0444, NULL);
++XM_ATTR(apdo_max, 50, 0444, NULL);
++XM_ATTR(power_max, 51, 0444, NULL);
++
++static int qcom_battmgr_xm_digest(struct qcom_battmgr *battmgr, u32 opcode, u8 digest[32])
++{
++	struct {
++		struct pmic_glink_hdr hdr;
++		__le32 property;
++		u8 digest[32];
++		u8 slave;
++		u8 reserved[3];
++	} request = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
++		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
++		.hdr.opcode = cpu_to_le32(opcode),
++		.property = cpu_to_le32(1),
++		.slave = READ_ONCE(battmgr->verify_slave),
++	};
++
++	if (opcode == BATTMGR_XM_PROPERTY_SET)
++		memcpy(request.digest, digest, sizeof(request.digest));
++	return qcom_battmgr_xm_exchange(battmgr, opcode, 1, &request, sizeof(request),
++				       digest, opcode == BATTMGR_XM_UNSOLICITED ? 32 : 0);
++}
++
++static ssize_t verify_digest_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	u8 digest[32];
++	int ret = qcom_battmgr_xm_digest(dev_get_drvdata(dev), BATTMGR_XM_UNSOLICITED, digest);
++
++	return ret ? ret : sysfs_emit(buf, "%*phN\n", (int)sizeof(digest), digest);
++}
++
++static ssize_t verify_digest_store(struct device *dev, struct device_attribute *attr,
++				  const char *buf, size_t count)
++{
++	u8 digest[32];
++	int ret;
++
++	if (count != 64 && !(count == 65 && buf[64] == '\n'))
++		return -EINVAL;
++	ret = hex2bin(digest, buf, sizeof(digest));
++	if (!ret)
++		ret = qcom_battmgr_xm_digest(dev_get_drvdata(dev), BATTMGR_XM_PROPERTY_SET, digest);
++	return ret ? ret : count;
++}
++static DEVICE_ATTR(verify_digest, 0600, verify_digest_show, verify_digest_store);
++
++static ssize_t verify_slave_flag_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%u\n", READ_ONCE(battmgr->verify_slave));
++}
++
++static ssize_t verify_slave_flag_store(struct device *dev, struct device_attribute *attr,
++				      const char *buf, size_t count)
++{
++	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
++	u8 value;
++	int ret = kstrtou8(buf, 0, &value);
++
++	if (ret || value > 1)
++		return ret ? ret : -EINVAL;
++	WRITE_ONCE(battmgr->verify_slave, value);
++	return count;
++}
++static DEVICE_ATTR(verify_slave_flag, 0600, verify_slave_flag_show, verify_slave_flag_store);
++
++static int qcom_battmgr_xm_vdm(struct qcom_battmgr *battmgr, u32 opcode,
++			     u32 property, __le32 data[4])
++{
++	struct {
++		struct pmic_glink_hdr hdr;
++		__le32 property;
++		__le32 data[4];
++	} request = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
++		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
++		.hdr.opcode = cpu_to_le32(opcode),
++		.property = cpu_to_le32(property),
++	};
++
++	if (opcode == BATTMGR_XM_PROPERTY_SET)
++		memcpy(request.data, data, sizeof(request.data));
++	return qcom_battmgr_xm_exchange(battmgr, opcode, property, &request, sizeof(request),
++				       data, opcode == BATTMGR_XM_UNSOLICITED ? 16 : 0);
++}
++
++static ssize_t request_vdm_cmd_show(struct device *dev, struct device_attribute *attr, char *buf)
++{
++	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
++	__le32 auth[4];
++	u32 state = 0, value = 0;
++	int ret;
++
++	ret = qcom_battmgr_xm_scalar(battmgr, BATTMGR_XM_UNSOLICITED, 26, &state);
++	if (ret)
++		return ret;
++	if (state >= 1 && state <= 3) {
++		ret = qcom_battmgr_xm_scalar(battmgr, BATTMGR_XM_UNSOLICITED, 12 + state, &value);
++		return ret ? ret : sysfs_emit(buf, "%u,%u\n", state, value);
++	}
++	if (state == 5) {
++		ret = qcom_battmgr_xm_vdm(battmgr, BATTMGR_XM_UNSOLICITED, 17, auth);
++		return ret ? ret : sysfs_emit(buf, "%u,%08x%08x%08x%08x\n", state,
++			le32_to_cpu(auth[0]), le32_to_cpu(auth[1]),
++			le32_to_cpu(auth[2]), le32_to_cpu(auth[3]));
++	}
++	return sysfs_emit(buf, "%u,Null\n", state);
++}
++
++static ssize_t request_vdm_cmd_store(struct device *dev, struct device_attribute *attr,
++				    const char *buf, size_t count)
++{
++	struct qcom_battmgr *battmgr = dev_get_drvdata(dev);
++	char hex[34] = {};
++	u8 bytes[16];
++	__le32 data[4];
++	u32 cmd, value = 0;
++	int i, ret;
++
++	if (sscanf(buf, "%u,%33s", &cmd, hex) != 2 || cmd < 1 || cmd > 8)
++		return -EINVAL;
++	if (cmd == 4 || cmd == 5 || cmd == 8) {
++		if (strlen(hex) != 32 || hex2bin(bytes, hex, sizeof(bytes)))
++			return -EINVAL;
++		for (i = 0; i < 4; i++)
++			data[i] = cpu_to_le32(get_unaligned_be32(bytes + 4 * i));
++		ret = qcom_battmgr_xm_vdm(battmgr, BATTMGR_XM_PROPERTY_SET, 12 + cmd, data);
++	} else {
++		if (cmd == 6 || cmd == 7) {
++			if (strlen(hex) != 8 || hex2bin(bytes, hex, 4))
++				return -EINVAL;
++			value = get_unaligned_le32(bytes);
++			if (value > 1)
++				return -EINVAL;
++		} else if (!sysfs_streq(hex, "null")) {
++			return -EINVAL;
++		}
++		ret = qcom_battmgr_xm_scalar(battmgr, BATTMGR_XM_PROPERTY_SET, 12 + cmd, &value);
++	}
++	return ret ? ret : count;
++}
++static DEVICE_ATTR(request_vdm_cmd, 0600, request_vdm_cmd_show, request_vdm_cmd_store);
++
++static struct attribute *qcom_battmgr_xiaomi_attrs[] = {
++	&xm_authentic.attr.attr, &xm_verify_process.attr.attr, &xm_pd_verifed.attr.attr,
++	&xm_real_type.attr.attr, &xm_adapter_id.attr.attr, &xm_adapter_svid.attr.attr,
++	&xm_pdo2.attr.attr, &xm_fastchg_mode.attr.attr, &xm_quick_charge_type.attr.attr,
++	&xm_apdo_max.attr.attr, &xm_power_max.attr.attr,
++	&dev_attr_verify_digest.attr, &dev_attr_verify_slave_flag.attr,
++	&dev_attr_request_vdm_cmd.attr,
++	NULL,
++};
++
++static const struct attribute_group qcom_battmgr_xiaomi_group = {
++	.name = "xiaomi",
++	.attrs = qcom_battmgr_xiaomi_attrs,
++};
++
++static void qcom_battmgr_debugfs_remove(void *data)
++{
++	debugfs_remove_recursive(data);
++}
++
+ static const struct of_device_id qcom_battmgr_of_variants[] = {
+ 	{ .compatible = "qcom,glymur-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
+ 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
+@@ -1685,6 +2277,14 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 	else
+ 		battmgr->variant = QCOM_BATTMGR_SM8350;
+ 
++	/* Xiaomi firmware: shifted property ids and no charge control thresholds */
++	if (of_machine_is_compatible("xiaomi,fuxi")) {
++		battmgr->shifted_props = true;
++		battmgr->variant = QCOM_BATTMGR_SM8350;
++		/* capacities are charge based (uAh), never energy */
++		battmgr->unit = QCOM_BATTMGR_UNIT_mAh;
++	}
++
+ 	ret = qcom_battmgr_charge_control_thresholds_init(battmgr);
+ 	if (ret < 0)
+ 		return dev_err_probe(dev, ret,
+@@ -1752,6 +2352,20 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 
+ 	pmic_glink_client_register(battmgr->client);
+ 
++	if (battmgr->shifted_props) {
++		struct dentry *d;
++
++		dev_set_drvdata(dev, battmgr);
++		ret = devm_device_add_group(dev, &qcom_battmgr_xiaomi_group);
++		if (ret)
++			return ret;
++
++		d = debugfs_create_dir("qcom_battmgr", NULL);
++		debugfs_create_file("diag", 0400, d, battmgr, &qcom_battmgr_diag_fops);
++		debugfs_create_file("xm_set", 0200, d, battmgr, &qcom_battmgr_xm_set_fops);
++		devm_add_action_or_reset(dev, qcom_battmgr_debugfs_remove, d);
++	}
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/usb/typec/ucsi/debugfs.c b/drivers/usb/typec/ucsi/debugfs.c
+index 77a0dd75edd3c37aa9509389dcfddb4d414d1888..8dfdd2e3a76cb93041b7da5ef690f0622bda8662 100644
+--- a/drivers/usb/typec/ucsi/debugfs.c
++++ b/drivers/usb/typec/ucsi/debugfs.c
+@@ -60,7 +60,8 @@ static int ucsi_cmd(void *data, u64 val)
+ 	case UCSI_GET_LPM_PPM_INFO:
+ 		ret = ucsi_send_command(ucsi, val,
+ 					&ucsi->debugfs->response,
+-					sizeof(ucsi->debugfs->response));
++					 min_t(size_t, sizeof(ucsi->debugfs->response),
++					       UCSI_MAX_DATA_LENGTH(ucsi)));
+ 		break;
+ 	default:
+ 		ret = -EOPNOTSUPP;

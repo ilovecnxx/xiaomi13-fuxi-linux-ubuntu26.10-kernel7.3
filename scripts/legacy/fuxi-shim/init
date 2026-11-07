@@ -1,6 +1,6 @@
 #!/bin/busybox sh
 # fuxi 引导层（shim）initramfs 的 /init：ABL → shim 内核（recovery_b）→ 本脚本 → kexec 根分区 /boot 里的内核。
-# 构建：scripts/fuxi-build-shim.sh；DTB：sm8550-xiaomi-fuxi-shim.dts（不起 ADSP/基带/PCIe，nolpi）。
+# 历史应急路径：scripts/legacy/fuxi-build-shim.sh；只用于旧 fuxi/legacy-shim 源码树。
 #
 # 根分区（/dev/sda33）/boot/fuxi/ 布局：
 #   default             默认条目名（一行）

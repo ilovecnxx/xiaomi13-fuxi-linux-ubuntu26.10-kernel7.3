@@ -1,7 +1,7 @@
 # 由 fuxi-device 包装到 /usr/lib/systemd/system/（预设启用，见 80-fuxi-device.preset）。
 # 目标系统正常起到 multi-user 后确认本次启动：
 #   - U-Boot 引导：fuxi-bootcount confirm（清计数块 pending；回退条目在 tries≥2 后起来 → 默认改成回退）
-#   - shim 引导（旧）：删 /boot/fuxi/tries，shim 就继续用默认条目（见 scripts/fuxi-shim/init）
+#   - shim7 应急引导：删 /boot/fuxi/tries，继续用默认条目（见 scripts/legacy/fuxi-shim/init）
 # fuxi.shim：shim 应急模式（shim 内核直接进根分区）不算确认。
 # fuxi.noconfirm：试新内核但不确认（下一次重启照样计数），也用于测试回退。
 [Unit]

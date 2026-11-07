@@ -1,6 +1,6 @@
 #!/bin/sh
-# fuxi 内核条目管理（手机上运行，由 fuxi-device 包装到 /usr/sbin/）。条目在 /boot/fuxi/<条目>/{Image,<dtb>,cmdline}，两种引导层都用：
-#   - shim（kexec）：读 /boot/fuxi/{default,fallback,tries}，布局见 scripts/fuxi-shim/init
+# fuxi 内核条目管理（手机上运行，由 fuxi-device 包装到 /usr/sbin/）。条目在 /boot/fuxi/<条目>/{Image,<dtb>,initrd.img,cmdline}：
+#   - shim7 仅作应急回滚，兼容布局见 scripts/legacy/fuxi-shim/init
 #   - 主线 U-Boot：读本脚本生成的 /boot/extlinux/extlinux.conf（default 第一、fallback 第二、其余按名字），
 #     和 /boot/extlinux/fallback.conf（默认=回退条目）。自动回退靠 fuxi-bootcount 的计数块：换默认条目时 arm，
 #     U-Boot 每次启动未确认的默认条目 tries+1，到 2 改用 fallback.conf；fuxi-boot-ok.service 确认
@@ -10,7 +10,7 @@
 #   fuxi-kernel-install add <条目> <Image|Image.gz|vmlinuz> [<dtb>]（Image.gz 会解压）
 #       装条目并设为默认；当前已确认的条目（本次启动、tries 已被清掉）成为回退。
 #       dtb 省略时用 /usr/lib/linux-image-<条目>/qcom/$FUXI_DTB.dtb（deb 装的位置）。
-#       cmdline 取 /etc/kernel/cmdline（标准位置，含 root=PARTUUID=…），没有它才用 /etc/fuxi/cmdline（旧）。
+#       cmdline 取 /etc/kernel/cmdline（标准位置，含 root=UUID=…），没有它才用 /etc/fuxi/cmdline（旧）。
 #       有 /boot/initrd.img-<条目>（initramfs-tools 生成）就复制进条目，extlinux 加 initrd 行。
 #   fuxi-kernel-install initrd <条目> [<initrd>]   刷新条目里的 initrd（/etc/initramfs/post-update.d/zz-fuxi 调用，
 #       即 update-initramfs -u 之后）；条目不存在就什么也不做。刷新的是默认条目 → 计数块 arm（新 initrd 也要确认）
@@ -36,7 +36,7 @@ check_name() {
 # 原子写一行
 put() { printf '%s\n' "$2" > "$B/.$1.tmp" && mv -f "$B/.$1.tmp" "$B/$1"; }
 get() { cat "$B/$1" 2>/dev/null || true; }
-# 本次启动的条目：shim 在 cmdline 里加 fuxi.entry=<条目>（shim6 起；更老的 shim 没有 → 空）
+# 当前 U-Boot / shim7 都在 cmdline 里传 fuxi.entry=<条目>。
 running_entry() { tr ' ' '\n' < /proc/cmdline | sed -n 's/^fuxi\.entry=//p' | tail -1; }
 
 # 按 /boot/fuxi 的条目重写 /boot/extlinux/extlinux.conf（路径用绝对路径，U-Boot sysboot 在 sda33 根上解析）
@@ -108,7 +108,7 @@ cmd_add() {
   fi
   cp "$dtb" "$t/"
   rd=${FUXI_INITRD:-/boot/initrd.img-$e}
-  # 硬链接 initrd：回滚镜像 shim7 只认 <条目>/initrd（scripts/fuxi-shim/init），没有它 root=UUID 解析不了会 panic
+  # 硬链接 initrd：回滚镜像 shim7 只认 <条目>/initrd，没有它 root=UUID 解析不了会 panic
   if [ -f "$rd" ]; then cp "$rd" "$t/initrd.img"; ln -f "$t/initrd.img" "$t/initrd"; fi
   tr '\n' ' ' < "$FUXI_CMDLINE_FILE" | sed 's/ *$//' > "$t/cmdline"
   echo >> "$t/cmdline"
@@ -117,8 +117,6 @@ cmd_add() {
   rm -rf "$B/$e"
   mv "$t" "$B/$e"
   cur=$(running_entry)
-  # 老 shim 没传 fuxi.entry：本次启动的就是改之前的 default（应急模式 fuxi.shim 除外）
-  [ -n "$cur" ] || grep -qw fuxi.shim /proc/cmdline || cur=$(get default)
   if [ ! -e "$B/tries" ] && [ -n "$cur" ] && [ "$cur" != "$e" ] && [ -d "$B/$cur" ]; then
     put fallback "$cur"
   fi
