@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -136,13 +137,22 @@ class SmsPersistenceTest(unittest.TestCase):
         payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sms.jsonl"
+            syncs = []
+            real_fsync = os.fsync
+
+            def sync(fd):
+                self.assertEqual(json.loads(path.read_text())["pdu"], "aabb")
+                real_fsync(fd)
+                syncs.append(fd)
 
             def ack(*args):
+                self.assertEqual(len(syncs), 2)
                 self.assertEqual(json.loads(path.read_text())["pdu"], "aabb")
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
             client.send_ack.side_effect = ack
             with patch.object(listener, "SMS_FILE", str(path)), \
+                    patch.object(listener.os, "fsync", side_effect=sync), \
                     patch.object(listener, "Qmi", qmi, create=True), \
                     patch.object(listener, "WMS_CLIENT", client), patch.object(listener, "log"):
                 listener.handle_transfer_route(payload)
@@ -150,11 +160,127 @@ class SmsPersistenceTest(unittest.TestCase):
 
     def test_save_failure_never_acks(self):
         client = Mock()
-        payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 0, 0])
-        with patch.object(listener.os, "open", side_effect=OSError("disk full")), \
+        payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+        with patch.object(listener.os, "open", side_effect=OSError("disk full")) as open_file, \
                 patch.object(listener, "WMS_CLIENT", client), patch.object(listener, "log"):
             listener.handle_transfer_route(payload)
+        open_file.assert_called_once()
         client.send_ack.assert_not_called()
+
+
+    def test_file_or_directory_sync_failure_never_acks(self):
+        payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+        for failure_index in (0, 1):
+            with self.subTest(failure_index=failure_index), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "sms.jsonl"
+                client = Mock()
+                effects = [None] * failure_index + [OSError("sync failed")]
+                with patch.object(listener, "SMS_FILE", str(path)), \
+                        patch.object(listener.os, "fsync", side_effect=effects), \
+                        patch.object(listener, "WMS_CLIENT", client), patch.object(listener, "log"):
+                    listener.handle_transfer_route(payload)
+                client.send_ack.assert_not_called()
+                self.assertEqual(json.loads(path.read_text())["pdu"], "aabb")
+
+    def test_invalid_payload_never_opens_storage_or_acks(self):
+        valid = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+        for payload in ([valid[:size] for size in range(len(valid))] +
+                        [valid + b"\x00", bytes([2]) + valid[1:]]):
+            with self.subTest(size=len(payload)), patch.object(listener.os, "open") as open_file, \
+                    patch.object(listener, "WMS_CLIENT", Mock()) as client, patch.object(listener, "log"):
+                listener.handle_transfer_route(payload)
+                open_file.assert_not_called()
+                client.send_ack.assert_not_called()
+
+    def test_no_ack_requested_still_saves_and_syncs(self):
+        payload = bytes([1]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sms.jsonl"
+            client = Mock()
+            with patch.object(listener, "SMS_FILE", str(path)), \
+                    patch.object(listener.os, "fsync", wraps=os.fsync) as sync, \
+                    patch.object(listener, "WMS_CLIENT", client), patch.object(listener, "log"):
+                listener.handle_transfer_route(payload)
+            self.assertEqual(sync.call_count, 2)
+            self.assertEqual(json.loads(path.read_text())["pdu"], "aabb")
+            client.send_ack.assert_not_called()
+
+    def test_existing_log_is_appended_without_losing_prior_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sms.jsonl"
+            with patch.object(listener, "SMS_FILE", str(path)), patch.object(listener, "log"):
+                for txn, pdu in ((42, b"\xaa\xbb"), (43, b"\xcc\xdd")):
+                    listener.handle_transfer_route(bytes([1]) + txn.to_bytes(4, "little") +
+                                                   bytes([6, len(pdu), 0]) + pdu)
+            messages = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual([m["txn"] for m in messages], [42, 43])
+            self.assertEqual([m["pdu"] for m in messages], ["aabb", "ccdd"])
+
+    def test_symlink_log_is_rejected_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            target.write_text("unchanged")
+            path = Path(directory) / "sms.jsonl"
+            path.symlink_to(target)
+            payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+            client = Mock()
+            with patch.object(listener, "SMS_FILE", str(path)), \
+                    patch.object(listener, "WMS_CLIENT", client), patch.object(listener, "log"):
+                listener.handle_transfer_route(payload)
+            self.assertEqual(target.read_text(), "unchanged")
+            client.send_ack.assert_not_called()
+
+
+class IndicationFrameTest(unittest.TestCase):
+    @staticmethod
+    def frame(body, service=5, message=1):
+        header = b"\x80" + bytes([service, 7, 4, 0, 0]) + message.to_bytes(2, "little")
+        content = header + len(body).to_bytes(2, "little") + body
+        return b"\x01" + (len(content) + 2).to_bytes(2, "little") + content
+
+    def test_complete_frame_preserves_services_and_unknown_tlvs(self):
+        for service in (5, 9):
+            with self.subTest(service=service):
+                frame = self.frame(b"\x10\x02\x00\xaa\xbb\x77\x00\x00", service)
+                self.assertEqual(listener.parse_frame(frame),
+                                 (service, 7, 0, 1, {0x10: b"\xaa\xbb", 0x77: b""}))
+
+    def test_truncated_or_extra_frame_bytes_are_rejected(self):
+        frame = self.frame(b"\x10\x02\x00\xaa\xbb")
+        for value in [frame[:size] for size in range(len(frame))] + [frame + b"\x00"]:
+            with self.subTest(size=len(value)):
+                self.assertIsNone(listener.parse_frame(value))
+
+    def test_invalid_tlv_boundaries_or_duplicates_are_rejected(self):
+        for body in (b"\x10", b"\x10\x00", b"\x10\x02\x00\xaa",
+                     b"\x10\x00\x00\x10\x00\x00"):
+            with self.subTest(body=body):
+                self.assertIsNone(listener.parse_frame(self.frame(body)))
+
+    def test_wrong_qmi_length_is_rejected_even_with_valid_qmux_length(self):
+        frame = bytearray(self.frame(b"\x10\x00\x00"))
+        frame[11:13] = bytes([4, 0])
+        self.assertIsNone(listener.parse_frame(frame))
+
+    def test_empty_voice_and_storage_fields_do_not_raise(self):
+        self.assertEqual(listener.describe(9, 0x2E, {1: b""}), "")
+        self.assertEqual(listener.describe(5, 1, {0x10: b""}), "")
+
+    def test_malformed_indication_never_reaches_sms_handler(self):
+        frame = self.frame(b"\x11\x0a\x00\x00")
+        with patch.object(listener, "handle_transfer_route") as handler, \
+                patch.object(listener, "log"):
+            listener.on_indication(None, frame)
+        handler.assert_not_called()
+
+    def test_complete_indication_passes_exact_payload_to_sms_handler(self):
+        payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
+        frame = self.frame(b"\x11" + len(payload).to_bytes(2, "little") + payload)
+        with patch.object(listener, "handle_transfer_route") as handler, \
+                patch.object(listener, "log") as log:
+            listener.on_indication(None, frame)
+        handler.assert_called_once_with(payload)
+        self.assertNotIn("aabb", str(log.call_args_list))
 
 
 if __name__ == "__main__":

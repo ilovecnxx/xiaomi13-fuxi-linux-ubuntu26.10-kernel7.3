@@ -65,11 +65,19 @@ def parse_frame(b):
     # QMUX 头 6 字节（标记、长度、控制标志、服务、CID）+ QMI 头 7 字节（标志、事务号 2、消息 ID 2、TLV 总长 2）
     if len(b) < 13 or b[0] != 0x01:
         return None
+    if int.from_bytes(b[1:3], "little") + 1 != len(b):
+        return None
     svc, cid, txn = b[4], b[5], int.from_bytes(b[7:9], "little")
     msg_id, tlv_len = int.from_bytes(b[9:11], "little"), int.from_bytes(b[11:13], "little")
+    if tlv_len != len(b) - 13:
+        return None
     tlvs, o = {}, 13
-    while o + 3 <= len(b) and o < 13 + tlv_len:
+    while o < len(b):
+        if len(b) - o < 3:
+            return None
         t, ln = b[o], int.from_bytes(b[o + 1:o + 3], "little")
+        if ln > len(b) - o - 3 or t in tlvs:
+            return None
         tlvs[t] = b[o + 3:o + 3 + ln]
         o += 3 + ln
     return svc, cid, txn, msg_id, tlvs
@@ -78,7 +86,7 @@ def parse_frame(b):
 def describe(svc, msg_id, tlvs):
     # 只解码不含号码和正文的字段
     out = []
-    if svc == 0x09 and msg_id == 0x002E and 0x01 in tlvs:
+    if svc == 0x09 and msg_id == 0x002E and tlvs.get(0x01):
         d = tlvs[0x01]
         n = d[0]
         for i in range(n):
@@ -86,7 +94,7 @@ def describe(svc, msg_id, tlvs):
             if len(c) == 7:
                 out.append(f"call{c[0]}:{CALL_STATES.get(c[1], c[1])},type={c[2]},dir={c[3]},mode={c[4]}")
     elif svc == 0x05 and msg_id == 0x0001:
-        if 0x10 in tlvs:
+        if tlvs.get(0x10):
             out.append(f"stored:storage={tlvs[0x10][0]}")
         d = tlvs.get(0x11)
         if d and len(d) >= 8:
@@ -105,12 +113,27 @@ def ack_cb(src, res):
 def handle_transfer_route(d):
     # TLV 0x11：ack 指示 1B（0=要应答）、transaction id 4B、格式 1B、长度 2B、PDU（与 libqmi 的 getter 一致）。
     # 先把 PDU 落盘再应答：应答后网络不会重发，没存下就丢了。和 MM 一样，格式 CDMA 以外一律按 WCDMA 应答。
+    if len(d) < 8:
+        log("invalid transfer-route header; not saving or acking")
+        return
+    pdu_len = int.from_bytes(d[6:8], "little")
+    if d[0] not in (0, 1) or not pdu_len or pdu_len != len(d) - 8:
+        log("invalid transfer-route length or ack indicator; not saving or acking")
+        return
     ack_ind, txn, fmt = d[0], int.from_bytes(d[1:5], "little"), d[5]
-    pdu = d[8:8 + int.from_bytes(d[6:8], "little")]
+    pdu = d[8:]
     try:
-        fd = os.open(SMS_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(SMS_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": time.strftime("%F %T"), "txn": txn, "format": fmt, "pdu": pdu.hex()}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        # A new log needs its directory entry persisted before acknowledging delivery.
+        directory_fd = os.open(os.path.dirname(SMS_FILE) or ".", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as e:
         log(f"cannot save SMS txn={txn} ({e.strerror}); not acking")
         return
