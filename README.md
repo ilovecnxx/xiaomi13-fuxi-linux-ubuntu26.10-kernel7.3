@@ -8,6 +8,9 @@
 
 开发基线：`7.4.0-rc1-fuxi-std2` 已上机验收，默认 std2、回退 chg3，另留 deb5；固定源码、配置和补丁配方见 `kernel/`。
 标准化收尾记录见 [`验收记录`](docs/标准化收尾验收-20261107.md)，Release 下载仍以各版本说明为准。
+构建环境、持续集成、内核更新与签名发布规则见 [`维护与发布`](docs/内核持续维护与发布.md)。
+新增维护工具的验收不等同于相机、通话、快充完成；对外发布还需真实作者签字和许可证审核。
+本轮构建、故障测试和设备重启结果见 [`维护补强验收`](docs/维护补强验收-20261108.md)。
 
 ## 当前状态
 
@@ -91,8 +94,10 @@ python3 -m unittest discover -s scripts/tests -v
 | `kernel/` | 固定源码清单、分组补丁、作者记录与上游整理计划 |
 | `device-info/` | 本机器件、分区与内核参数快照 |
 | `work/patches/` | 内核与第三方项目的补丁 |
-| `work/rootfs-overlay/` | 用户空间服务与桌面配置 |
-| `work/superterm/`、`work/mihomo-gui/`、`work/dsh-phone/` | 本项目自研的手机应用 |
+| `work/rootfs-overlay/` | 历史用户空间服务与桌面配置 |
+| `apps/` | SuperTerm、Mihomo GUI、DSH 手机前端的权威源码 |
+| `packaging/` | 设备包内容、固定第三方源码配方、构建环境与发布门槛 |
+| `work/` | 本地构建、日志、实验与设备状态；旧 overlay 只作历史参考 |
 
 ## 操作边界
 
@@ -102,7 +107,8 @@ python3 -m unittest discover -s scripts/tests -v
 
 ## 许可证
 
-仓库目前**没有附带开源许可证**，默认保留所有权利。如需复用其中代码，请先联系作者。
+自有代码没有统一的开源授权，保留已有权利；Linux 和其他第三方代码遵循各自许可证，不能用仓库说明覆盖。
+范围和再分发要求见 [`LICENSE.md`](LICENSE.md)、[`THIRD_PARTY.md`](THIRD_PARTY.md)。
 
 ## 资料入口
 

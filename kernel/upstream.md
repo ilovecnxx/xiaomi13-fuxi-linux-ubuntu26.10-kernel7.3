@@ -39,3 +39,26 @@ patch, primarily line-length/style warnings). Sign-off checking was explicitly
 disabled because these are source-reconstruction diffs, not authored email
 patches. Bindings/MAINTAINERS review and the splits above are still required
 before upstream submission.
+
+## Repeatable Review Export
+
+Run `python3 scripts/fuxi-upstream.py work/upstream-review-<unique-name>`.
+This creates one draft per changed path, records checkpatch output and candidate
+maintainers, and reapplies the drafts to a temporary Git index to verify the
+complete maintained tree. It never changes the source checkout or sends mail.
+The author/source history remains in `history.json`.
+
+File-level drafts are an initial review boundary, not a completed semantic split.
+DSI, IPA, UFS, audio and diagnostic changes still require the reviews listed
+above. The generated `review.json` deliberately leaves author sign-off and review
+approvals unset. Real authors must review the exact final email patches and
+provide their DCO sign-offs. Do not fill these fields from synthetic builder
+identities, infer acceptance from get_maintainer output, or mass-add sign-offs.
+
+Bindings checks use the pinned `packaging/build/dtschema-amd64-py314.lock` tools.
+Run `dt_binding_check` for the panel and touchscreen schemas, then full board
+`dtbs_check`; retain warnings/failures, including pre-existing upstream ones.
+The local `xiaomi,fuxi-sndcard` and diagnostic camera nodes need explicit binding
+work before the board can be proposed upstream. Passing example schemas alone
+does not clear the full board. MAINTAINERS entries must be agreed with real
+maintainers before submission.
