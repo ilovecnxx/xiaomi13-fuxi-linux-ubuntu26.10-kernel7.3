@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 
-SOURCE = Path(__file__).resolve().parents[2] / "build/linux/sound/soc/soc-ops.c"
+SOURCE = Path(__file__).resolve().parents[2] / "build/linux-standard/sound/soc/soc-ops.c"
 
 
 class VolumeLimitTest(unittest.TestCase):
