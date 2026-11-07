@@ -108,7 +108,8 @@ cmd_add() {
   fi
   cp "$dtb" "$t/"
   rd=${FUXI_INITRD:-/boot/initrd.img-$e}
-  if [ -f "$rd" ]; then cp "$rd" "$t/initrd.img"; fi
+  # 硬链接 initrd：回滚镜像 shim7 只认 <条目>/initrd（scripts/fuxi-shim/init），没有它 root=UUID 解析不了会 panic
+  if [ -f "$rd" ]; then cp "$rd" "$t/initrd.img"; ln -f "$t/initrd.img" "$t/initrd"; fi
   tr '\n' ' ' < "$FUXI_CMDLINE_FILE" | sed 's/ *$//' > "$t/cmdline"
   echo >> "$t/cmdline"
   (cd "$t" && sha256sum ./* > SHA256SUMS)
@@ -138,6 +139,7 @@ cmd_initrd() {
   cp "$rd" "$B/$e/.initrd.img.tmp"
   sync
   mv -f "$B/$e/.initrd.img.tmp" "$B/$e/initrd.img"
+  ln -f "$B/$e/initrd.img" "$B/$e/initrd"  # 给 shim7 回滚用，见 cmd_add
   (cd "$B/$e" && sha256sum ./Image ./*.dtb ./cmdline ./initrd.img > .SHA256SUMS.tmp && mv -f .SHA256SUMS.tmp SHA256SUMS)
   sync
   gen_extlinux
