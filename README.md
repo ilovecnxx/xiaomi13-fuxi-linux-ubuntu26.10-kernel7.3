@@ -94,6 +94,8 @@ python3 -m unittest discover -s scripts/tests -v
 ```
 
 `scripts/fuxi-test-recovery.sh` 默认测完回 Android，`FUXI_KEEP=1` 留在 Linux。测试前先核对设备、镜像和备份。
+`fuxi-driver-audit.sh` 同时记录指定常驻服务的 CPU 与主线程上下文切换增量、每秒速率和进程身份变化；
+不等同整机唤醒次数或续航测量。事件驱动双卡监听及自动采样结果见 [`持续优化记录`](docs/功耗性能持续优化-20261108.md)。
 
 ## 目录
 
