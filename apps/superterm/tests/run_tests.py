@@ -31,13 +31,12 @@ except Exception as _e:  # noqa: BLE001
     print("Set TMPDIR to a writable path, then re-run:  TMPDIR=/tmp python3 tests/run_tests.py")
     raise SystemExit(3)
 
-loader = unittest.TestLoader()
 suite = unittest.TestSuite()
 dirs = which or ["unit", "integration"]
 for name in dirs:
     d = os.path.join(HERE, name)
     if os.path.isdir(d):
-        suite.addTests(loader.discover(start_dir=d))
+        suite.addTests(unittest.TestLoader().discover(start_dir=d))
 
 verbosity = 2 if "-v" in sys.argv or "--verbose" in sys.argv else 1
 result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
