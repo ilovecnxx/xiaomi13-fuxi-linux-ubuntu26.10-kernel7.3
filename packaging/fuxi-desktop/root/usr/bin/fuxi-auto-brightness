@@ -40,7 +40,7 @@ class Controller:
         self.proxy.connect("notify::g-name-owner", self.owner_changed)
         self.claimed = False
         self.sample = None
-        self.last_written = None
+        self.last_observed = None
         self.adjusted = False
         self.hold_until = 0
         self.error = None
@@ -48,7 +48,7 @@ class Controller:
     def owner_changed(self, *_):
         self.claimed = False
         self.sample = None
-        self.last_written = None
+        self.last_observed = None
 
     def property(self, name):
         value = self.proxy.get_cached_property(name)
@@ -66,7 +66,7 @@ class Controller:
             self.proxy.call_sync("ReleaseLight", None, self.gio.DBusCallFlags.NONE, 2000, None)
         self.claimed = False
         self.sample = None
-        self.last_written = None
+        self.last_observed = None
         self.adjusted = False
 
     def tick(self):
@@ -80,24 +80,24 @@ class Controller:
                 self.proxy.call_sync("ClaimLight", None, self.gio.DBusCallFlags.NONE, 2000, None)
                 self.claimed = True
                 self.sample = self.property("LightLevel")
+                self.last_observed = int((self.backlight / "brightness").read_text())
                 self.hold_until = time.monotonic() + 2
                 return True
-            if self.sample is None or self.property("LightLevelUnit") != "lux":
-                return True
-            maximum = int((self.backlight / "max_brightness").read_text())
             current = int((self.backlight / "brightness").read_text())
             now = time.monotonic()
             # A slider or another controller changed the level: yield for a minute.
-            if self.last_written is not None and current != self.last_written:
+            if self.last_observed is not None and current != self.last_observed:
                 self.hold_until = now + 60
-                self.last_written = current
-            if now < self.hold_until:
+            self.last_observed = current
+            if (now < self.hold_until or self.sample is None
+                    or self.property("LightLevelUnit") != "lux"):
                 return True
+            maximum = int((self.backlight / "max_brightness").read_text())
             target = target_brightness(float(self.sample), maximum)
             value = next_brightness(current, target, maximum)
             if current != value:
                 (self.backlight / "brightness").write_text(str(value))
-                self.last_written = value
+                self.last_observed = value
                 if not self.adjusted:
                     print(f"auto-brightness: light={self.sample} lux; brightness={value}/{maximum}", flush=True)
                     self.adjusted = True

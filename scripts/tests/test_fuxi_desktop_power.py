@@ -100,7 +100,7 @@ class AmbientLightTest(unittest.TestCase):
         controller.glib = Mock(Error=RuntimeError)
         controller.claimed = True
         controller.sample = 100
-        controller.last_written = 1000
+        controller.last_observed = 1000
         controller.adjusted = False
         controller.hold_until = 0
         controller.error = None
@@ -145,7 +145,7 @@ class AmbientLightTest(unittest.TestCase):
             controller = self.controller(root)
             controller.claimed = False
             controller.sample = None
-            controller.last_written = None
+            controller.last_observed = None
             controller.property = lambda name: {"HasAmbientLight": True, "LightLevelUnit": "lux",
                                                  "LightLevel": 100}[name]
             controller.tick()
@@ -153,6 +153,70 @@ class AmbientLightTest(unittest.TestCase):
             controller.hold_until = 0
             controller.tick()
             self.assertLess(int((root / "brightness").read_text()), 1000)
+
+    def test_manual_change_before_first_adjustment_is_held(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = self.controller(root)
+            controller.last_observed = None
+            initial = light.target_brightness(controller.sample, 4095)
+            (root / "brightness").write_text(str(initial))
+            with patch.object(light.time, "monotonic", return_value=100):
+                controller.tick()
+                self.assertFalse(controller.adjusted)
+                (root / "brightness").write_text("2000")
+                controller.tick()
+            self.assertEqual(controller.hold_until, 160)
+            self.assertEqual((root / "brightness").read_text(), "2000")
+
+    def test_manual_change_during_initial_sensor_wait_is_held(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = self.controller(root)
+            controller.claimed = False
+            controller.last_observed = None
+            controller.property = lambda name: {"HasAmbientLight": True, "LightLevelUnit": "lux",
+                                                 "LightLevel": 100}[name]
+            with patch.object(light.time, "monotonic", return_value=100):
+                controller.tick()
+            (root / "brightness").write_text("2000")
+            with patch.object(light.time, "monotonic", return_value=101):
+                controller.tick()
+            self.assertEqual(controller.hold_until, 161)
+            self.assertEqual((root / "brightness").read_text(), "2000")
+
+    def test_manual_change_without_sensor_sample_is_still_observed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = self.controller(root)
+            controller.sample = None
+            (root / "brightness").write_text("2000")
+            with patch.object(light.time, "monotonic", return_value=100):
+                controller.tick()
+            controller.sample = 100
+            with patch.object(light.time, "monotonic", return_value=110):
+                controller.tick()
+            self.assertEqual(controller.hold_until, 160)
+            self.assertEqual((root / "brightness").read_text(), "2000")
+
+    def test_hold_expires_and_own_adjustments_do_not_extend_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = self.controller(root)
+            (root / "brightness").write_text("2000")
+            with patch.object(light.time, "monotonic", return_value=100):
+                controller.tick()
+            with patch.object(light.time, "monotonic", return_value=159):
+                controller.tick()
+            self.assertEqual((root / "brightness").read_text(), "2000")
+            with patch.object(light.time, "monotonic", return_value=160):
+                controller.tick()
+            first = int((root / "brightness").read_text())
+            with patch.object(light.time, "monotonic", return_value=161):
+                controller.tick()
+            self.assertLess(first, 2000)
+            self.assertLess(int((root / "brightness").read_text()), first)
+            self.assertEqual(controller.hold_until, 160)
 
 
 if __name__ == "__main__":
