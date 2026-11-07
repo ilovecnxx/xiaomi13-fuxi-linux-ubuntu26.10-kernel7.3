@@ -1,0 +1,27 @@
+From e3ebcdbc2eb5aedd41d51345af698f041d050890 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sat, 7 Nov 2026 20:28:12 +0800
+Subject: [PATCH 2/2] usb: typec: ucsi: bound debugfs response to the protocol
+ buffer size
+
+---
+ drivers/usb/typec/ucsi/debugfs.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/usb/typec/ucsi/debugfs.c b/drivers/usb/typec/ucsi/debugfs.c
+index 77a0dd75e..8dfdd2e3a 100644
+--- a/drivers/usb/typec/ucsi/debugfs.c
++++ b/drivers/usb/typec/ucsi/debugfs.c
+@@ -60,7 +60,8 @@ static int ucsi_cmd(void *data, u64 val)
+ 	case UCSI_GET_LPM_PPM_INFO:
+ 		ret = ucsi_send_command(ucsi, val,
+ 					&ucsi->debugfs->response,
+-					sizeof(ucsi->debugfs->response));
++					 min_t(size_t, sizeof(ucsi->debugfs->response),
++					       UCSI_MAX_DATA_LENGTH(ucsi)));
+ 		break;
+ 	default:
+ 		ret = -EOPNOTSUPP;
+-- 
+2.55.0
+

@@ -1,0 +1,101 @@
+From ddd260be19c5ea20f289eae9e8526ad28395ea62 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sat, 7 Nov 2026 20:27:58 +0800
+Subject: [PATCH 1/2] power: supply: qcom_battmgr: allow bounded fuxi PD input
+ current votes
+
+---
+ drivers/power/supply/qcom_battmgr.c | 64 +++++++++++++++++++++++++++++
+ 1 file changed, 64 insertions(+)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index dbe735d81..e2515fe70 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -1135,12 +1135,69 @@ static const enum power_supply_property sm8350_usb_props[] = {
+ 	POWER_SUPPLY_PROP_USB_TYPE,
+ };
+ 
++static int qcom_battmgr_usb_set_property(struct power_supply *psy,
++				       enum power_supply_property psp,
++				       const union power_supply_propval *val)
++{
++	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
++	int ret;
++
++	if (!battmgr->shifted_props || psp != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT ||
++	    val->intval <= 0)
++		return -EINVAL;
++
++	mutex_lock(&battmgr->lock);
++	if (!battmgr->service_up) {
++		ret = -EAGAIN;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_ONLINE, 0);
++	if (ret)
++		goto out;
++	if (!battmgr->usb.online) {
++		ret = -ENODEV;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_ADAP_TYPE, 0);
++	if (ret)
++		goto out;
++	if (battmgr->usb.usb_type != POWER_SUPPLY_USB_TYPE_PD) {
++		ret = -EOPNOTSUPP;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
++					  USB_CURR_MAX, 0);
++	if (ret)
++		goto out;
++	if (val->intval > battmgr->usb.current_max) {
++		ret = -ERANGE;
++		goto out;
++	}
++	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
++					  USB_INPUT_CURR_LIMIT, val->intval);
++out:
++	mutex_unlock(&battmgr->lock);
++	return ret;
++}
++
++static int qcom_battmgr_usb_property_is_writeable(struct power_supply *psy,
++					       enum power_supply_property psp)
++{
++	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
++
++	return battmgr->shifted_props && psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
++}
++
+ static const struct power_supply_desc sm8350_usb_psy_desc = {
+ 	.name = "qcom-battmgr-usb",
+ 	.type = POWER_SUPPLY_TYPE_USB,
+ 	.properties = sm8350_usb_props,
+ 	.num_properties = ARRAY_SIZE(sm8350_usb_props),
+ 	.get_property = qcom_battmgr_usb_get_property,
++	.set_property = qcom_battmgr_usb_set_property,
++	.property_is_writeable = qcom_battmgr_usb_property_is_writeable,
+ 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
+@@ -1689,6 +1746,13 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 			break;
+ 		}
+ 		break;
++	case BATTMGR_USB_PROPERTY_SET:
++		if (payload_len != sizeof(resp->intval)) {
++			battmgr->error = -ENODATA;
++		} else {
++			battmgr->error = resp->intval.result ? -EREMOTEIO : 0;
++		}
++		break;
+ 	case BATTMGR_WLS_PROPERTY_GET:
+ 		property = le32_to_cpu(resp->intval.property);
+ 		if (payload_len != sizeof(resp->intval)) {
+-- 
+2.55.0
+
