@@ -24,7 +24,7 @@ CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](d
 | WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
 | 传感器 | 部分支持：加速度、光线、距离、磁场、指南针及陀螺仪已有读数；陀螺仪轴方向、单位、运动响应与其他 SSC 类型未验收，不能等同全部传感器支持 |
 | NFC | 未接通：std2 未启用 `CONFIG_NFC`，没有可用 NFC 设备；读卡、卡模拟和支付均未验收 |
-| GPS / GNSS | 未完成：当前 ModemManager 只暴露 `3gpp-lac-ci` 基站区域信息，没有卫星定位能力；未做搜星/定位验收 |
+| GPS / GNSS | 未完成：MM 重新初始化后公布 GPS 能力，但直接启动仍失败；带客户端身份的限时 LOC 会话已收到定位中/卫星状态报告，没有有效 fix 或原生 NMEA，桌面定位未接通 |
 | 音频（非通话） | ✅ 双扬声器、主麦克风；⚠️ 保护/标定未做，蓝牙耳机 A2DP 未验收 |
 | 电量、充电、调频温控、s2idle | ✅ 可用；⚠️ 续航未达标，空闲自动挂起已关闭 |
 | 浏览器 / 应用 | ✅ Chromium（隔离安装）、Epiphany、文件选择器、Clash、DeepSeek Harness |
@@ -89,6 +89,7 @@ scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
 scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
 scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
+scripts/fuxi-gnss-session.sh 30           # 按需限时 LOC 会话，汇总报告，不保存坐标；不是桌面定位服务
 FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
 python3 -m unittest discover -s scripts/tests -v

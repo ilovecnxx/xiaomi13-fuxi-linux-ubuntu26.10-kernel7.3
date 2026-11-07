@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""Bounded LOC session; aggregate reports only, never print coordinates."""
+import argparse
+import fcntl
+import json
+import math
+import os
+import signal
+import struct
+import subprocess
+
+
+SESSION_ID = 126
+
+
+def preflight(run=subprocess.run):
+    def query(argv):
+        result = run(argv, capture_output=True, text=True, timeout=8,
+                     check=True, env={**os.environ, "LC_ALL": "C"})
+        return result.stdout
+
+    location = json.loads(query(["mmcli", "-m", "any", "--location-status",
+                                 "--output-json"]))["modem"]["location"]
+    enabled = location["enabled"]
+    if not isinstance(enabled, list) or not all(isinstance(s, str) for s in enabled):
+        raise ValueError("unknown location state")
+    if any(s != "3gpp-lac-ci" for s in enabled):
+        raise ValueError("another location source is enabled")
+    nodes = set()
+    for line in query(["qrtr-lookup", "16"]).splitlines():
+        fields = line.split()
+        try:
+            service, _, _, node, _ = map(int, fields[:5])
+        except ValueError:
+            continue
+        if service == 16 and node >= 0:
+            nodes.add(node)
+    if len(nodes) != 1:
+        raise ValueError("LOC discovery must identify exactly one node")
+    return nodes.pop()
+
+
+def position_counts(report, output, satellite_mask):
+    try:
+        if int(output.get_session_id()) != SESSION_ID:
+            return
+        status = int(output.get_session_status())
+    except Exception:
+        report["invalid_reports"] += 1
+        return
+    report["position_reports"] += 1
+    counts = report["session_status_counts"]
+    counts[str(status)] = counts.get(str(status), 0) + 1
+    if status != 0:
+        return
+    try:
+        lat, lon = output.get_latitude(), output.get_longitude()
+        valid = (math.isfinite(lat) and math.isfinite(lon)
+                 and -90 <= lat <= 90 and -180 <= lon <= 180)
+    except Exception:
+        valid = False
+    if not valid:
+        report["invalid_reports"] += 1
+        return
+    report["valid_position_reports"] += 1
+    try:
+        satellite = bool(int(output.get_technology_used()) & satellite_mask)
+        satellites = output.get_satellites_used()
+        if satellite and len(satellites) > 0:
+            report["satellite_fix_reports"] += 1
+    except Exception:
+        pass
+
+
+class Transport:
+    def __init__(self):
+        import gi
+        gi.require_version("Qmi", "1.0")
+        gi.require_version("Qrtr", "1.0")
+        from gi.repository import GLib, Qmi, Qrtr
+        self.GLib, self.Qmi, self.Qrtr = GLib, Qmi, Qrtr
+        self.device = self.client = None
+        self.handlers = []
+        self.interrupted = False
+        self.loop = None
+
+    def interrupt(self, _signum, _frame):
+        self.interrupted = True
+        if self.loop is not None:
+            self.loop.quit()
+
+    def call(self, obj, method, *args):
+        box = []
+        getattr(obj, method)(*args, lambda src, result: box.append(result))
+        context = self.GLib.MainContext.default()
+        while not box:
+            context.iteration(True)
+        finish = method.removesuffix("_async") + "_finish"
+        return getattr(obj, finish)(box[0])
+
+    def open(self, node_id):
+        q = self.Qmi
+        bus = self.call(self.Qrtr.Bus, "new", 1000, None)
+        node = bus.peek_node(node_id)
+        if node is None:
+            raise RuntimeError("LOC node disappeared")
+        self.device = self.call(q.Device, "new_from_node", node, None)
+        self.call(self.device, "open", q.DeviceOpenFlags.PROXY, 8, None)
+        self.client = self.call(self.device, "allocate_client", q.Service.LOC,
+                                q.CID_NONE, 8, None)
+
+    def raw(self, message_id, tlvs):
+        q = self.Qmi
+        message = q.message_new(q.Service.LOC, self.client.get_cid(),
+                                self.client.get_next_transaction_id(), message_id)
+        for kind, data in tlvs:
+            offset = q.message_tlv_write_init(message, kind)
+            for byte in data:
+                q.message_tlv_write_guint8(message, byte)
+            q.message_tlv_write_complete(message, offset)
+        response = self.call(self.device, "command_full", message,
+                             q.MessageContext.new(), 8, None)
+        offset = q.message_tlv_read_init(response, 0x02)[0]
+        _, cursor, result = q.message_tlv_read_guint16(response, offset, 0, q.Endian.LITTLE)
+        _, _, error = q.message_tlv_read_guint16(response, offset, cursor, q.Endian.LITTLE)
+        if result or error:
+            raise RuntimeError("QMI operation failed (%d, %d)" % (result, error))
+
+    def register(self, report):
+        q = self.Qmi
+        flags = q.LocEventRegistrationFlag
+        mask = int(flags.POSITION_REPORT | flags.GNSS_SATELLITE_INFO | flags.NMEA)
+        self.raw(0x21, [(0x01, struct.pack("<Q", mask)), (0x10, b"MHAL"),
+                        (0x11, struct.pack("<I", 1)), (0x12, b"\x00")])
+        satellite_mask = int(q.LocTechnologyUsed.SATELLITE)
+        callbacks = {
+            "position-report": lambda _, output: position_counts(report, output, satellite_mask),
+            "gnss-sv-info": lambda *_: self.increment(report, "sv_reports"),
+            "nmea": lambda *_: self.increment(report, "nmea_reports"),
+        }
+        for name, callback in callbacks.items():
+            self.handlers.append(self.client.connect(name, callback))
+
+    @staticmethod
+    def increment(report, key):
+        report[key] += 1
+
+    def start(self):
+        self.raw(0x22, [(0x01, bytes([SESSION_ID])), (0x10, struct.pack("<I", 1)),
+                        (0x12, struct.pack("<I", 0)), (0x13, struct.pack("<I", 1000))])
+
+    def sample(self, seconds):
+        self.loop = self.GLib.MainLoop()
+        def finish():
+            self.loop.quit()
+            return self.GLib.SOURCE_REMOVE
+        timer = self.GLib.timeout_add(seconds * 1000, finish)
+        try:
+            if not self.interrupted:
+                self.loop.run()
+        finally:
+            if self.GLib.MainContext.default().find_source_by_id(timer):
+                self.GLib.source_remove(timer)
+            self.loop = None
+
+    def stop(self):
+        self.raw(0x23, [(0x01, bytes([SESSION_ID]))])
+
+    def release(self):
+        if self.client is not None:
+            for handler in self.handlers:
+                self.client.disconnect(handler)
+            self.call(self.device, "release_client", self.client,
+                      self.Qmi.DeviceReleaseClientFlags.RELEASE_CID, 8, None)
+            self.client = None
+
+    def close(self):
+        if self.device is not None:
+            self.call(self.device, "close_async", 8, None)
+
+
+def session(transport, node, seconds):
+    report = {"schema_version": 1, "requested_seconds": seconds,
+              "status": "failed", "position_reports": 0, "valid_position_reports": 0,
+              "satellite_fix_reports": 0, "invalid_reports": 0,
+              "sv_reports": 0, "nmea_reports": 0, "session_status_counts": {},
+              "cleanup": {"stop": "not_needed", "release": False, "close": False}}
+    start_attempted = False
+    stage = "open"
+    try:
+        transport.open(node)
+        stage = "register"
+        if not transport.interrupted:
+            transport.register(report)
+        if not transport.interrupted:
+            stage = "start"
+            start_attempted = True
+            transport.start()
+            stage = "sample"
+            transport.sample(seconds)
+        report["status"] = "interrupted" if transport.interrupted else "completed"
+    except Exception:
+        report["failed_stage"] = stage
+    finally:
+        if start_attempted:
+            try:
+                transport.stop()
+                report["cleanup"]["stop"] = "ok"
+            except Exception:
+                report["cleanup"]["stop"] = "failed"
+        for name in ("release", "close"):
+            try:
+                getattr(transport, name)()
+                report["cleanup"][name] = True
+            except Exception:
+                pass
+        cleanup = report["cleanup"]
+        if cleanup["stop"] == "failed" or not cleanup["release"] or not cleanup["close"]:
+            report["status"] = "cleanup_failed"
+    return report
+
+
+def duration(value):
+    seconds = int(value)
+    if not 1 <= seconds <= 120:
+        raise argparse.ArgumentTypeError("seconds must be in 1..120")
+    return seconds
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("seconds", type=duration, nargs="?", default=30)
+    args = parser.parse_args()
+    try:
+        with open("/run/lock/fuxi-gnss-session.lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            node = preflight()
+            transport = Transport()
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, transport.interrupt)
+            report = session(transport, node, args.seconds)
+    except Exception:
+        report = {"schema_version": 1, "status": "preflight_failed"}
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "completed" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
