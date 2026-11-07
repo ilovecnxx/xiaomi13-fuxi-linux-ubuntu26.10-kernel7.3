@@ -6,6 +6,7 @@ BindsTo=plasmamobile.service
 
 [Service]
 User=1000
+NoNewPrivileges=yes
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WAYLAND_DISPLAY=wayland-0
 Environment=QT_QPA_PLATFORM=wayland

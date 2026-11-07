@@ -7,8 +7,8 @@ Ubuntu 的 kwin_wayland 没有链接 QtSensors，不会自己跟随传感器旋�
 """
 import os
 import pathlib
+import signal
 import subprocess
-import time
 
 MAP = {
     "normal": "normal",
@@ -20,28 +20,110 @@ LOCK = pathlib.Path.home() / ".local/state/fuxi/orientation-lock"
 OUTPUT = os.environ.get("FUXI_ROTATE_OUTPUT", "DSI-1")
 
 
-def orientation():
-    r = subprocess.run(
-        ["busctl", "--system", "get-property",
-         "net.hadess.SensorProxy", "/net/hadess/SensorProxy",
-         "net.hadess.SensorProxy", "AccelerometerOrientation"],
-        capture_output=True, text=True)
-    parts = r.stdout.strip().split('"')
-    return parts[1] if len(parts) > 2 else "undefined"
+class Controller:
+    def __init__(self, gio, glib, loop, lock=LOCK, output=OUTPUT):
+        self.gio, self.glib, self.loop = gio, glib, loop
+        self.lock, self.output = lock, output
+        self.claimed = False
+        self.applied = None
+        self.pending = None
+        self.error = None
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        self.monitor = gio.File.new_for_path(str(lock.parent)).monitor_directory(
+            gio.FileMonitorFlags.NONE, None)
+        self.monitor.connect("changed", self.lock_changed)
+        self.proxy = gio.DBusProxy.new_for_bus_sync(
+            gio.BusType.SYSTEM, gio.DBusProxyFlags.NONE, None,
+            "net.hadess.SensorProxy", "/net/hadess/SensorProxy",
+            "net.hadess.SensorProxy", None)
+        self.proxy.connect("g-properties-changed", self.properties_changed)
+        self.proxy.connect("notify::g-name-owner", self.owner_changed)
+        self.schedule()
+
+    def property(self, name):
+        value = self.proxy.get_cached_property(name)
+        return value.unpack() if value is not None else None
+
+    def schedule(self):
+        if self.pending is None:
+            self.pending = self.glib.idle_add(self.update)
+
+    def lock_changed(self, monitor, file, other_file, event):
+        if any(item is not None and item.get_basename() == self.lock.name
+               for item in (file, other_file)):
+            self.schedule()
+
+    def properties_changed(self, proxy, changed, invalidated):
+        relevant = {"HasAccelerometer", "AccelerometerOrientation"}
+        if relevant.intersection(changed.unpack()) or relevant.intersection(invalidated):
+            self.schedule()
+
+    def owner_changed(self, *_):
+        self.claimed = False
+        self.applied = None
+        self.schedule()
+
+    def release(self):
+        try:
+            if self.claimed and self.proxy.get_name_owner():
+                self.proxy.call_sync("ReleaseAccelerometer", None,
+                                     self.gio.DBusCallFlags.NONE, 2000, None)
+        finally:
+            self.claimed = False
+            self.applied = None
+
+    def update(self):
+        self.pending = None
+        try:
+            if (self.lock.exists() or not self.proxy.get_name_owner()
+                    or not self.property("HasAccelerometer")):
+                self.release()
+                return False
+            if not self.claimed:
+                self.proxy.call_sync("ClaimAccelerometer", None,
+                                     self.gio.DBusCallFlags.NONE, 2000, None)
+                self.claimed = True
+            orientation = self.property("AccelerometerOrientation")
+            if orientation in MAP and orientation != self.applied:
+                subprocess.run(
+                    ["kscreen-doctor", f"output.{self.output}.rotation.{MAP[orientation]}"],
+                    capture_output=True, check=True, timeout=5)
+                self.applied = orientation
+        except (OSError, subprocess.SubprocessError, self.glib.Error) as error:
+            self.error = error
+            print(f"auto-rotate: update failed: {error}", flush=True)
+            self.loop.quit()
+        return False
+
+    def close(self):
+        if self.pending is not None:
+            self.glib.source_remove(self.pending)
+            self.pending = None
+        self.monitor.cancel()
+        self.release()
 
 
 def main():
-    last = None
-    while True:
-        o = orientation()
-        if o in MAP and o != last:
-            last = o
-            if not LOCK.exists():
-                subprocess.run(
-                    ["kscreen-doctor", "output.%s.rotation.%s" % (OUTPUT, MAP[o])],
-                    capture_output=True)
-        time.sleep(0.5)
+    import gi
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import Gio, GLib, GLibUnix
+
+    loop = GLib.MainLoop()
+    controller = Controller(Gio, GLib, loop)
+
+    def stop(*_):
+        loop.quit()
+        return False
+
+    signal_add = getattr(GLibUnix, "signal_add", None) or GLib.unix_signal_add
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
+    try:
+        loop.run()
+    finally:
+        controller.close()
+    return 1 if controller.error else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

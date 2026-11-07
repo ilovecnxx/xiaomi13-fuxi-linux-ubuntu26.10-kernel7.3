@@ -1,0 +1,9 @@
+// The system service has no logind session; grant only this fixed unit access.
+polkit.addRule(function(action, subject) {
+    if (action.id == "net.hadess.SensorProxy.claim-sensor" &&
+        subject.user == "fuxi" &&
+        subject.system_unit == "fuxi-autorotate.service" &&
+        subject.no_new_privileges) {
+        return polkit.Result.YES;
+    }
+});

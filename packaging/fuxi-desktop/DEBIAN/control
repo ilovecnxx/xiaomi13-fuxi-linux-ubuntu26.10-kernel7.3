@@ -4,7 +4,7 @@ Architecture: all
 Maintainer: fuxi port <noreply@localhost>
 Section: x11
 Priority: optional
-Depends: fuxi-device, python3, python3-gi, gir1.2-glib-2.0, kbd, systemd
+Depends: fuxi-device, python3, python3-gi, gir1.2-glib-2.0, kbd, systemd, polkitd
 Recommends: denial, phosh, xdg-desktop-portal-gtk
 Suggests: plasma-mobile, kscreen
 Description: Xiaomi 13 (fuxi, SM8550) graphical session glue
