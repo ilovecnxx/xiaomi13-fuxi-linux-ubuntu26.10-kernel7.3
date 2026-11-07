@@ -1,0 +1,22 @@
+From 943150b062e430f78e45f4ad3c1aae35bd328827 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sun, 8 Nov 2026 00:38:52 +0800
+Subject: [PATCH 2/2] media: camss: select the MIPI D-PHY configuration helper
+
+---
+ drivers/media/platform/qcom/camss/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index b51745c94..b18ae4405 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -8,4 +8,5 @@ config VIDEO_QCOM_CAMSS
+ 	select VIDEOBUF2_DMA_SG
+ 	select V4L2_FWNODE
+ 	select GENERIC_PHY
++	select GENERIC_PHY_MIPI_DPHY
+ 	imply PHY_QCOM_MIPI_CSI2
+-- 
+2.55.0
+

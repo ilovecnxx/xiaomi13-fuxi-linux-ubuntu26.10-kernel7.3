@@ -56,7 +56,9 @@ also builds modules if an experimental configuration enables them.
 
 The normal board is `qcom/sm8550-xiaomi-fuxi.dtb`. Camera and sleep variants
 include that board and add their own fragments; they are experimental. The
-uncommitted camera/voice trees are intentionally not folded into this baseline.
+camera series is recorded separately in [`experiments/camera/`](experiments/camera/README.md),
+including capture results and a blocking interconnect failure. Camera/voice
+experiments are intentionally not folded into this baseline.
 
 ## Update the Recipe
 

@@ -1,0 +1,2 @@
+# libcamera's software ISP allocates image buffers from the system DMA heap.
+SUBSYSTEM=="dma_heap", KERNEL=="system", GROUP="video", MODE="0660", TAG+="uaccess"

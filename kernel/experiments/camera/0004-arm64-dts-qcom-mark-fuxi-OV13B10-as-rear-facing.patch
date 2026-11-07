@@ -1,0 +1,24 @@
+From daa11c5cd557b42f2b4b61bddc8aac79d38f9bb4 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sun, 8 Nov 2026 00:53:20 +0800
+Subject: [PATCH] arm64: dts: qcom: mark fuxi OV13B10 as rear facing
+
+---
+ arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-ov13b10.dts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-ov13b10.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-ov13b10.dts
+index 133c418b2..8e25c5f4c 100644
+--- a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-ov13b10.dts
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-ov13b10.dts
+@@ -21,6 +21,7 @@ sensor@36 {
+ 		dovdd-supply = <&vreg_l2c_1p8>;
+ 		avdd-supply = <&cam_ultra_avdd>;
+ 		dvdd-supply = <&vreg_l1c_1p2>;
++		orientation = <1>;
+ 		rotation = <90>;
+ 
+ 		port {
+-- 
+2.55.0
+
