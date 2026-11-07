@@ -9,14 +9,8 @@ import os
 import signal
 import sys
 import time
-import gi
-gi.require_version("Qmi", "1.0")
-gi.require_version("Qrtr", "1.0")
-from gi.repository import GLib, Qmi, Qrtr
 
 SUB = 1
-run_s = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-ctx = GLib.MainContext.default()
 SMS_FILE = "/var/log/fuxi-sim2-sms.jsonl"  # 原始 PDU（含号码和正文），只给 root 读写
 WMS_CLIENT = None
 VOICE_BIND, WMS_BIND, WMS_GET_BINDING = 0x0044, 0x004C, 0x0058
@@ -145,7 +139,52 @@ def on_indication(dev, *args):
     log("indication args:", [type(a).__name__ for a in args])
 
 
+def listen(watchdog, duration, glib, unix):
+    loop = glib.MainLoop()
+    sources = []
+    failed = False
+
+    def stop(*_):
+        loop.quit()
+        return False
+
+    def check():
+        nonlocal failed
+        try:
+            watchdog()
+        except Exception as error:
+            log(f"watchdog failed ({error}); exiting for restart")
+            failed = True
+            return stop()
+        return True
+
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            sources.append(unix.signal_add(glib.PRIORITY_DEFAULT, sig, stop))
+        # 基带或 QRTR 重启后 client 会失效；失败退出后由 systemd 重新绑定。
+        sources.append(glib.timeout_add_seconds(30, check))
+        if duration:
+            sources.append(glib.timeout_add_seconds(duration, stop))
+        loop.run()
+    finally:
+        context = glib.MainContext.default()
+        for source in sources:
+            if context.find_source_by_id(source) is not None:
+                glib.source_remove(source)
+    return 1 if failed else 0
+
+
 def main():
+    run_s = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    if run_s < 0:
+        sys.exit("duration must be nonnegative")
+    import gi
+    gi.require_version("Qmi", "1.0")
+    gi.require_version("Qrtr", "1.0")
+    gi.require_version("GLibUnix", "2.0")
+    global GLib, Qmi, Qrtr, ctx
+    from gi.repository import GLib, GLibUnix, Qmi, Qrtr
+    ctx = GLib.MainContext.default()
     bus = Qrtr.Bus.new_finish(wait(Qrtr.Bus.new, 1000, None)[1])
     node = bus.peek_node(0)
     if node is None:
@@ -169,25 +208,13 @@ def main():
     vin.set_call_notification_events(True)
     voice.indication_register_finish(wait(voice.indication_register, vin, 10, None)[1])
     log("registered WMS MT-message event + VOICE call-notification events; waiting")
-    end = time.time() + run_s if run_s else None
-    stop = []
-    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
-    signal.signal(signal.SIGINT, lambda *_: stop.append(1))
-    next_check = time.time() + 30
-    while not stop and (end is None or time.time() < end):
-        ctx.iteration(False)
-        time.sleep(0.05)
-        if time.time() >= next_check:
-            # 看门狗：基带或 QRTR 重启后 client 会失效，读一次绑定确认；失败就退出，由外部拉起并重新绑定
-            next_check = time.time() + 30
-            try:
-                raw(dev, wms, WMS_GET_BINDING)
-            except Exception as e:
-                log(f"watchdog failed ({e}); exiting for restart")
-                sys.exit(1)
-    for c in (voice, wms):
-        dev.release_client_finish(wait(dev.release_client, c, Qmi.DeviceReleaseClientFlags.RELEASE_CID, 10, None)[1])
-    log("released clients, exit")
+    try:
+        return listen(lambda: raw(dev, wms, WMS_GET_BINDING), run_s, GLib, GLibUnix)
+    finally:
+        for c in (voice, wms):
+            dev.release_client_finish(wait(dev.release_client, c, Qmi.DeviceReleaseClientFlags.RELEASE_CID, 10, None)[1])
+        log("released clients, exit")
 
 
-main()
+if __name__ == "__main__":
+    sys.exit(main())
