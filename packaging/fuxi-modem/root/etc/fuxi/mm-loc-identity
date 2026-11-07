@@ -1,0 +1,2 @@
+# Enable the fuxi LOC client-identity/GPS_RAW path in the packaged ModemManager.
+# Remove only for debugging, then restart ModemManager while no call is active.

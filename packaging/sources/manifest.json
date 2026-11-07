@@ -19,7 +19,8 @@
       {"path": "work/patches/mm-simslot-20261030/mm-shared-qmi-active-slot.diff", "sha256": "5d48b70d1705264e39456e3573d7dbbd560545eed23f81119ccee1066a2e90fd"},
       {"path": "work/patches/mm-netlink-uaf-20261101/mm-netlink-uaf.diff", "sha256": "c26de75d6bc86db7e8d30b221c51df338c0fb17934af53e7d84e041dbc024d68"},
       {"path": "work/patches/mm-sub-bind-20261106/0001-fuxi-dual-sim-subscription-bind.patch", "sha256": "0fe800df3f9aac3708701f82a8c76ad4b73021891e617d8adec2b684de2b8fbe"},
-      {"path": "work/patches/mm-rsrp-quality-20261106/0002-fuxi-rsrp-signal-quality.patch", "sha256": "87b1a67b8b3d5edee0baee4bb72dca8cb32e469a23981d0dc7791ced0d8f8b76"}
+      {"path": "work/patches/mm-rsrp-quality-20261106/0002-fuxi-rsrp-signal-quality.patch", "sha256": "87b1a67b8b3d5edee0baee4bb72dca8cb32e469a23981d0dc7791ced0d8f8b76"},
+      {"path": "packaging/sources/modemmanager-fuxi-loc.patch", "sha256": "0921e0d7231a78f2b48926e72f137cdd5c07334f2a8239b6ac52c428555284b9"}
     ]
   },
   "81voltd": {

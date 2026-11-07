@@ -8,7 +8,7 @@ Depends: fuxi-device, modemmanager (>= 1.25.95), libmm-glib0 (>= 1.25.95), 81vol
 Recommends: gir1.2-gtk-4.0, gir1.2-adw-1
 Description: Xiaomi 13 (fuxi, SM8550) cellular glue for mainline Linux
  Dual-SIM modem support on top of ModemManager / 81voltd / libqmi:
-  - patched ModemManager (SIM slot / subscription binding fixes) and
+  - patched ModemManager (SIM slot / subscription binding, fuxi LOC GPS_RAW) and
     81voltd-sub2 (IMS/VoLTE on SIM 2), installed under /usr/libexec/fuxi and
     switched in with systemd drop-ins
   - fuxi-qmi-proxy (resident qmi-proxy), fuxi-uim-provision (UIM sessions

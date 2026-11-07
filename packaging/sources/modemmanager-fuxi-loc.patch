@@ -1,0 +1,335 @@
+diff --git a/src/mm-fuxi-loc.h b/src/mm-fuxi-loc.h
+new file mode 100644
+index 0000000..767f52d
+--- /dev/null
++++ b/src/mm-fuxi-loc.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef MM_FUXI_LOC_H
++#define MM_FUXI_LOC_H
++
++#include <math.h>
++#include <glib.h>
++
++#define MM_FUXI_LOC_IDENTITY_FILE "/etc/fuxi/mm-loc-identity"
++
++/* LOC UTC timestamps are milliseconds since the Unix epoch. No NMEA is
++ * synthesized: GPS_RAW has no satellite-count or accuracy fields. */
++static GVariant *
++mm_fuxi_loc_raw_dictionary (guint64 timestamp,
++                           gdouble latitude,
++                           gdouble longitude,
++                           gdouble altitude)
++{
++    g_autoptr(GDateTime) date = NULL;
++    g_autofree gchar *time = NULL;
++    g_autofree gchar *utc = NULL;
++    GVariantBuilder builder;
++
++    if (!timestamp || timestamp > G_GUINT64_CONSTANT (253402300799999) ||
++        !isfinite (latitude) || latitude < -90 || latitude > 90 ||
++        !isfinite (longitude) || longitude < -180 || longitude > 180)
++        return NULL;
++    date = g_date_time_new_from_unix_utc ((gint64) (timestamp / 1000));
++    if (!date)
++        return NULL;
++    time = g_date_time_format (date, "%H%M%S");
++    utc = g_strdup_printf ("%s.%03u", time, (guint) (timestamp % 1000));
++    g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sv}"));
++    g_variant_builder_add (&builder, "{sv}", "utc-time", g_variant_new_string (utc));
++    g_variant_builder_add (&builder, "{sv}", "latitude", g_variant_new_double (latitude));
++    g_variant_builder_add (&builder, "{sv}", "longitude", g_variant_new_double (longitude));
++    if (isfinite (altitude))
++        g_variant_builder_add (&builder, "{sv}", "altitude", g_variant_new_double (altitude));
++    return g_variant_ref_sink (g_variant_builder_end (&builder));
++}
++
++#endif
+diff --git a/src/mm-iface-modem-location.c b/src/mm-iface-modem-location.c
+index 8ee334c..9a904de 100644
+--- a/src/mm-iface-modem-location.c
++++ b/src/mm-iface-modem-location.c
+@@ -252,6 +252,33 @@ notify_gps_location_update (MMIfaceModemLocation *self,
+                                        NULL));
+ }
+ 
++void
++mm_iface_modem_location_gps_raw_update (MMIfaceModemLocation *self,
++                                       GVariant *dictionary)
++{
++    MmGdbusModemLocation *skeleton = NULL;
++    g_autoptr(MMLocationGpsRaw) location = NULL;
++    LocationContext *ctx;
++
++    g_object_get (self, MM_IFACE_MODEM_LOCATION_DBUS_SKELETON, &skeleton, NULL);
++    if (!skeleton)
++        return;
++    if (!(mm_gdbus_modem_location_get_enabled (skeleton) & MM_MODEM_LOCATION_SOURCE_GPS_RAW))
++        goto out;
++    location = mm_location_gps_raw_new_from_dictionary (dictionary, NULL);
++    if (!location)
++        goto out;
++    ctx = get_location_context (self);
++    g_set_object (&ctx->location_gps_raw, location);
++    if (ctx->location_gps_raw_last_time == 0 ||
++        time (NULL) - ctx->location_gps_raw_last_time >= (glong) mm_gdbus_modem_location_get_gps_refresh_rate (skeleton)) {
++        ctx->location_gps_raw_last_time = time (NULL);
++        notify_gps_location_update (self, skeleton, NULL, location);
++    }
++out:
++    g_object_unref (skeleton);
++}
++
+ static void
+ location_gps_update_nmea (MMIfaceModemLocation *self,
+                           const gchar          *nmea_trace)
+diff --git a/src/mm-iface-modem-location.h b/src/mm-iface-modem-location.h
+index 0385c01..ada91ed 100644
+--- a/src/mm-iface-modem-location.h
++++ b/src/mm-iface-modem-location.h
+@@ -144,6 +144,8 @@ void mm_iface_modem_location_3gpp_update_lac_tac_ci  (MMIfaceModemLocation *self
+ /* Update GPS location */
+ void mm_iface_modem_location_gps_update (MMIfaceModemLocation *self,
+                                          const gchar *nmea_trace);
++void mm_iface_modem_location_gps_raw_update (MMIfaceModemLocation *self,
++                                             GVariant *dictionary);
+ 
+ /* Update CDMA BS location */
+ void mm_iface_modem_location_cdma_bs_update (MMIfaceModemLocation *self,
+diff --git a/src/mm-shared-qmi.c b/src/mm-shared-qmi.c
+index ba14f17..810927e 100644
+--- a/src/mm-shared-qmi.c
++++ b/src/mm-shared-qmi.c
+@@ -33,6 +33,7 @@
+ #include "mm-sim-qmi.h"
+ #include "mm-shared-qmi.h"
+ #include "mm-modem-helpers-qmi.h"
++#include "mm-fuxi-loc.h"
+ 
+ /* Default session id to use in LOC operations */
+ #define DEFAULT_LOC_SESSION_ID 0x10
+@@ -87,6 +88,7 @@ typedef struct {
+     gulong                          pds_location_event_report_indication_id;
+     QmiClient                      *loc_client;
+     gulong                          loc_location_nmea_indication_id;
++    gulong                          loc_position_indication_id;
+     gchar                         **loc_assistance_data_servers;
+     guint32                         loc_assistance_data_max_file_size;
+     guint32                         loc_assistance_data_max_part_size;
+@@ -119,6 +121,8 @@ private_free (Private *priv)
+         g_object_unref (priv->pds_client);
+     if (priv->loc_location_nmea_indication_id)
+         g_signal_handler_disconnect (priv->loc_client, priv->loc_location_nmea_indication_id);
++    if (priv->loc_position_indication_id)
++        g_signal_handler_disconnect (priv->loc_client, priv->loc_position_indication_id);
+     if (priv->loc_client)
+         g_object_unref (priv->loc_client);
+     if (priv->uim_slot_status_indication_id)
+@@ -5148,6 +5152,10 @@ loc_stop_ready (QmiClientLoc *client,
+             g_signal_handler_disconnect (priv->loc_client, priv->loc_location_nmea_indication_id);
+             priv->loc_location_nmea_indication_id = 0;
+         }
++        if (priv->loc_position_indication_id != 0) {
++            g_signal_handler_disconnect (priv->loc_client, priv->loc_position_indication_id);
++            priv->loc_position_indication_id = 0;
++        }
+         g_clear_object (&priv->loc_client);
+     }
+ 
+@@ -5231,6 +5239,37 @@ pds_location_event_report_indication_cb (QmiClientPds                      *clie
+     }
+ }
+ 
++static void
++loc_position_indication_cb (QmiClientLoc *client,
++                            QmiIndicationLocPositionReportOutput *output,
++                            MMSharedQmi *self)
++{
++    QmiLocSessionStatus status;
++    QmiLocTechnologyUsed technology;
++    guint8 session;
++    guint64 timestamp;
++    gdouble latitude, longitude;
++    gfloat altitude = NAN;
++    g_autoptr(GVariant) dictionary = NULL;
++
++    if (!qmi_indication_loc_position_report_output_get_session_id (output, &session, NULL) ||
++        session != DEFAULT_LOC_SESSION_ID ||
++        !qmi_indication_loc_position_report_output_get_session_status (output, &status, NULL))
++        return;
++    mm_obj_dbg (self, "[LOC] position report: %s", qmi_loc_session_status_get_string (status));
++    if (status != QMI_LOC_SESSION_STATUS_SUCCESS ||
++        !qmi_indication_loc_position_report_output_get_technology_used (output, &technology, NULL) ||
++        !(technology & QMI_LOC_TECHNOLOGY_USED_SATELLITE) ||
++        !qmi_indication_loc_position_report_output_get_utc_timestamp (output, &timestamp, NULL) ||
++        !qmi_indication_loc_position_report_output_get_latitude (output, &latitude, NULL) ||
++        !qmi_indication_loc_position_report_output_get_longitude (output, &longitude, NULL))
++        return;
++    qmi_indication_loc_position_report_output_get_altitude_from_sealevel (output, &altitude, NULL);
++    dictionary = mm_fuxi_loc_raw_dictionary (timestamp, latitude, longitude, altitude);
++    if (dictionary)
++        mm_iface_modem_location_gps_raw_update (MM_IFACE_MODEM_LOCATION (self), dictionary);
++}
++
+ static void
+ loc_location_nmea_indication_cb (QmiClientLoc               *client,
+                                  QmiIndicationLocNmeaOutput *output,
+@@ -5707,6 +5746,123 @@ loc_start_ready (QmiClientLoc *client,
+ }
+ 
+ 
++static void
++fuxi_loc_failed_start_stop_ready (QmiClientLoc *client,
++                                  GAsyncResult *res,
++                                  GTask *task)
++{
++    g_autoptr(QmiMessageLocStopOutput) output = NULL;
++    g_autoptr(GError) error = NULL;
++    GError *start_error = g_task_get_task_data (task);
++
++    output = qmi_client_loc_stop_finish (client, res, &error);
++    if (!output || !qmi_message_loc_stop_output_get_result (output, &error))
++        g_task_return_new_error (task, MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
++                                 "%s; cleanup Stop failed: %s", start_error->message, error->message);
++    else
++        g_task_return_error (task, g_error_copy (start_error));
++    g_object_unref (task);
++}
++
++static void
++fuxi_loc_start_ready (QmiClientLoc *client,
++                      GAsyncResult *res,
++                      GTask *task)
++{
++    g_autoptr(QmiMessageLocStartOutput) output = NULL;
++    g_autoptr(GError) error = NULL;
++    MMSharedQmi *self = g_task_get_source_object (task);
++    Private *priv = get_private (self);
++
++    output = qmi_client_loc_start_finish (client, res, &error);
++    if (!output || !qmi_message_loc_start_output_get_result (output, &error)) {
++        g_autoptr(QmiMessageLocStopInput) input = NULL;
++
++        /* A lost Start reply may still have started the engine. */
++        g_prefix_error (&error, "Couldn't start fuxi GPS engine: ");
++        g_task_set_task_data (task, g_steal_pointer (&error), (GDestroyNotify) g_error_free);
++        input = qmi_message_loc_stop_input_new ();
++        qmi_message_loc_stop_input_set_session_id (input, DEFAULT_LOC_SESSION_ID, NULL);
++        qmi_client_loc_stop (client, input, 10, NULL,
++                             (GAsyncReadyCallback) fuxi_loc_failed_start_stop_ready, task);
++        return;
++    }
++    g_assert (!priv->loc_client);
++    g_assert (!priv->loc_position_indication_id);
++    priv->loc_client = QMI_CLIENT (g_object_ref (client));
++    priv->loc_position_indication_id = g_signal_connect (client, "position-report",
++                                                        G_CALLBACK (loc_position_indication_cb), self);
++    g_task_return_boolean (task, TRUE);
++    g_object_unref (task);
++}
++
++static void
++fuxi_loc_register_ready (QmiDevice *device,
++                         GAsyncResult *res,
++                         GTask *task)
++{
++    g_autoptr(QmiMessage) response = NULL;
++    g_autoptr(GError) error = NULL;
++    g_autoptr(QmiMessageLocStartInput) input = NULL;
++    QmiClient *client;
++    const guint8 *result;
++    guint16 length = 0;
++
++    response = qmi_device_command_full_finish (device, res, &error);
++    if (!response)
++        goto failed;
++    result = qmi_message_get_raw_tlv (response, 0x02, &length);
++    if (!result || length != 4) {
++        g_set_error_literal (&error, MM_CORE_ERROR, MM_CORE_ERROR_FAILED, "Missing LOC registration result");
++        goto failed;
++    }
++    if (result[0] || result[1]) {
++        g_set_error (&error, QMI_PROTOCOL_ERROR, result[2] | ((guint16) result[3] << 8),
++                      "LOC identity registration rejected (QMI %u)", result[2] | ((guint16) result[3] << 8));
++        goto failed;
++    }
++    client = mm_shared_qmi_peek_client (g_task_get_source_object (task), QMI_SERVICE_LOC,
++                                        MM_PORT_QMI_FLAG_DEFAULT, &error);
++    if (!client)
++        goto failed;
++    input = qmi_message_loc_start_input_new ();
++    qmi_message_loc_start_input_set_session_id (input, DEFAULT_LOC_SESSION_ID, NULL);
++    qmi_message_loc_start_input_set_intermediate_report_state (input, QMI_LOC_INTERMEDIATE_REPORT_STATE_DISABLE, NULL);
++    qmi_message_loc_start_input_set_minimum_interval_between_position_reports (input, 1000, NULL);
++    qmi_message_loc_start_input_set_fix_recurrence_type (input, QMI_LOC_FIX_RECURRENCE_TYPE_REQUEST_PERIODIC_FIXES, NULL);
++    qmi_client_loc_start (QMI_CLIENT_LOC (client), input, 10, NULL,
++                          (GAsyncReadyCallback) fuxi_loc_start_ready, task);
++    return;
++
++failed:
++    g_task_return_error (task, g_steal_pointer (&error));
++    g_object_unref (task);
++}
++
++static void
++fuxi_loc_register (QmiClient *client,
++                   GTask *task)
++{
++    g_autoptr(QmiMessage) message = NULL;
++    gsize tlv;
++    const guint8 application[] = {'M', 'H', 'A', 'L'};
++    const guint8 provider[] = {1, 0, 0, 0};
++    const guint8 system_client[] = {0};
++
++    /* libqmi 1.38 has no typed API for the LOC client identity fields. */
++    message = qmi_message_new (QMI_SERVICE_LOC, qmi_client_get_cid (client),
++                               qmi_client_get_next_transaction_id (client), 0x21);
++    tlv = qmi_message_tlv_write_init (message, 0x01, NULL);
++    qmi_message_tlv_write_guint64 (message, QMI_ENDIAN_LITTLE,
++                                  QMI_LOC_EVENT_REGISTRATION_FLAG_POSITION_REPORT, NULL);
++    qmi_message_tlv_write_complete (message, tlv, NULL);
++    qmi_message_add_raw_tlv (message, 0x10, application, sizeof (application), NULL);
++    qmi_message_add_raw_tlv (message, 0x11, provider, sizeof (provider), NULL);
++    qmi_message_add_raw_tlv (message, 0x12, system_client, sizeof (system_client), NULL);
++    qmi_device_command_full (QMI_DEVICE (qmi_client_peek_device (client)), message, NULL, 10, NULL,
++                             (GAsyncReadyCallback) fuxi_loc_register_ready, task);
++}
++
+ static void
+ start_gps_engine (MMSharedQmi         *self,
+                   GAsyncReadyCallback  callback,
+@@ -5746,6 +5902,10 @@ start_gps_engine (MMSharedQmi         *self,
+     if (client) {
+         QmiMessageLocStartInput *input;
+ 
++        if (g_file_test (MM_FUXI_LOC_IDENTITY_FILE, G_FILE_TEST_EXISTS)) {
++            fuxi_loc_register (client, task);
++            return;
++        }
+         input = qmi_message_loc_start_input_new ();
+         qmi_message_loc_start_input_set_session_id (input, DEFAULT_LOC_SESSION_ID, NULL);
+         qmi_message_loc_start_input_set_intermediate_report_state (input, QMI_LOC_INTERMEDIATE_REPORT_STATE_DISABLE, NULL);
+@@ -6458,6 +6618,10 @@ parent_enable_location_gathering_ready (MMIfaceModemLocation *_self,
+ 
+     /* Only setup NMEA traces and start GPS engine if not done already */
+     if (!(priv->enabled_sources & (MM_MODEM_LOCATION_SOURCE_GPS_NMEA | MM_MODEM_LOCATION_SOURCE_GPS_RAW))) {
++        if (g_file_test (MM_FUXI_LOC_IDENTITY_FILE, G_FILE_TEST_EXISTS)) {
++            start_gps_engine (self, (GAsyncReadyCallback) start_gps_engine_ready, task);
++            return;
++        }
+         setup_required_nmea_traces (self,
+                                     (GAsyncReadyCallback)setup_required_nmea_traces_ready,
+                                     task);
+@@ -6542,6 +6706,12 @@ parent_load_capabilities_ready (MMIfaceModemLocation *self,
+                     MM_MODEM_LOCATION_SOURCE_AGPS_MSA |
+                     MM_MODEM_LOCATION_SOURCE_AGPS_MSB);
+ 
++    /* fuxi LOC has no native NMEA output; assistance modes are unvalidated. */
++    if (g_file_test (MM_FUXI_LOC_IDENTITY_FILE, G_FILE_TEST_EXISTS))
++        sources &= ~(MM_MODEM_LOCATION_SOURCE_GPS_NMEA |
++                     MM_MODEM_LOCATION_SOURCE_AGPS_MSA |
++                     MM_MODEM_LOCATION_SOURCE_AGPS_MSB);
++
+     /* So we're done, complete */
+     g_task_return_int (task, sources);
+     g_object_unref (task);
