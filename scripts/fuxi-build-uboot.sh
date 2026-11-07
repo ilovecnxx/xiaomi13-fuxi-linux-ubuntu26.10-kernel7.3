@@ -12,11 +12,31 @@
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${1:-uboot0}"
-U="${FUXI_UBOOT:-$HOME/.cache/u-boot}"
-DTB="${FUXI_UBOOT_DTB:-$B/work/kbuild/standard-out/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dtb}"
-BAIT_DTB="$B/build/edk2-msm/Platform/Xiaomi/sm8550/FdtBlob_compat/fuxi.dtb"
+U="${FUXI_UBOOT:-$B/build/sources/uboot}"
+DTB_OUT="$B/work/kbuild/uboot-dtb-out"
+DTB="${FUXI_UBOOT_DTB:-$DTB_OUT/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dtb}"
+BAIT_DTB="$B/build/sources/boot-tools/fuxi.dtb"
 O="$B/work/kbuild/uboot-out"
 L="$B/work/claude-logs/uboot-build.log"
+case "$NAME" in ''|*[!a-z0-9.-]*) echo 'Invalid build name' >&2; exit 1;; esac
+[ ! -e "$B/work/kbuild/abl-fuxi-$NAME.img" ] || { echo 'Output already exists' >&2; exit 1; }
+python3 "$B/scripts/fuxi-sources.py" check boot-tools
+if [ -z "${FUXI_UBOOT:-}" ]; then
+  python3 "$B/scripts/fuxi-sources.py" check uboot
+else
+  [ "$(git -C "$U" rev-parse HEAD)" = feb8913982e4462c01fd914271f92254a25dc101 ] && \
+    [ -z "$(git -C "$U" status --porcelain)" ] || { echo 'Unpinned or dirty U-Boot' >&2; exit 1; }
+fi
+mkdir -p "$(dirname "$L")" "$O"
+exec 9>"$O/.build.lock"
+flock -n 9 || exit 1
+export SOURCE_DATE_EPOCH=1794058781 KBUILD_BUILD_USER=fuxi KBUILD_BUILD_HOST=builder
+if [ -z "${FUXI_UBOOT_DTB:-}" ]; then
+  python3 "$B/scripts/fuxi-kernel-source.py" check
+  mkdir -p "$DTB_OUT"
+  KM=(make -C "$B/build/linux-standard" O="$DTB_OUT" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j4)
+  { "${KM[@]}" fuxi_defconfig; "${KM[@]}" qcom/sm8550-xiaomi-fuxi.dtb; } > "$L.dtb" 2>&1
+fi
 for f in "$U/Makefile" "$DTB" "$BAIT_DTB" "$B/scripts/fuxi-uboot/fuxi.env"; do [ -f "$f" ] || { echo "缺少 $f"; exit 1; }; done
 M=(make -C "$U" O="$O" CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)")
 mkdir -p "$O"
@@ -50,10 +70,15 @@ cat "$O/u-boot-nodtb.bin" "$W/fuxi.dtb" | gzip -9n > "$W/u-boot.gz"
 cat "$W/u-boot.gz" "$BAIT_DTB" > "$W/kernel-dtb"
 : > "$W/ramdisk"
 OUT="$B/work/kbuild/abl-fuxi-$NAME.img"
-python3 "$B/build/edk2-msm/tools/mkbootimg.py" \
+python3 "$B/build/sources/boot-tools/mkbootimg.py" \
   --header_version 1 --os_version 13.0.0 --os_patch_level 2022-11 \
   --kernel "$W/kernel-dtb" --ramdisk "$W/ramdisk" \
   --base 0x0 --kernel_offset 0x00000000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 \
   --pagesize 4096 --cmdline "" -o "$OUT"
 cp "$O/.config" "${OUT%.img}.config"; cp "$W/fuxi.dtb" "${OUT%.img}.dtb"
-echo "[ok] $OUT $(stat -c %s "$OUT") bytes; U-Boot $(git -C "$U" log -1 --format=%h) $(sha256sum "$OUT" | cut -c1-16)"
+cp "$B/packaging/sources/manifest.json" "${OUT%.img}.sources.json"
+cp "$B/kernel/manifest.json" "${OUT%.img}.kernel.json"
+if [ -f /build-environment.lock ]; then cp /build-environment.lock "${OUT%.img}.environment.lock"; fi
+(cd "$(dirname "$OUT")" && find . -maxdepth 1 -type f -name "abl-fuxi-$NAME.*" ! -name '*.SHA256SUMS' -print0 |
+  LC_ALL=C sort -z | xargs -0 sha256sum) > "${OUT%.img}.SHA256SUMS"
+echo "[ok] $OUT $(stat -c %s "$OUT") bytes; pinned U-Boot feb8913982e4"

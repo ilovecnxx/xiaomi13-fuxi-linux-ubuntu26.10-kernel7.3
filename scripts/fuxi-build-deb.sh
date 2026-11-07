@@ -59,7 +59,7 @@ Maintainer: fuxi <fuxi@localhost>
 Section: kernel
 Priority: optional
 Depends: initramfs-tools, fuxi-device
-Installed-Size: $(du -sk --exclude=DEBIAN "$P" | cut -f1)
+Installed-Size: $(du --apparent-size -sk --exclude=DEBIAN "$P" | cut -f1)
 Description: Linux kernel $KR for Xiaomi 13 (fuxi)
  Image + DTBs (fuxi_defconfig, no built-in initramfs); /etc/kernel/postinst.d/zz-fuxi installs the /boot/fuxi entry.
 EOF
@@ -91,8 +91,11 @@ record = {
     "extra_config": os.environ.get("FUXI_EXTRA_CFG", ""),
     "manifest_sha256": hashlib.sha256((root / "kernel/manifest.json").read_bytes()).hexdigest(),
     "compiler": subprocess.check_output(["aarch64-linux-gnu-gcc", "--version"], text=True).splitlines()[0],
+    "build_environment_sha256": hashlib.sha256(Path("/build-environment.lock").read_bytes()).hexdigest()
+        if Path("/build-environment.lock").exists() else None,
 }
 (output / "build.json").write_text(json.dumps(record, indent=2) + "\n")
 PY
-( cd "$KO" && sha256sum ./*.deb config source build.json > SHA256SUMS )
+if [ -f /build-environment.lock ]; then cp /build-environment.lock "$KO/build-environment.lock"; fi
+( cd "$KO" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS )
 ls -la "$KO"

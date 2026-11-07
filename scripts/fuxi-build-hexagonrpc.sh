@@ -1,13 +1,13 @@
 #!/bin/bash
 # Build the pinned hexagonrpc v0.4.0 + fuxi read-only filesystem patch.
-# Source: work/src/hexagonrpc; patch: work/patches/sensors-startup-20261029/.
+# Source and patches: packaging/sources/manifest.json.
 # This script runs host tests and builds an ARM64 binary; it does not touch a phone.
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
-S="$B/work/src/hexagonrpc"
+S="$B/build/sources/hexagonrpc"
 OUT="$B/work/kbuild/hexagonrpc"
 REV=23a69640bf10dc498226c602c5b5db11d8cb3d8e
-[ "$(git -C "$S" rev-parse HEAD)" = "$REV" ] || { echo 'Expected hexagonrpc v0.4.0 source' >&2; exit 1; }
+python3 "$B/scripts/fuxi-sources.py" check hexagonrpc
 mkdir -p "$OUT"
 W=$(mktemp -d)
 trap 'rm -rf "$W"' EXIT
@@ -32,7 +32,8 @@ aarch64-linux-gnu-gcc -O2 -static -Wall -Wextra -Wno-unused-parameter -Iinclude 
   hexagonrpcd/{aee_error,apps_mem,apps_std,interfaces,hexagonfs,hexagonfs_mapped,hexagonfs_plat_subtype_name,hexagonfs_virt_dir,iobuffer,listener,localctl,rpcd,rpcd_builder}.c \
   libhexagonrpc/{context,fastrpc,interfaces,session}.c \
   -o "$OUT/hexagonrpcd-fuxi"
-sha256sum "$OUT/hexagonrpcd-fuxi" > "$OUT/SHA256SUMS"
-git diff --check
+cp "$S/.fuxi-source.json" "$OUT/source.json"
+[ ! -f /build-environment.lock ] || cp /build-environment.lock "$OUT/build-environment.lock"
+(cd "$OUT" && sha256sum hexagonrpcd-fuxi source.json > SHA256SUMS)
 printf '%s\n' "$REV" > "$OUT/upstream-revision.txt"
 echo "Built $OUT/hexagonrpcd-fuxi"

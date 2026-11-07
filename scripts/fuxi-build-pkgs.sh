@@ -3,22 +3,29 @@
 #   scripts/fuxi-build-pkgs.sh [版本]       版本默认 0.<日期>.<时分>，例如 0.20261107.0930
 # 产物：work/apt/
 #   fuxi-device_<版本>_arm64.deb      packaging/fuxi-device（引导工具、服务、udev、UCM…）
-#   fuxi-modem_<版本>_arm64.deb       packaging/fuxi-modem（双卡/IMS/数据卡）+ work/modem-bin（scripts/fuxi-modem-bin-pull.sh）
+#   fuxi-modem_<版本>_arm64.deb       packaging/fuxi-modem + 固定源码构建的 work/modem-bin
 #   fuxi-desktop_<版本>_all.deb       packaging/fuxi-desktop（Denial/Phosh/Plasma 会话单元、fuxi-session、portal 配置）
 #   fuxi-firmware_<版本>_all.deb       work/firmware-pkg（scripts/fuxi-firmware-pull.sh 拉取；专有，不进 git）
 #   linux-image-*-fuxi-*.deb          仅 packaging/apt/kernels.list 中已验收的内核包（硬链接）
-#   Packages Packages.gz Release SHA256SUMS fuxi.sources fuxi-pin（Release 无签名，fuxi.sources 里 Trusted: yes）
+#   Packages Packages.gz Release SHA256SUMS fuxi.sources fuxi-pin（公开源必须签名；本地源须显式启用）
 # 手机上：rsync work/apt/ → /srv/fuxi-apt/，fuxi.sources → /etc/apt/sources.list.d/，fuxi-pin → /etc/apt/preferences.d/fuxi
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 V="${1:-0.$(date +%Y%m%d.%H%M)}"
-OUT="${FUXI_APT_OUT:-$B/work/apt}"
+DEST="${FUXI_APT_OUT:-$B/work/apt}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+OUT="$TMP/packages"
 mkdir -p "$OUT"
+[ -n "${FUXI_SIGNING_KEY:-}" ] || [ "${FUXI_APT_LOCAL:-0}" = 1 ] || { echo 'Set FUXI_SIGNING_KEY or explicitly FUXI_APT_LOCAL=1' >&2; exit 1; }
+dpkg --validate-version "$V"
+python3 "$B/scripts/fuxi-sources.py" check hexagonrpc modemmanager 81voltd
+python3 "$B/scripts/fuxi-verify-deps.py"
+[ "${FUXI_APT_LOCAL:-0}" = 1 ] || python3 "$B/scripts/fuxi-release-check.py"
 
 # 统一属主 root:root、权限规范化；时间戳固定为提交时间，保证可复现
-SDE=$(git -C "$B" log -1 --format=%ct)
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$B" log -1 --format=%ct)}"
+SDE=$SOURCE_DATE_EPOCH
 build() { # build <包目录> <输出 deb>
 	local d="$1" deb="$2"
 	find "$d" -exec touch -h -d "@$SDE" {} +
@@ -35,6 +42,9 @@ cp -a "$B/packaging/fuxi-device/DEBIAN" "$P/DEBIAN"
 HX="$B/work/kbuild/hexagonrpc/hexagonrpcd-fuxi"
 [ -x "$HX" ] || { echo "缺 $HX，先跑 scripts/fuxi-build-hexagonrpc.sh" >&2; exit 1; }
 install -m755 "$HX" "$P/usr/libexec/fuxi/hexagonrpcd-fuxi"
+mkdir -p "$P/usr/share/doc/fuxi-device/hexagonrpc"
+cp "$B/build/sources/hexagonrpc/COPYING" "$P/usr/share/doc/fuxi-device/hexagonrpc/"
+cp "$B/work/kbuild/hexagonrpc/source.json" "$P/usr/share/doc/fuxi-device/hexagonrpc/"
 # 迁移清单内嵌进 preinst/postinst
 for s in preinst postinst; do
 	python3 - "$P/DEBIAN/$s" "$B/packaging/fuxi-device/migrate.list" <<'EOF'
@@ -57,7 +67,7 @@ build "$P" "$OUT/fuxi-device_${V}_arm64.deb"
 
 echo "== fuxi-modem $V"
 MB="$B/work/modem-bin"
-[ -x "$MB/mm/src/ModemManager" ] && [ -x "$MB/81voltd-sub2" ] || { echo "缺 $MB，先跑 scripts/fuxi-modem-bin-pull.sh" >&2; exit 1; }
+[ -x "$MB/mm/src/ModemManager" ] && [ -x "$MB/81voltd-sub2" ] || { echo "缺 $MB，先跑 scripts/fuxi-build-modem.sh" >&2; exit 1; }
 ( cd "$MB" && sha256sum -c --quiet SHA256SUMS ) || { echo "$MB/SHA256SUMS 校验失败" >&2; exit 1; }
 P="$TMP/fuxi-modem"
 mkdir -p "$P/usr/libexec/fuxi"
@@ -65,6 +75,11 @@ cp -a "$B/packaging/fuxi-modem/root/." "$P/"
 cp -a "$B/packaging/fuxi-modem/DEBIAN" "$P/DEBIAN"
 cp -a "$MB/mm" "$P/usr/libexec/fuxi/mm"
 install -m755 "$MB/81voltd-sub2" "$P/usr/libexec/fuxi/81voltd-sub2"
+mkdir -p "$P/usr/share/doc/fuxi-modem/"{modemmanager,81voltd}
+cp "$B/build/sources/modemmanager/"COPYING* "$P/usr/share/doc/fuxi-modem/modemmanager/"
+cp /usr/share/common-licenses/GPL-2 "$P/usr/share/doc/fuxi-modem/81voltd/"
+cp "$MB/modemmanager-source.json" "$P/usr/share/doc/fuxi-modem/modemmanager/"
+cp "$MB/81voltd-source.json" "$P/usr/share/doc/fuxi-modem/81voltd/"
 python3 - "$P/DEBIAN/postinst" "$B/packaging/fuxi-modem/migrate.list" <<'EOF2'
 import sys
 p, m = sys.argv[1], open(sys.argv[2]).read().rstrip("\n")
@@ -105,7 +120,7 @@ build "$P" "$OUT/fuxi-desktop_${V}_all.deb"
 
 echo "== fuxi-firmware $V"
 FW="$B/work/firmware-pkg"
-if [ -d "$FW/root/usr/lib/firmware" ]; then
+if [ "${FUXI_INCLUDE_FIRMWARE:-0}" = 1 ] && [ -d "$FW/root/usr/lib/firmware" ]; then
 	P="$TMP/fuxi-firmware"
 	mkdir -p "$P/usr/share/fuxi-firmware"  # 不放 /usr/share/doc：Ubuntu dpkg.cfg.d/excludes 会丢掉
 	cp -a "$FW/root/." "$P/"
@@ -121,6 +136,9 @@ else
 fi
 
 echo "== 内核包"
+if [ "${FUXI_APT_SUPPORT_ONLY:-0}" = 1 ]; then
+	echo "   仅构建设备支持包；不要求历史内核产物"
+else
 while read -r name rest; do
 	case "$name" in ''|\#*) continue ;; *[!a-z0-9.]*|.*) echo "非法内核构建名: $name" >&2; exit 1 ;; esac
 	found=0
@@ -132,25 +150,11 @@ while read -r name rest; do
 	done
 	[ "$found" = 1 ] || { echo "缺少已验收内核包 $name" >&2; exit 1; }
 done < "$B/packaging/apt/kernels.list"
-# 防止旧源目录中的实验内核继续进入 Packages。留存于源目录之外，便于追溯。
-for k in "$OUT"/linux-image-*-fuxi-*_arm64.deb; do
-	[ -e "$k" ] || continue
-	approved=0
-	while read -r name rest; do
-		case "$name" in ''|\#*) continue ;; esac
-		if [ -e "$B/work/kbuild/$name/$(basename "$k")" ]; then approved=1; break; fi
-	done < "$B/packaging/apt/kernels.list"
-	if [ "$approved" = 0 ]; then
-		mkdir -p "$B/work/archive/apt-kernels"
-		mv "$k" "$B/work/archive/apt-kernels/"
-	fi
-done
-
-echo "== 索引"
-cp "$B/packaging/apt/fuxi.sources" "$B/packaging/apt/fuxi-pin" "$OUT/"
-( cd "$OUT" && dpkg-scanpackages --multiversion . /dev/null 2>/dev/null > Packages && gzip -9nkf Packages \
-	&& { echo "Origin: fuxi"; echo "Label: fuxi"; echo "Suite: fuxi"; echo "Codename: fuxi"; echo "Architectures: arm64 all";
-	     echo "Date: $(LC_ALL=C date -Ru)"; echo "SHA256:";
-	     for f in Packages Packages.gz; do printf ' %s %s %s\n' "$(sha256sum < $f | cut -d' ' -f1)" "$(stat -c%s $f)" "$f"; done; } > Release \
-	&& sha256sum *.deb Packages > SHA256SUMS )
-echo "   $(grep -c '^Package:' "$OUT/Packages") 个包 → $OUT"
+fi
+echo "== 发布不可变快照"
+cp "$B/packaging/apt/fuxi-pin" "$OUT/"
+PUBLISH=()
+[ "${FUXI_APT_LOCAL:-0}" != 1 ] || PUBLISH+=(--local)
+[ "${FUXI_APT_ADOPT:-0}" != 1 ] || PUBLISH+=(--adopt)
+python3 "$B/scripts/fuxi-apt-publish.py" "$OUT" "$DEST" "${PUBLISH[@]}"
+echo "   $(grep -c '^Package:' "$DEST/Packages") 个包 → $DEST"

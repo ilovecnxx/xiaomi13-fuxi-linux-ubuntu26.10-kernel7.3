@@ -1,0 +1,2 @@
+# Python 3.14 wrapper support; the snapshot's older SWIG is incompatible.
+swig==4.4.1 --hash=sha256:ae3da2bf679a4c942a2c100789395d4d167e7da8286018124e4665f5eff43e31

@@ -1,0 +1,42 @@
+name: Maintenance Checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '20 2 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: maintenance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 dpkg-dev gnupg build-essential libglib2.0-bin gnome-settings-daemon-common
+      - run: bash scripts/fuxi-ci.sh host
+      - run: python3 scripts/fuxi-sources.py prepare
+  kernel:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/fuxi-kernel-source.py prepare
+      - run: FUXI_CONTAINER_ENGINE=docker bash scripts/fuxi-build-env.sh image
+      - run: FUXI_CONTAINER_ENGINE=docker bash scripts/fuxi-build-env.sh run bash scripts/fuxi-ci.sh kernel
+      - run: FUXI_CONTAINER_ENGINE=docker bash scripts/fuxi-build-env.sh run bash scripts/fuxi-ci.sh bindings
+  userspace:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: python3 scripts/fuxi-sources.py prepare hexagonrpc modemmanager 81voltd
+      - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh image
+      - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh run bash scripts/fuxi-ci.sh userspace
+      - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh run env FUXI_APT_LOCAL=1 FUXI_APT_SUPPORT_ONLY=1 FUXI_APT_OUT=/src/work/ci-apt bash scripts/fuxi-build-pkgs.sh 0.0+ci

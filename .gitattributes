@@ -1,2 +1,3 @@
 # Unified diff context intentionally contains a leading space before tabs.
 kernel/patches/*.patch -whitespace
+packaging/sources/*.patch -whitespace

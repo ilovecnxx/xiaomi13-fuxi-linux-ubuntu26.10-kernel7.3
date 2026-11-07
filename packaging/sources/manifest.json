@@ -1,0 +1,51 @@
+{
+  "hexagonrpc": {
+    "revision": "23a69640bf10dc498226c602c5b5db11d8cb3d8e",
+    "archive": "https://codeload.github.com/linux-msm/hexagonrpc/tar.gz/23a69640bf10dc498226c602c5b5db11d8cb3d8e",
+    "sha256": "7dbcf703182d59d19e0e7613b7cea7c71ef8aff6297987ed59377b85453b1a9f",
+    "root": "hexagonrpc-23a69640bf10dc498226c602c5b5db11d8cb3d8e",
+    "license": "GPL-3.0-or-later; per-file exceptions apply",
+    "patches": [
+      {"path": "work/patches/third-party-local-20261104/hexagonrpc-23a6964-local.patch", "sha256": "02c740545838962ee64fc3064a94f4d2f167eae4509f2b9699bcf9ce90899cf1"}
+    ]
+  },
+  "modemmanager": {
+    "revision": "1.25.95",
+    "archive": "https://archive.ubuntu.com/ubuntu/pool/main/m/modemmanager/modemmanager_1.25.95.orig.tar.xz",
+    "sha256": "4d93ffd677b4c9f7f773197a77bfe2cc40f3a6fea94409f91ffd51dd7c20c64d",
+    "root": "modemmanager-1.25.95",
+    "license": "GPL-2.0-or-later AND LGPL-2.1-or-later",
+    "patches": [
+      {"path": "work/patches/mm-simslot-20261030/mm-shared-qmi-active-slot.diff", "sha256": "5d48b70d1705264e39456e3573d7dbbd560545eed23f81119ccee1066a2e90fd"},
+      {"path": "work/patches/mm-netlink-uaf-20261101/mm-netlink-uaf.diff", "sha256": "c26de75d6bc86db7e8d30b221c51df338c0fb17934af53e7d84e041dbc024d68"},
+      {"path": "work/patches/mm-sub-bind-20261106/0001-fuxi-dual-sim-subscription-bind.patch", "sha256": "0fe800df3f9aac3708701f82a8c76ad4b73021891e617d8adec2b684de2b8fbe"},
+      {"path": "work/patches/mm-rsrp-quality-20261106/0002-fuxi-rsrp-signal-quality.patch", "sha256": "87b1a67b8b3d5edee0baee4bb72dca8cb32e469a23981d0dc7791ced0d8f8b76"}
+    ]
+  },
+  "81voltd": {
+    "revision": "a7794dd6c8ac216a97dc5a931edab2dfc46eca2a",
+    "archive": "https://gitlab.postmarketos.org/modem/81voltd/-/archive/a7794dd6c8ac216a97dc5a931edab2dfc46eca2a/81voltd-a7794dd6c8ac216a97dc5a931edab2dfc46eca2a.tar.gz",
+    "sha256": "abd12b986fbbb9a9bf7e17c0485cdb261330f330fcad95f0dc4eeb701d060dad",
+    "root": "81voltd-a7794dd6c8ac216a97dc5a931edab2dfc46eca2a",
+    "license": "GPL-2.0-or-later",
+    "patches": [
+      {"path": "work/patches/third-party-local-20261104/81voltd-a7794dd-local.patch", "sha256": "26c1b00c47e3017ab8dd013e9f658a4572f55d19d8fdf66b3ec83e5d438c8b7f"},
+      {"path": "packaging/sources/81voltd-retry.patch", "sha256": "856bfc29532d88e8341cef7fc4e659a2daf6af6171120ec805b95a699adea410"}
+    ]
+  },
+  "uboot": {
+    "revision": "feb8913982e4462c01fd914271f92254a25dc101",
+    "archive": "https://codeload.github.com/u-boot/u-boot/tar.gz/feb8913982e4462c01fd914271f92254a25dc101",
+    "sha256": "16c525906d43ce03daa9e3f5f6d12dc4b9e63b0a52ff28905c81e9c07dd15a8d",
+    "root": "u-boot-feb8913982e4462c01fd914271f92254a25dc101",
+    "license": "GPL-2.0-or-later; per-file exceptions apply"
+  },
+  "boot-tools": {
+    "revision": "edk2-msm e1952621f419f8db60ed28271264e1b5184c571d",
+    "license": "mkbootimg.py Apache-2.0; vendor DTB redistribution not cleared",
+    "files": [
+      {"name": "mkbootimg.py", "url": "https://raw.githubusercontent.com/edk2-porting/edk2-msm/e1952621f419f8db60ed28271264e1b5184c571d/tools/mkbootimg.py", "sha256": "2a8d05d34110f66c463668f43fc812ce2e46e66459c347eaadb080271df69aa8"},
+      {"name": "fuxi.dtb", "url": "https://raw.githubusercontent.com/edk2-porting/edk2-msm/e1952621f419f8db60ed28271264e1b5184c571d/Platform/Xiaomi/sm8550/FdtBlob_compat/fuxi.dtb", "sha256": "8fae172ccc6280b679bb6ce966de38ebc7454c23967932d7a98e33c938842243"}
+    ]
+  }
+}
