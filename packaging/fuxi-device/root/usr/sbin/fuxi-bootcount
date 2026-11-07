@@ -135,8 +135,7 @@ def getf(n):
 def cmd_confirm():
     st = read_state()
     if st is None:
-        log("没有有效计数块，跳过")
-        return
+        die("没有有效计数块，拒绝确认")
     _, pending, tries, _ = st
     if not pending:
         return
@@ -148,15 +147,31 @@ def cmd_confirm():
         log("默认 %s 连续 %d 次没确认，U-Boot 起了回退 %s → 默认改成回退" % (dflt, tries, fb))
         with open(os.path.join(B, "default.failed"), "w") as f:
             f.write(dflt + "\n")
-        subprocess.run(["/usr/sbin/fuxi-kernel-install", "set-default", fb], check=True)
+        subprocess.run(["/usr/sbin/fuxi-kernel-install", "set-default", fb], check=True, pass_fds=(9,))
         put(0, 0)
     else:
-        log("本次条目 %s 不是默认 %s（手动选的？），不确认" % (run, dflt))
+        die("本次条目 %s 不是可确认的默认/回退 %s/%s" % (run, dflt, fb))
 
 
 def main():
     if os.geteuid() != 0:
         die("要 root")
+    # Share the installer's lock across nested arm/confirm calls. Passing the
+    # same open file description avoids both lost updates and recursive locks.
+    os.makedirs(B, exist_ok=True)
+    lock_path = os.path.join(B, ".install.lock")
+    try:
+        held = os.fstat(9)
+        expected = os.stat(lock_path)
+        inherited = (held.st_dev, held.st_ino) == (expected.st_dev, expected.st_ino)
+    except OSError:
+        inherited = False
+    if not inherited:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        if fd != 9:
+            os.dup2(fd, 9, inheritable=True)
+            os.close(fd)
+    fcntl.flock(9, fcntl.LOCK_EX)
     c = sys.argv[1] if len(sys.argv) > 1 else "show"
     if c == "init":
         cmd_init()
@@ -180,4 +195,5 @@ def main():
         die("未知命令 %s（init/show/arm/confirm/manual-once）" % c)
 
 
-main()
+if __name__ == "__main__":
+    main()

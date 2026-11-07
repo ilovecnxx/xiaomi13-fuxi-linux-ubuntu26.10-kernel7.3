@@ -1,0 +1,49 @@
+#!/usr/bin/python3 -I
+"""Confirm boot only after local, offline-critical checks pass."""
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def check(command):
+    subprocess.run(command, check=True, timeout=30)
+
+
+def main():
+    args = Path("/proc/cmdline").read_text().split()
+    entry = next((item.split("=", 1)[1] for item in args if item.startswith("fuxi.entry=")), "")
+    if not entry:
+        raise RuntimeError("missing running boot entry")
+    check(["/usr/sbin/fuxi-kernel-install", "verify", entry])
+    for target in (Path("/"), Path("/boot/fuxi")):
+        if os.statvfs(target).f_flag & os.ST_RDONLY:
+            raise RuntimeError(f"read-only filesystem: {target}")
+    failed = subprocess.check_output(["systemctl", "--failed", "--no-legend", "--plain"], text=True)
+    if failed.strip():
+        raise RuntimeError("failed system services: " + failed.strip())
+    for service in ("fuxi-firmware-devices",):
+        check(["systemctl", "is-active", "--quiet", service])
+    desktops = ("denial", "phosh", "plasmamobile")
+    if not any(subprocess.run(["systemctl", "is-active", "--quiet", s], timeout=10).returncode == 0
+               for s in desktops):
+        raise RuntimeError("no active desktop session")
+    if not any(p.read_text().strip() == "connected" for p in Path("/sys/class/drm").glob("card*-*/status")):
+        raise RuntimeError("no connected display")
+    # Admin additions must be local checks, never require Internet or a SIM.
+    hooks = Path("/etc/fuxi/boot-health.d")
+    if hooks.exists():
+        for hook in sorted(hooks.iterdir()):
+            if hook.is_file() and os.access(hook, os.X_OK):
+                check([str(hook)])
+    check(["/usr/sbin/fuxi-bootcount", "confirm"])
+    Path("/boot/fuxi/tries").unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"fuxi-boot-health: NOT confirmed: {error}", file=sys.stderr)
+        sys.exit(1)

@@ -11,7 +11,7 @@
 #       装条目并设为默认；当前已确认的条目（本次启动、tries 已被清掉）成为回退。
 #       dtb 省略时用 /usr/lib/linux-image-<条目>/qcom/$FUXI_DTB.dtb（deb 装的位置）。
 #       cmdline 取 /etc/kernel/cmdline（标准位置，含 root=UUID=…），没有它才用 /etc/fuxi/cmdline（旧）。
-#       有 /boot/initrd.img-<条目>（initramfs-tools 生成）就复制进条目，extlinux 加 initrd 行。
+#       必须有 /boot/initrd.img-<条目>（initramfs-tools 生成）。同名且内容一致时允许包重新配置，禁止覆盖不同内容。
 #   fuxi-kernel-install initrd <条目> [<initrd>]   刷新条目里的 initrd（/etc/initramfs/post-update.d/zz-fuxi 调用，
 #       即 update-initramfs -u 之后）；条目不存在就什么也不做。刷新的是默认条目 → 计数块 arm（新 initrd 也要确认）
 #   fuxi-kernel-install remove [--force] <条目>     默认/回退条目要 --force
@@ -36,6 +36,72 @@ check_name() {
 # 原子写一行
 put() { printf '%s\n' "$2" > "$B/.$1.tmp" && mv -f "$B/.$1.tmp" "$B/$1"; }
 get() { cat "$B/$1" 2>/dev/null || true; }
+space_required() {
+  avail=$(df -Pk "$B" | awk 'END {print $4}')
+  [ "$avail" -ge "$1" ] || die "空间不足：需要 ${1} KiB，可用 ${avail} KiB"
+}
+verify_entry() {
+  check_name "$1"
+  vd=$B/$1
+  [ -s "$vd/Image" ] && [ -s "$vd/cmdline" ] && [ -s "$vd/initrd.img" ] || die "条目 $1 不完整"
+  [ -f "$vd/SHA256SUMS" ] || die "条目 $1 缺校验清单"
+  (cd "$vd" && sha256sum -c --quiet SHA256SUMS) || die "条目 $1 校验失败"
+  [ -n "$(find "$vd" -maxdepth 1 -name '*.dtb' -type f -print -quit)" ] || die "条目 $1 缺 DTB"
+}
+# Persist the old boot metadata before changing it. A killed process leaves a
+# journal which the next invocation restores before doing any further work.
+recover_transaction() {
+  j=$B/.transaction
+  [ -d "$j" ] || return 0
+  if [ -f "$j/ready" ]; then
+    for f in default fallback tries default.failed; do
+      if [ -f "$j/$f" ]; then cp "$j/$f" "$B/.$f.restore"; mv -f "$B/.$f.restore" "$B/$f";
+      else rm -f "$B/$f"; fi
+    done
+    mkdir -p /boot/extlinux
+    for f in extlinux.conf fallback.conf; do
+      if [ -f "$j/$f" ]; then cp "$j/$f" "/boot/extlinux/.$f.restore"; mv -f "/boot/extlinux/.$f.restore" "/boot/extlinux/$f";
+      else rm -f "/boot/extlinux/$f"; fi
+    done
+    if [ -f "$j/entry" ]; then
+      re=$(cat "$j/entry"); check_name "$re"
+      for f in initrd.img SHA256SUMS; do
+        cp "$j/entry-$f" "$B/$re/.$f.restore"
+        mv -f "$B/$re/.$f.restore" "$B/$re/$f"
+      done
+      ln -f "$B/$re/initrd.img" "$B/$re/initrd"
+    fi
+    sync
+    say "已恢复上次未完成操作的启动配置；启动计数可能仍待确认"
+  fi
+  rm -rf "$j"
+  sync
+}
+begin_transaction() {
+  j=$B/.transaction
+  mkdir "$j"
+  for f in default fallback tries default.failed; do
+    [ ! -f "$B/$f" ] || cp "$B/$f" "$j/$f"
+  done
+  for f in extlinux.conf fallback.conf; do
+    [ ! -f "/boot/extlinux/$f" ] || cp "/boot/extlinux/$f" "$j/$f"
+  done
+  if [ "$1" = initrd ] && [ -d "$B/$2" ]; then
+    verify_entry "$2"
+    space_required "$(( $(du -k "$B/$2/initrd.img" | awk '{print $1}') * 2 + 32768 ))"
+    cp "$B/$2/initrd.img" "$j/entry-initrd.img"
+    cp "$B/$2/SHA256SUMS" "$j/entry-SHA256SUMS"
+    printf '%s\n' "$2" > "$j/entry"
+  fi
+  sync
+  touch "$j/ready"
+  sync
+}
+finish_transaction() {
+  sync
+  rm -rf "$B/.transaction"
+  sync
+}
 # 当前 U-Boot / shim7 都在 cmdline 里传 fuxi.entry=<条目>。
 running_entry() { tr ' ' '\n' < /proc/cmdline | sed -n 's/^fuxi\.entry=//p' | tail -1; }
 
@@ -46,13 +112,15 @@ gen_extlinux() {
   x=/boot/extlinux
   mkdir -p "$x"
   ext_conf "$def" "$def" "$fb" > "$x/.extlinux.conf.tmp"
-  mv -f "$x/.extlinux.conf.tmp" "$x/extlinux.conf"
   if [ -n "$fb" ] && [ -f "$B/$fb/Image" ]; then
     ext_conf "$fb" "$def" "$fb" > "$x/.fallback.conf.tmp"
     mv -f "$x/.fallback.conf.tmp" "$x/fallback.conf"
   else
     rm -f "$x/fallback.conf"
   fi
+  # Publish the rescue config before the default config that may need it.
+  sync
+  mv -f "$x/.extlinux.conf.tmp" "$x/extlinux.conf"
   sync
 }
 # ext_conf <本文件的默认 label> <默认条目> <回退条目>
@@ -84,8 +152,8 @@ ext_conf() {
 # 默认条目换成了没在跑的条目 → 下次启动要确认（U-Boot 计数）
 arm_bootcount() {
   [ "$1" != "$(running_entry)" ] || return 0
-  [ -x /usr/sbin/fuxi-bootcount ] || return 0
-  /usr/sbin/fuxi-bootcount arm || say "警告：fuxi-bootcount arm 失败（没有自动回退）"
+  [ -x /usr/sbin/fuxi-bootcount ] || die "缺少 fuxi-bootcount，拒绝切换默认内核"
+  /usr/sbin/fuxi-bootcount arm || die "启动计数设置失败，拒绝切换默认内核"
 }
 
 cmd_add() {
@@ -95,6 +163,25 @@ cmd_add() {
   [ -f "$img" ] || die "没有内核镜像 $img"
   [ -f "$dtb" ] || die "没有 DTB $dtb"
   [ -s "$FUXI_CMDLINE_FILE" ] || die "没有 cmdline 文件 $FUXI_CMDLINE_FILE"
+  rd=${FUXI_INITRD:-/boot/initrd.img-$e}
+  [ -s "$rd" ] || die "缺少 initrd $rd"
+  if [ -e "$B/$e" ]; then
+    verify_entry "$e"
+    same=0
+    if [ "$(head -c 2 "$img" | od -An -tx1 | tr -d ' ')" = 1f8b ]; then
+      if gzip -t "$img" && gzip -dc "$img" | cmp -s - "$B/$e/Image"; then same=1; fi
+    elif cmp -s "$img" "$B/$e/Image"; then same=1; fi
+    expected_cmdline=$(tr '\n' ' ' < "$FUXI_CMDLINE_FILE" | sed 's/ *$//')
+    if [ "$same" = 1 ] && cmp -s "$dtb" "$B/$e/${dtb##*/}" &&
+       cmp -s "$rd" "$B/$e/initrd.img" && [ "$expected_cmdline" = "$(cat "$B/$e/cmdline")" ]; then
+      say "条目 $e 与输入一致，保留现有默认和回退（允许包重新配置）"
+      return 0
+    fi
+    die "条目 $e 已存在且内容不同，使用唯一版本名，禁止覆盖"
+  fi
+  need=$(( ($(stat -c %s "$img") * 8 + $(stat -c %s "$dtb") + $(stat -c %s "$rd")) / 1024 + 32768 ))
+  space_required "$need"
+  fb=$(get fallback); [ -z "$fb" ] || verify_entry "$fb"
   mkdir -p "$B"
   t=$B/.$e.new
   rm -rf "$t"; mkdir "$t"
@@ -107,25 +194,30 @@ cmd_add() {
     cp "$img" "$t/Image"
   fi
   cp "$dtb" "$t/"
-  rd=${FUXI_INITRD:-/boot/initrd.img-$e}
   # 硬链接 initrd：回滚镜像 shim7 只认 <条目>/initrd，没有它 root=UUID 解析不了会 panic
   if [ -f "$rd" ]; then cp "$rd" "$t/initrd.img"; ln -f "$t/initrd.img" "$t/initrd"; fi
   tr '\n' ' ' < "$FUXI_CMDLINE_FILE" | sed 's/ *$//' > "$t/cmdline"
   echo >> "$t/cmdline"
   (cd "$t" && sha256sum ./* > SHA256SUMS)
   sync
-  rm -rf "$B/$e"
   mv "$t" "$B/$e"
+  verify_entry "$e"
   cur=$(running_entry)
-  if [ ! -e "$B/tries" ] && [ -n "$cur" ] && [ "$cur" != "$e" ] && [ -d "$B/$cur" ]; then
+  confirmed=0
+  if [ -x /usr/sbin/fuxi-bootcount ]; then
+    bs=$(/usr/sbin/fuxi-bootcount show) || die "无法读取启动计数"
+    case "$bs" in *pending=0*) confirmed=1 ;; esac
+  fi
+  if [ "$confirmed" = 1 ] && [ -n "$cur" ] && [ "$cur" != "$e" ] && [ -d "$B/$cur" ]; then
+    verify_entry "$cur"
     put fallback "$cur"
   fi
+  arm_bootcount "$e"
   put default "$e"
   rm -f "$B/tries"
   [ "$(get default.failed)" != "$e" ] || rm -f "$B/default.failed"
   sync
   gen_extlinux
-  arm_bootcount "$e"
   say "已装 $e（$kn + ${dtb##*/}），默认=$e 回退=$(get fallback)"
 }
 
@@ -134,6 +226,11 @@ cmd_initrd() {
   check_name "$e"
   [ -d "$B/$e" ] || return 0
   [ -f "$rd" ] || die "没有 initrd $rd"
+  space_required "$(( $(stat -c %s "$rd") / 1024 + 32768 ))"
+  if [ "$e" = "$(get default)" ]; then
+    [ -x /usr/sbin/fuxi-bootcount ] || die "缺少启动计数工具"
+    /usr/sbin/fuxi-bootcount arm || die "启动计数设置失败"
+  fi
   cp "$rd" "$B/$e/.initrd.img.tmp"
   sync
   mv -f "$B/$e/.initrd.img.tmp" "$B/$e/initrd.img"
@@ -141,9 +238,6 @@ cmd_initrd() {
   (cd "$B/$e" && sha256sum ./Image ./*.dtb ./cmdline ./initrd.img > .SHA256SUMS.tmp && mv -f .SHA256SUMS.tmp SHA256SUMS)
   sync
   gen_extlinux
-  if [ "$e" = "$(get default)" ] && [ -x /usr/sbin/fuxi-bootcount ]; then
-    /usr/sbin/fuxi-bootcount arm || say "警告：fuxi-bootcount arm 失败（没有自动回退）"
-  fi
   say "已刷新 $e 的 initrd"
 }
 
@@ -166,7 +260,8 @@ cmd_remove() {
 
 cmd_set() {
   check_name "$2"
-  [ -d "$B/$2" ] || die "没有条目 $2"
+  verify_entry "$2"
+  [ "$1" != default ] || arm_bootcount "$2"
   put "$1" "$2"
   if [ "$1" = default ]; then
     rm -f "$B/tries"
@@ -174,7 +269,6 @@ cmd_set() {
   fi
   sync
   gen_extlinux
-  [ "$1" != default ] || arm_bootcount "$2"
   say "$1=$2"
 }
 
@@ -196,6 +290,22 @@ cmd_list() {
 }
 
 [ "$(id -u)" = 0 ] || die "要 root"
+mkdir -p "$B"
+if ! [ "$B/.install.lock" -ef /proc/self/fd/9 ]; then
+  exec 9>"$B/.install.lock"
+fi
+flock -w 30 9 || die "另一个内核维护操作正在运行"
+recover_transaction
+case "${1:-}" in
+  add|initrd|set-default|set-fallback|extlinux)
+    [ "${1:-}" = extlinux ] || check_name "${2:-}"
+    space_required 32768
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    trap 'rc=$?; if [ "$rc" != 0 ]; then recover_transaction; fi' EXIT
+    begin_transaction "$1" "${2:-}"
+    ;;
+esac
 case "${1:-}" in
   add) shift; [ $# -ge 2 ] || die "用法: add <条目> <Image> [<dtb>]"; cmd_add "$@" ;;
   remove) shift; cmd_remove "$@" ;;
@@ -203,6 +313,8 @@ case "${1:-}" in
   set-default) cmd_set default "${2:?}" ;;
   set-fallback) cmd_set fallback "${2:?}" ;;
   list|'') cmd_list ;;
+  verify) verify_entry "${2:?}"; say "条目 $2 校验通过" ;;
   extlinux) gen_extlinux; say "已重写 /boot/extlinux/extlinux.conf" ;;
   *) die "未知命令 $1（add/remove/initrd/set-default/set-fallback/list/extlinux）" ;;
 esac
+finish_transaction

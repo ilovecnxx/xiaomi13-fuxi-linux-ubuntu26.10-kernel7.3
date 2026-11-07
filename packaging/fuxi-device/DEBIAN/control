@@ -4,7 +4,7 @@ Architecture: arm64
 Maintainer: fuxi port <noreply@localhost>
 Section: kernel
 Priority: optional
-Depends: python3, initramfs-tools, iw, iproute2, kbd, libglib2.0-bin
+Depends: python3, initramfs-tools, iw, iproute2, kbd, libglib2.0-bin, util-linux
 Recommends: fuxi-firmware, busybox-static, bluez, rmtfs, tqftpserv, qrtr-tools, hexagonrpcd, iio-sensor-proxy, alsa-ucm-conf
 Description: Xiaomi 13 (fuxi, SM8550) device support for mainline Linux
  Boot chain tooling and hardware glue for the Xiaomi 13 running mainline

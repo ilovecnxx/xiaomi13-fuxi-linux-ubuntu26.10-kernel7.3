@@ -63,6 +63,9 @@ fi
 
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
+	if systemctl is-enabled --quiet fuxi-boot-ok.service; then
+		systemctl reenable fuxi-boot-ok.service >/dev/null
+	fi
 	udevadm control --reload 2>/dev/null || true
 fi
 exit 0

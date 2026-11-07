@@ -7,13 +7,16 @@
 [Unit]
 Description=fuxi: confirm boot entry (U-Boot boot count / shim tries)
 After=multi-user.target
+StartLimitIntervalSec=0
 ConditionKernelCommandLine=!fuxi.shim
 ConditionKernelCommandLine=!fuxi.noconfirm
 
 [Service]
 Type=oneshot
-ExecStart=/bin/rm -f /boot/fuxi/tries
-ExecStart=-/usr/sbin/fuxi-bootcount confirm
+ExecStart=/usr/sbin/fuxi-boot-health
+TimeoutStartSec=180
+Restart=on-failure
+RestartSec=15
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
