@@ -39,6 +39,7 @@ ST_DISABLED, ST_ENABLED, ST_SEARCHING = 3, 6, 7
 REGISTERED = {1, 5, 6, 7, 9, 10}
 # MMModemPowerState
 PWR_LOW, PWR_ON = 2, 3
+COMMAND_ERRORS = (OSError, subprocess.SubprocessError)
 
 
 def uptime():
@@ -48,6 +49,24 @@ def uptime():
 
 def log(msg):
     print(f"[{uptime():.2f}] {msg}", flush=True)
+
+
+def command(args, timeout):
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                          check=True, env={**os.environ, "LC_ALL": "C"})
+
+
+def voltd_active():
+    try:
+        command(["systemctl", "is-active", "--quiet", "81voltd"], 10)
+        return True
+    except subprocess.CalledProcessError as e:
+        if e.returncode == 3:
+            return False
+        log(f"81voltd state unavailable: {e}")
+    except COMMAND_ERRORS as e:
+        log(f"81voltd state unavailable: {e}")
+    return None
 
 
 def datacard():
@@ -139,12 +158,21 @@ class Keeper:
         # 把 modem 重新 enable，SetPowerState(low) 报 WrongState，循环只做了一半（11-06 23:03:58 实测）
         log(f"radio cycle start (gap {self.gap}s)")
         self.busy = True
-        voltd = subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode == 0
-        if voltd:
-            # 按 81voltd → MM → 81voltd 的顺序恢复，和 fuxi-simctl reconnect 一样
-            subprocess.run(["systemctl", "stop", "81voltd"], timeout=60)
+        restore_voltd = restore_wwan = False
         try:
-            subprocess.run(["nmcli", "radio", "wwan", "off"], timeout=20)
+            voltd = voltd_active()
+            if voltd is None:
+                return
+            radio = command(["nmcli", "radio", "wwan"], 20).stdout.strip()
+            if radio != "enabled":
+                log(f"radio cycle skipped: WWAN state {radio!r}")
+                return
+            if voltd:
+                # A timed-out command may already have stopped the service.
+                restore_voltd = True
+                command(["systemctl", "stop", "81voltd"], 60)
+            restore_wwan = True
+            command(["nmcli", "radio", "wwan", "off"], 20)
             for _ in range(20):
                 st = self.modem_state()
                 if st is not None and st <= ST_DISABLED:
@@ -155,24 +183,33 @@ class Keeper:
             self.call(self.path, IF_MODEM, "SetPowerState", GLib.Variant("(u)", (PWR_LOW,)))
             time.sleep(5)
             log("radio cycle: power low done")
-        except (GLib.Error, OSError, subprocess.TimeoutExpired) as e:
+        except (GLib.Error, *COMMAND_ERRORS) as e:
             log(f"radio cycle error: {getattr(e, 'message', e)}")
         finally:
-            subprocess.run(["nmcli", "radio", "wwan", "on"], timeout=20)
-        try:
-            # Enable 自己会上电；NM 打开 WWAN 后可能已经在 enable，WrongState 忽略
-            if (self.modem_state() or 0) <= ST_DISABLED:
-                self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (True,)))
-            log("radio cycle done")
-        except GLib.Error as e:
-            log(f"radio cycle enable: {e.message}")
-        if voltd:
-            subprocess.run(["systemctl", "start", "81voltd"], timeout=60)
-        self.busy = False
-        self.set_data_centric()
-        self.last_cycle = time.monotonic()
-        self.unreg_since = self.last_cycle
-        self.reject_at = self.reg_since = None
+            try:
+                if restore_wwan:
+                    try:
+                        command(["nmcli", "radio", "wwan", "on"], 20)
+                    except COMMAND_ERRORS as e:
+                        log(f"radio cycle WWAN restore failed: {e}")
+                    try:
+                        if (self.modem_state() or 0) <= ST_DISABLED:
+                            self.call(self.path, IF_MODEM, "Enable", GLib.Variant("(b)", (True,)))
+                    except GLib.Error as e:
+                        log(f"radio cycle enable failed: {e.message}")
+                if restore_voltd:
+                    try:
+                        command(["systemctl", "start", "81voltd"], 60)
+                    except COMMAND_ERRORS as e:
+                        log(f"radio cycle 81voltd restore failed: {e}")
+                if restore_wwan:
+                    self.set_data_centric()
+            finally:
+                self.busy = False
+                self.last_cycle = time.monotonic()
+                self.unreg_since = self.last_cycle
+                self.reject_at = self.reg_since = None
+                log("radio cycle finished; registration will be checked on next tick")
 
     def ims_registered(self):
         try:
@@ -201,7 +238,7 @@ class Keeper:
         if self.busy or now - self.ims2_checked < IMS_POLL:
             return
         self.ims2_checked = now
-        if subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode != 0:
+        if voltd_active() is not True:
             return
         st = self.ims2_status()
         if st is not None and st != self.ims2_last:
@@ -221,7 +258,7 @@ class Keeper:
             return
         if self.ims_ok or self.ims_cycles >= IMS_MAX_CYCLES:
             return
-        if subprocess.run(["systemctl", "is-active", "--quiet", "81voltd"]).returncode != 0:
+        if voltd_active() is not True:
             return
         if dc == "2":
             # 卡槽 2 上网（DDS=2）时 modem 不给卡 1（电信）起 IMS PDN，循环射频没用，只会把卡 2 的数据和 IMS 一起打断
@@ -248,8 +285,16 @@ class Keeper:
             # 11-06 23:19 实测：DDS 1→2→1 之后 modem IMS 栈不再向 81voltd 要卡 1 的连接，射频循环也没用；
             # 只重启 81voltd，30 s 内两张卡都注册
             log("restart 81voltd")
-            subprocess.run(["systemctl", "restart", "81voltd"], timeout=60)
-            self.reg_since = time.monotonic()
+            try:
+                command(["systemctl", "restart", "81voltd"], 60)
+            except COMMAND_ERRORS as e:
+                log(f"81voltd restart failed: {e}")
+                try:
+                    command(["systemctl", "start", "81voltd"], 60)
+                except COMMAND_ERRORS as restore_error:
+                    log(f"81voltd restart recovery failed: {restore_error}")
+            finally:
+                self.reg_since = time.monotonic()
             return
         self.cycle()
 

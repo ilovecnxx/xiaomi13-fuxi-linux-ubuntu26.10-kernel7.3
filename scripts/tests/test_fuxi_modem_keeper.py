@@ -1,7 +1,8 @@
-"""Cached modem state must preserve recovery decisions without periodic bus calls."""
+"""Cached state and bounded recovery must preserve modem monitoring on failures."""
 import importlib.util
 from pathlib import Path
 import sys
+import subprocess
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -101,6 +102,183 @@ class ModemCacheTest(unittest.TestCase):
                         patch.object(keeper, "uptime", return_value=1000), patch.object(keeper, "log"):
                     self.assertTrue(controller.tick())
                 self.assertEqual(controller.cycle.call_count, int(lost >= keeper.STALL_LIMIT))
+
+
+class ModemRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        class BusError(Exception):
+            message = "bus unavailable"
+
+        self.bus_error = BusError
+        self.controller = keeper.Keeper.__new__(keeper.Keeper)
+        self.controller.path = "/modem/0"
+        self.controller.busy = False
+        self.controller.gap = keeper.MIN_GAP
+        self.controller.reject_at = self.controller.reg_since = 1
+        self.controller.modem_state = Mock(return_value=keeper.ST_DISABLED)
+        self.controller.call = Mock()
+        self.controller.set_data_centric = Mock()
+        self.commands = []
+        self.failures = {}
+        self.radio = "enabled\n"
+        for patcher in (patch.object(keeper.GLib, "Error", BusError),
+                        patch.object(keeper, "log"),
+                        patch.object(keeper.time, "sleep"),
+                        patch.object(keeper.time, "monotonic", return_value=1000),
+                        patch.object(keeper.subprocess, "run", side_effect=self.run_command)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_command(self, args, **kwargs):
+        self.commands.append(tuple(args))
+        self.assertGreater(kwargs["timeout"], 0)
+        self.assertTrue(kwargs["check"])
+        self.assertEqual(kwargs["env"]["LC_ALL"], "C")
+        failure = self.failures.get(tuple(args))
+        if failure:
+            raise failure
+        return SimpleNamespace(returncode=0, stdout=self.radio)
+
+    def assert_released(self):
+        self.assertFalse(self.controller.busy)
+        self.assertEqual(self.controller.last_cycle, 1000)
+        self.assertEqual(self.controller.unreg_since, 1000)
+        self.assertIsNone(self.controller.reject_at)
+        self.assertIsNone(self.controller.reg_since)
+
+    def test_success_restores_radio_and_original_active_service(self):
+        self.controller.cycle()
+        self.assertEqual(self.commands, [
+            ("systemctl", "is-active", "--quiet", "81voltd"),
+            ("nmcli", "radio", "wwan"), ("systemctl", "stop", "81voltd"),
+            ("nmcli", "radio", "wwan", "off"), ("nmcli", "radio", "wwan", "on"),
+            ("systemctl", "start", "81voltd")])
+        self.controller.set_data_centric.assert_called_once()
+        self.assert_released()
+
+    def test_inactive_service_is_neither_stopped_nor_started(self):
+        args = ("systemctl", "is-active", "--quiet", "81voltd")
+        self.failures[args] = subprocess.CalledProcessError(3, args)
+        self.controller.cycle()
+        self.assertNotIn(("systemctl", "stop", "81voltd"), self.commands)
+        self.assertNotIn(("systemctl", "start", "81voltd"), self.commands)
+        self.assertIn(("nmcli", "radio", "wwan", "on"), self.commands)
+        self.assert_released()
+
+    def test_disabled_or_unrecognized_radio_is_left_untouched(self):
+        for radio in ("disabled\n", "", "unknown\n"):
+            with self.subTest(radio=radio):
+                self.commands.clear()
+                self.radio = radio
+                self.controller.cycle()
+                self.assertEqual(len(self.commands), 2)
+                self.controller.call.assert_not_called()
+                self.controller.set_data_centric.assert_not_called()
+                self.assert_released()
+
+    def test_unavailable_service_or_radio_state_aborts_without_mutation(self):
+        for args in (("systemctl", "is-active", "--quiet", "81voltd"),
+                     ("nmcli", "radio", "wwan")):
+            for error in (OSError("unavailable"), subprocess.TimeoutExpired(args, 10),
+                          subprocess.CalledProcessError(1, args)):
+                with self.subTest(args=args, error=error):
+                    self.commands.clear()
+                    self.failures = {args: error}
+                    self.controller.cycle()
+                    self.assertEqual(self.commands[-1], args)
+                    self.controller.call.assert_not_called()
+                    self.assert_released()
+
+    def test_stop_failure_still_restores_service_without_changing_radio(self):
+        args = ("systemctl", "stop", "81voltd")
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired(args, 60),
+                      subprocess.CalledProcessError(1, args)):
+            with self.subTest(error=error):
+                self.commands.clear()
+                self.failures = {args: error}
+                self.controller.cycle()
+                self.assertEqual(self.commands[-1], ("systemctl", "start", "81voltd"))
+                self.assertNotIn(("nmcli", "radio", "wwan", "off"), self.commands)
+                self.controller.call.assert_not_called()
+                self.assert_released()
+
+    def test_radio_off_and_on_failures_do_not_skip_other_restoration(self):
+        for mode in ("off", "on"):
+            args = ("nmcli", "radio", "wwan", mode)
+            for error in (OSError("unavailable"), subprocess.TimeoutExpired(args, 20),
+                          subprocess.CalledProcessError(1, args)):
+                with self.subTest(mode=mode, error=error):
+                    self.commands.clear()
+                    self.controller.call.reset_mock()
+                    self.failures = {args: error}
+                    self.controller.cycle()
+                    self.assertIn(("nmcli", "radio", "wwan", "on"), self.commands)
+                    self.assertEqual(self.commands[-1], ("systemctl", "start", "81voltd"))
+                    self.assertEqual(self.controller.call.call_args.args[2], "Enable")
+                    self.assert_released()
+
+    def test_power_and_enable_bus_errors_still_restore_service(self):
+        self.controller.call.side_effect = self.bus_error()
+        self.controller.cycle()
+        self.assertEqual(self.controller.call.call_count, 2)
+        self.assertEqual(self.commands[-1], ("systemctl", "start", "81voltd"))
+        self.assert_released()
+
+    def test_service_start_failure_still_updates_recovery_cooldown(self):
+        args = ("systemctl", "start", "81voltd")
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired(args, 60),
+                      subprocess.CalledProcessError(1, args)):
+            with self.subTest(error=error):
+                self.failures = {args: error}
+                self.controller.cycle()
+                self.assert_released()
+
+    def test_ims_restart_failure_preserves_tick_and_monitoring(self):
+        self.check_ims_restart_failure()
+
+    def check_ims_restart_failure(self, fail_start=False):
+        controller = self.controller
+        controller.ims_checked = 0
+        controller.datacard = "1"
+        controller.ims_ok, controller.ims_cycles = False, 0
+        controller.reg_since = 1
+        controller.ims_registered = Mock(return_value=False)
+        controller.manager = Mock()
+        controller.manager.get_objects.return_value = [ModemCacheTest().object("/modem/0")]
+        controller.unreg_since = None
+        controller.check_ims2 = Mock()
+        args = ("systemctl", "restart", "81voltd")
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired(args, 60),
+                      subprocess.CalledProcessError(1, args)):
+            with self.subTest(error=error), patch.object(keeper, "datacard", return_value="1"), \
+                    patch.object(keeper, "uptime", return_value=1000), \
+                    patch.object(keeper, "sub2_retrying", return_value=False):
+                controller.ims_checked, controller.ims_cycles, controller.reg_since = 0, 0, 1
+                self.failures = {args: error}
+                if fail_start:
+                    start = ("systemctl", "start", "81voltd")
+                    self.failures[start] = subprocess.TimeoutExpired(start, 60)
+                self.assertTrue(controller.tick())
+                self.assertEqual(controller.reg_since, 1000)
+                self.assertEqual(controller.ims_cycles, 1)
+                controller.check_ims2.assert_called_with(1000)
+                self.assertEqual(self.commands[-1], ("systemctl", "start", "81voltd"))
+
+    def test_failed_ims_restart_and_start_do_not_stop_monitoring(self):
+        self.check_ims_restart_failure(fail_start=True)
+
+    def test_ims_monitors_skip_unavailable_service_without_escaping(self):
+        controller = self.controller
+        controller.ims_checked = controller.ims2_checked = 0
+        controller.datacard, controller.ims_ok, controller.ims_cycles = "1", False, 0
+        controller.ims_registered, controller.ims2_status = Mock(), Mock()
+        args = ("systemctl", "is-active", "--quiet", "81voltd")
+        self.failures[args] = subprocess.TimeoutExpired(args, 10)
+        with patch.object(keeper, "datacard", return_value="1"):
+            controller.check_ims(1000)
+            controller.check_ims2(1000)
+        controller.ims_registered.assert_not_called()
+        controller.ims2_status.assert_not_called()
 
 
 if __name__ == "__main__":
