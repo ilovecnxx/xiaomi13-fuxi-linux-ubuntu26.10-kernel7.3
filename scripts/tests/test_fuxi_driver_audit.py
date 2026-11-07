@@ -1,6 +1,7 @@
 """Check interval units, counter resets and disappearing sensor processes."""
 import importlib.machinery
 import importlib.util
+import copy
 from pathlib import Path
 import tempfile
 import unittest
@@ -121,6 +122,76 @@ class DriverAuditTest(unittest.TestCase):
             AUDIT.interval(before, before, 100)
         with self.assertRaises(ValueError):
             AUDIT.interval(before, self.service_sample(2), 0)
+
+    def power_conditions(self):
+        return {"backlights": {"panel": {"bl_power": 4, "brightness": 164,
+                                         "actual_brightness": 0, "max_brightness": 4095}},
+                "power_supplies": {"bat": {"type": "Battery", "status": "Charging", "online": None,
+                                            "capacity_percent": 75, "current_now_ua": -437000},
+                                   "usb": {"type": "USB", "status": None, "online": 1}}}
+
+    def test_power_endpoints_record_raw_units_and_optional_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            battery = root / "class/power_supply/bat"
+            battery.mkdir(parents=True)
+            for name, value in {"type": "Battery", "status": "Charging", "capacity": "75",
+                                "current_now": "-437000", "voltage_now": "3999000",
+                                "charge_counter": "2496000", "temp": "217"}.items():
+                (battery / name).write_text(value)
+            panel = root / "class/backlight/panel"
+            panel.mkdir(parents=True)
+            (panel / "bl_power").write_text("4")
+            report = AUDIT.power_conditions(root)
+            supply = report["power_supplies"]["bat"]
+            self.assertEqual(supply["current_now_ua"], -437000)
+            self.assertEqual(supply["voltage_now_uv"], 3999000)
+            self.assertEqual(supply["charge_counter_uah"], 2496000)
+            self.assertEqual(supply["temp_tenths_celsius"], 217)
+            self.assertIsNone(supply["energy_now_uwh"])
+            self.assertEqual(report["backlights"]["panel"]["bl_power"], 4)
+            self.assertIsNone(AUDIT.matching_power_endpoints(report, report))
+
+    def test_power_endpoints_allow_charge_and_current_to_change(self):
+        before = self.service_sample(1)
+        after = self.service_sample(2)
+        before["power_conditions"] = self.power_conditions()
+        after["power_conditions"] = self.power_conditions()
+        after["power_conditions"]["power_supplies"]["bat"].update(
+            capacity_percent=76, current_now_ua=-500000)
+        report = AUDIT.interval(before, after, 100)
+        self.assertTrue(report["power_condition_endpoints_match"])
+        self.assertEqual(report["power_conditions"]["before"], before["power_conditions"])
+        self.assertEqual(report["power_conditions"]["after"], after["power_conditions"])
+
+    def test_screen_or_supply_changes_are_flagged(self):
+        before = self.power_conditions()
+        for category, name, field, value in (
+                ("backlights", "panel", "bl_power", 0),
+                ("backlights", "panel", "brightness", 1000),
+                ("backlights", "panel", "max_brightness", 2047),
+                ("power_supplies", "usb", "online", 0),
+                ("power_supplies", "bat", "status", "Discharging")):
+            with self.subTest(field=field):
+                after = copy.deepcopy(before)
+                after[category][name][field] = value
+                self.assertFalse(AUDIT.matching_power_endpoints(before, after))
+        after = copy.deepcopy(before)
+        del after["power_supplies"]["usb"]
+        self.assertFalse(AUDIT.matching_power_endpoints(before, after))
+
+    def test_unknown_power_conditions_never_report_matching_endpoints(self):
+        self.assertIsNone(AUDIT.matching_power_endpoints(None, None))
+        self.assertIsNone(AUDIT.matching_power_endpoints(
+            {"backlights": {}, "power_supplies": {}}, self.power_conditions()))
+        for category, name, field in (("backlights", "panel", "brightness"),
+                                      ("power_supplies", "bat", "type"),
+                                      ("power_supplies", "bat", "status"),
+                                      ("power_supplies", "usb", "online")):
+            with self.subTest(field=field):
+                after = self.power_conditions()
+                after[category][name][field] = None
+                self.assertIsNone(AUDIT.matching_power_endpoints(self.power_conditions(), after))
 
 
 if __name__ == "__main__":

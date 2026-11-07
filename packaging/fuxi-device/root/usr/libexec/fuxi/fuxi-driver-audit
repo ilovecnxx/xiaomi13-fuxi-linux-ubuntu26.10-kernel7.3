@@ -26,6 +26,55 @@ def number(path):
         return None
 
 
+def power_conditions(sys):
+    backlights = {}
+    for path in sorted((sys / "class/backlight").glob("*")):
+        backlights[path.name] = {field: number(path / field) for field in (
+            "bl_power", "brightness", "actual_brightness", "max_brightness")}
+    supplies = {}
+    for path in sorted((sys / "class/power_supply").glob("*")):
+        supply = {field: read(path / field) for field in ("type", "status")}
+        for field, label in (("online", "online"), ("capacity", "capacity_percent"),
+                             ("current_now", "current_now_ua"), ("voltage_now", "voltage_now_uv"),
+                             ("charge_counter", "charge_counter_uah"), ("energy_now", "energy_now_uwh"),
+                             ("temp", "temp_tenths_celsius")):
+            supply[label] = number(path / field)
+        supplies[path.name] = supply
+    return {"backlights": backlights, "power_supplies": supplies}
+
+
+def matching_power_endpoints(before, after):
+    # Endpoint equality cannot exclude changes within the sampling window.
+    if not before or not after:
+        return None
+    for category in ("backlights", "power_supplies"):
+        if not before[category] or not after[category]:
+            return None
+        if before[category].keys() != after[category].keys():
+            return False
+    for name, start in before["backlights"].items():
+        end = after["backlights"][name]
+        for field in ("bl_power", "brightness", "max_brightness"):
+            if start[field] is not None and end[field] is not None and start[field] != end[field]:
+                return False
+    for name, start in before["power_supplies"].items():
+        end = after["power_supplies"][name]
+        for field in ("type", "status", "online"):
+            if start[field] is not None and end[field] is not None and start[field] != end[field]:
+                return False
+    for sample in (before, after):
+        for backlight in sample["backlights"].values():
+            if any(backlight[field] is None for field in ("bl_power", "brightness", "max_brightness")):
+                return None
+        for supply in sample["power_supplies"].values():
+            if supply["type"] is None:
+                return None
+            required = "status" if supply["type"] == "Battery" else "online"
+            if supply[required] is None:
+                return None
+    return True
+
+
 def snapshot(sys=Path("/sys"), proc=Path("/proc")):
     cpu = sys / "devices/system/cpu"
     counters = read(proc / "stat")
@@ -59,7 +108,8 @@ def snapshot(sys=Path("/sys"), proc=Path("/proc")):
                     switches[key] = int(value) if value.isdecimal() else None
                 services[path.name] = {"name": sorted(selected)[0], **counters, **switches}
     return {"monotonic": time.monotonic(), "cpu_ticks": ticks,
-            "idle": idle, "sensors": sensors, "services": services}
+            "idle": idle, "sensors": sensors, "services": services,
+            "power_conditions": power_conditions(sys)}
 
 
 def interval(before, after, ticks_per_second):
@@ -109,7 +159,11 @@ def interval(before, after, ticks_per_second):
     return {"seconds": round(seconds, 3),
             "cpu_busy_percent_all_cores": round(100 * busy / total, 2) if total > 0 else None,
             "idle": residency, "sensor_processes": sensors, "service_processes": services,
-            "service_process_set_unchanged": same_processes}
+            "service_process_set_unchanged": same_processes,
+            "power_conditions": {"before": before.get("power_conditions"),
+                                 "after": after.get("power_conditions")},
+            "power_condition_endpoints_match": matching_power_endpoints(
+                before.get("power_conditions"), after.get("power_conditions"))}
 
 
 def command(*args):
