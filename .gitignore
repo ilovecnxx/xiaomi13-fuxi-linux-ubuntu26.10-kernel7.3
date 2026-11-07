@@ -19,9 +19,6 @@
 !/work/device-info/
 !/work/chromium-mobile/
 # 自有应用与小工具源码（2026-11-04 公开）
-!/work/superterm/
-!/work/mihomo-gui/
-!/work/dsh-phone/
 !/work/denial-arm64/
 !/work/scripts-tmp/
 !/work/wdt-test/
@@ -65,10 +62,12 @@ __pycache__/
 /tools/stub-lib/
 
 # ---- 公开目录内不入库的文件 ----
-/work/superterm/tests/unit/test_config.py
-/work/superterm/codex-plan-run.jsonl
-/work/superterm/brief-in.txt
-/work/mihomo-gui/host-dl/
+/apps/**/node_modules/
+/apps/**/dist/
+/apps/**/.venv/
+/apps/**/build/
+/apps/**/*.egg-info/
+/apps/**/.pytest_cache/
 /work/wdt-test/wdt_test
 
 # ---- Denial 安装产物与截图（2026-11-07）----

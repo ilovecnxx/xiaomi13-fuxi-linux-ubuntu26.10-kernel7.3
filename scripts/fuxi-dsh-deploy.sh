@@ -89,7 +89,7 @@ REMOTE
 fi
 
 echo "==> 上传皮肤文件到手机"
-tar czf - -C "$ROOT/work/dsh-phone" . | "${SSH[@]}" 'mkdir -p /root/dsh-phone && tar xzf - -C /root/dsh-phone && chmod +x /root/dsh-phone/apply-theme.sh && echo 上传完成'
+tar czf - -C "$ROOT/apps/dsh-phone" . | "${SSH[@]}" 'mkdir -p /root/dsh-phone && tar xzf - -C /root/dsh-phone && chmod +x /root/dsh-phone/apply-theme.sh && echo 上传完成'
 
 echo "==> 手机端安装 Node.js / DSH / systemd / 皮肤（这一步会访问 apt 与 npm 仓库）"
 # API key 不拼进命令行（避免 ps/历史泄露），通过远端 env 从标准输入读取

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development harness. `kernel/` pins the maintained source archive and subsystem patches; `build/linux-standard/` is reconstructed from that recipe. `build/linux/` and `scripts/legacy/` retain historical ABL/shim work. `scripts/` holds build, device, deployment, and diagnostic tools, with host-side unit tests in `scripts/tests/`. `work/rootfs-overlay/` contains Linux userspace configuration and services. `docs/` records design, test results, and handoffs; `work/` stores generated builds, logs, device state, and experiments. `tools/` contains supporting utilities. Check `README.md` and `TASKS.md` for current project status before starting device work.
+This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development harness. `kernel/` pins the maintained source archive and subsystem patches; `build/linux-standard/` is reconstructed from that recipe. `packaging/` owns installed device support, dependency recipes and the build environment; `apps/` owns application sources. `build/linux/`, `scripts/legacy/` and `work/rootfs-overlay/` retain historical work. `scripts/` holds build, device, deployment, and diagnostic tools, with host-side unit tests in `scripts/tests/`. `docs/` records design, test results, and handoffs; `work/` stores generated builds, logs, device state, and experiments. `tools/` contains supporting utilities. Check `README.md` and `TASKS.md` for current project status before starting device work.
 
 ## Build, Test, and Development Commands
 

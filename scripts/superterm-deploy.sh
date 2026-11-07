@@ -1,6 +1,6 @@
 #!/bin/bash
 # 在手机（Xiaomi 13 fuxi，Ubuntu 26.10 arm64 主线 Linux + Phosh）部署 SuperTerm 原生超级终端 App。
-# 把 work/superterm 打包上传，调用 packaging/install-remote.sh 安装成 ~/.local/share/superterm，
+# 把 apps/superterm 打包上传，调用 packaging/install-remote.sh 安装成 ~/.local/share/superterm，
 # 生成桌面图标 superterm.desktop。原生 GTK4+WebKit 窗口，非安卓 APK。
 #
 # 用法:
@@ -36,7 +36,7 @@ ssh_run 'echo remote-ok'
 
 if [ "$ROLLBACK" = 1 ]; then
   echo "[deploy] rollback"
-  tar -C "$ROOT/work/superterm/packaging" -czf - install-remote.sh | \
+  tar -C "$ROOT/apps/superterm/packaging" -czf - install-remote.sh | \
     ssh -i "$KEY" -o UserKnownHostsFile="$KNOWN" -o StrictHostKeyChecking=accept-new root@"$PHONE" \
       'mkdir -p /root/superterm-pkg && tar -C /root/superterm-pkg -xzf - && chmod +x /root/superterm-pkg/install-remote.sh && /root/superterm-pkg/install-remote.sh --user '"$TARGET_USER"' --rollback'
   exit 0
@@ -44,7 +44,7 @@ fi
 
 echo "[deploy] staging package"
 # stage: source tree + packaging (exclude pycache/tests caches)
-tar --exclude='__pycache__' --exclude='*.pyc' -C "$ROOT/work/superterm" -czf /tmp/superterm-pkg.tgz .
+tar --exclude='__pycache__' --exclude='*.pyc' -C "$ROOT/apps/superterm" -czf /tmp/superterm-pkg.tgz .
 ssh -i "$KEY" -o UserKnownHostsFile="$KNOWN" -o StrictHostKeyChecking=accept-new root@"$PHONE" 'rm -rf /root/superterm-pkg && mkdir -p /root/superterm-pkg'
 cat /tmp/superterm-pkg.tgz | ssh -i "$KEY" -o UserKnownHostsFile="$KNOWN" -o StrictHostKeyChecking=accept-new root@"$PHONE" 'tar -C /root/superterm-pkg -xzf -'
 
