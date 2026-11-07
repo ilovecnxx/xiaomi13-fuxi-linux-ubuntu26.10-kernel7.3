@@ -41,6 +41,7 @@ REGISTERED = {1, 5, 6, 7, 9, 10}
 # MMModemPowerState
 PWR_LOW, PWR_ON = 2, 3
 COMMAND_ERRORS = (OSError, subprocess.SubprocessError)
+IMS_STATES = {"not-registered", "registering", "registered", "limited-registered"}
 
 
 def uptime():
@@ -80,10 +81,10 @@ def datacard():
 
 def sub2_retrying():
     try:
-        out = subprocess.run(["journalctl", "-u", "81voltd", f"--since=-{SUB2_QUIET}s", "-q", "--no-pager"],
-                             capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        out = command(["journalctl", "-b", "-u", "81voltd", f"--since=-{SUB2_QUIET}s",
+                       "-q", "--no-pager"], 20)
+    except COMMAND_ERRORS:
+        return None
     return "retrying start network" in out.stdout or "wrong PDN" in out.stdout
 
 
@@ -213,27 +214,27 @@ class Keeper:
                 self.reject_at = self.reg_since = None
                 log("radio cycle finished; registration will be checked on next tick")
 
-    def ims_registered(self):
+    def ims_status(self, binding):
         try:
-            out = subprocess.run([IMS_TOOL, "0"], capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
+            out = command([IMS_TOOL, str(binding)], 30)
+        except COMMAND_ERRORS:
             return None
+        states = []
         for line in out.stdout.splitlines():
-            key, _, value = line.strip().partition(": ")
+            key, _, value = line.strip().partition(":")
             if key == "ims_registration_status":
-                return value == "registered"
+                states.append(value.strip())
+        # The helper can exit successfully while reporting an unavailable QMI field.
+        if len(states) == 1 and states[0] in IMS_STATES:
+            return states[0]
         return None
 
+    def ims_registered(self):
+        state = self.ims_status(0)
+        return None if state is None else state == "registered"
+
     def ims2_status(self):
-        try:
-            out = subprocess.run([IMS_TOOL, "1"], capture_output=True, text=True, timeout=30)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        for line in out.stdout.splitlines():
-            key, _, value = line.strip().partition(": ")
-            if key == "ims_registration_status":
-                return value
-        return None
+        return self.ims_status(1)
 
     def check_ims2(self, now):
         # 卡 2 只监测、只记日志；不自动恢复（射频循环会断卡 1，恢复要按 81voltd → MM → 81voltd 的顺序，交给人）
@@ -275,9 +276,17 @@ class Keeper:
             return
         if ok is None or now - self.reg_since < IMS_LIMIT:
             return
-        if uptime() < BOOT_HOLDOFF or sub2_retrying():
+        boot_holdoff = uptime() < BOOT_HOLDOFF
+        retrying = None if boot_holdoff else sub2_retrying()
+        if boot_holdoff or retrying is not False:
             if not self.ims_held:
-                log("ims trigger held: boot holdoff or 81voltd retrying sim2")
+                if boot_holdoff:
+                    reason = "boot holdoff"
+                elif retrying is None:
+                    reason = "sim2 retry status unavailable"
+                else:
+                    reason = "81voltd retrying sim2"
+                log(f"ims trigger held: {reason}")
                 self.ims_held = True
             return
         self.ims_held = False

@@ -208,6 +208,158 @@ class ModemMonitorTest(unittest.TestCase):
         self.assertEqual(self.glib.idle_add.call_count, 2)
 
 
+class ModemEvidenceTest(unittest.TestCase):
+    def setUp(self):
+        self.controller = keeper.Keeper.__new__(keeper.Keeper)
+        patcher = patch.object(keeper.subprocess, "run")
+        self.run = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_known_ims_states_preserve_registration_and_sim2_status(self):
+        for state in ("registered", "not-registered", "registering", "limited-registered"):
+            with self.subTest(state=state):
+                self.run.return_value = SimpleNamespace(stdout=f"  ims_registration_status: {state}\n")
+                self.assertEqual(self.controller.ims_registered(), state == "registered")
+                self.assertEqual(self.controller.ims2_status(), state)
+
+    def test_missing_malformed_or_ambiguous_ims_status_is_unknown(self):
+        for output in ("", "  error: QMI unavailable\n", "ims_registration_status: n/a (failed)\n",
+                       "ims_registration_status: future-status\n", "ims_registration_status:\n",
+                       "ims_registration_status registered\n",
+                       "ims_registration_status: registered\nims_registration_status: registered\n",
+                       "ims_registration_status: registered\nims_registration_status:\n",
+                       "ims_registration_status: not-registered\nims_registration_status: registered\n"):
+            with self.subTest(output=output):
+                self.run.return_value = SimpleNamespace(stdout=output)
+                self.assertIsNone(self.controller.ims_registered())
+                self.assertIsNone(self.controller.ims2_status())
+
+    def test_unrelated_settings_error_does_not_discard_valid_registration(self):
+        self.run.return_value = SimpleNamespace(stdout=(
+            "IMSA registration:\n  ims_registration_status: registered\n"
+            "IMS settings:\n  error: settings unavailable\n"))
+        self.assertIs(self.controller.ims_registered(), True)
+        self.assertEqual(self.controller.ims2_status(), "registered")
+
+    def test_failed_ims_query_never_supplies_negative_evidence(self):
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired("ims", 30),
+                      subprocess.CalledProcessError(1, "ims", output=(
+                          "ims_registration_status: not-registered\n"))):
+            with self.subTest(error=error):
+                self.run.side_effect = error
+                self.assertIsNone(self.controller.ims_registered())
+                self.assertIsNone(self.controller.ims2_status())
+
+    def test_ims_queries_require_success_with_bounded_english_output(self):
+        self.run.return_value = SimpleNamespace(stdout="ims_registration_status: registered\n")
+        for binding, query in (("0", self.controller.ims_registered), ("1", self.controller.ims2_status)):
+            with self.subTest(binding=binding):
+                query()
+                args, kwargs = self.run.call_args
+                self.assertEqual(args, ([keeper.IMS_TOOL, binding],))
+                self.assertTrue(kwargs["check"])
+                self.assertEqual(kwargs["timeout"], 30)
+                self.assertEqual(kwargs["env"]["LC_ALL"], "C")
+
+    def test_sub2_retry_markers_and_confirmed_quiet(self):
+        for output, expected in (("", False), ("registered\n", False),
+                                 ("retrying start network\n", True), ("wrong PDN\n", True)):
+            with self.subTest(output=output):
+                self.run.return_value = SimpleNamespace(stdout=output)
+                self.assertIs(keeper.sub2_retrying(), expected)
+
+    def test_failed_journal_query_is_unknown(self):
+        for error in (OSError("unavailable"), subprocess.TimeoutExpired("journalctl", 20),
+                      subprocess.CalledProcessError(1, "journalctl", output="")):
+            with self.subTest(error=error):
+                self.run.side_effect = error
+                self.assertIsNone(keeper.sub2_retrying())
+
+    def test_retry_query_requires_success_and_only_uses_current_boot(self):
+        self.run.return_value = SimpleNamespace(stdout="")
+        keeper.sub2_retrying()
+        args, kwargs = self.run.call_args
+        self.assertIn("-b", args[0])
+        self.assertIn(f"--since=-{keeper.SUB2_QUIET}s", args[0])
+        self.assertTrue(kwargs["check"])
+        self.assertEqual(kwargs["timeout"], 20)
+        self.assertEqual(kwargs["env"]["LC_ALL"], "C")
+
+
+class ModemImsDecisionTest(unittest.TestCase):
+    def setUp(self):
+        self.controller = keeper.Keeper.__new__(keeper.Keeper)
+        self.controller.datacard = "1"
+        self.controller.reg_since = 1
+        self.controller.ims_checked = 0
+        self.controller.ims_ok = self.controller.ims_held = False
+        self.controller.ims_cycles = 0
+        self.controller.ims_registered = Mock(return_value=False)
+        self.controller.cycle = Mock()
+        for name, value in (("datacard", "1"), ("voltd_active", True), ("uptime", 1000)):
+            patcher = patch.object(keeper, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name in ("command", "sub2_retrying", "log"):
+            patcher = patch.object(keeper, name)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+        self.sub2_retrying.return_value = False
+
+    def check(self, cycles):
+        self.controller.ims_checked = 0
+        self.controller.ims_cycles = cycles
+        self.controller.check_ims(1000)
+
+    def test_unknown_ims_never_consumes_recovery_budget_or_checks_retries(self):
+        self.controller.ims_registered.return_value = None
+        for cycles in (0, 1):
+            with self.subTest(cycles=cycles):
+                self.check(cycles)
+                self.assertEqual(self.controller.ims_cycles, cycles)
+        self.command.assert_not_called()
+        self.controller.cycle.assert_not_called()
+        self.sub2_retrying.assert_not_called()
+
+    def test_active_or_unknown_sub2_retries_hold_both_recovery_stages(self):
+        for retrying in (True, None):
+            for cycles in (0, 1):
+                with self.subTest(retrying=retrying, cycles=cycles):
+                    self.controller.reg_since = 1
+                    self.controller.ims_held = False
+                    self.sub2_retrying.return_value = retrying
+                    self.check(cycles)
+                    self.assertEqual(self.controller.ims_cycles, cycles)
+                    self.assertTrue(self.controller.ims_held)
+        self.command.assert_not_called()
+        self.controller.cycle.assert_not_called()
+
+    def test_confirmed_quiet_after_unknown_permits_restart_then_radio_recovery(self):
+        self.sub2_retrying.return_value = None
+        self.check(0)
+        self.assertEqual(self.controller.ims_cycles, 0)
+        self.sub2_retrying.return_value = False
+        with patch.object(keeper.time, "monotonic", return_value=1000):
+            self.check(0)
+        self.assertFalse(self.controller.ims_held)
+        self.command.assert_called_once_with(["systemctl", "restart", "81voltd"], 60)
+        self.assertEqual(self.controller.ims_cycles, 1)
+        self.controller.cycle.assert_not_called()
+        self.controller.reg_since = 1
+        self.check(1)
+        self.assertEqual(self.controller.ims_cycles, 2)
+        self.controller.cycle.assert_called_once_with()
+
+    def test_boot_holdoff_never_queries_journal_or_starts_recovery(self):
+        with patch.object(keeper, "uptime", return_value=keeper.BOOT_HOLDOFF - 1):
+            self.check(0)
+        self.assertTrue(self.controller.ims_held)
+        self.assertEqual(self.controller.ims_cycles, 0)
+        self.sub2_retrying.assert_not_called()
+        self.command.assert_not_called()
+        self.controller.cycle.assert_not_called()
+
+
 class ModemRecoveryTest(unittest.TestCase):
     def setUp(self):
         class BusError(Exception):
