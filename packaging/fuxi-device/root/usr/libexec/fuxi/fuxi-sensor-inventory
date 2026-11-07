@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Query a bounded SSC datatype list without enabling measurement streams."""
+import json
+import os
+import subprocess
+import sys
+
+
+# SSC datatypes, not Android sensor IDs. This is a probe list, not enumeration.
+DATA_TYPES = ("accel", "gyro", "mag", "ambient_light", "proximity", "rotv",
+              "gravity", "linear_accel", "game_rv", "geomag_rv", "step_counter",
+              "step_detect", "sig_motion", "tilt", "device_orient", "pressure")
+PROBE_TIMEOUT = 8
+PROBE_CODE = r'''
+import json
+import sys
+
+def probe(data_type):
+    try:
+        import gi
+        gi.require_version("SSC", "2")
+        from gi.repository import Gio, GLib, SSC
+    except (ImportError, ValueError):
+        return {"status": "dependency_unavailable"}
+
+    loop = GLib.MainLoop()
+    cancellable = Gio.Cancellable()
+    report = {"status": "timed_out"}
+
+    def ready(_source, result, _data):
+        try:
+            sensor = SSC.Sensor.new_finish(result)
+            if sensor is None:
+                report.update(status="no_object_returned")
+                return
+            # libssc 0.4.4's available/sample-rate/stream-type GParamSpecs
+            # disagree with their getters. Only read the valid string properties.
+            properties = {key: sensor.get_property(key) for key in
+                          ("name", "vendor", "data-type")}
+            if (properties["data-type"] != data_type or
+                    not isinstance(properties["name"], str) or not properties["name"] or
+                    any(value is not None and (not isinstance(value, str) or len(value) > 256)
+                        for value in properties.values())):
+                report.update(status="incomplete_attributes")
+            else:
+                report.update(status="attributes_reported", attributes=properties)
+        except TypeError:
+            # GI reports the library's NULL constructor result as TypeError.
+            # This alone does not establish that hardware is absent.
+            report.update(status="constructor_type_error")
+        except GLib.Error as error:
+            report.update(status="query_error", error_domain=error.domain, error_code=error.code)
+        finally:
+            loop.quit()
+
+    def deadline():
+        cancellable.cancel()
+        loop.quit()
+        return False
+
+    GLib.timeout_add_seconds(6, deadline)
+    SSC.Sensor.new(data_type, cancellable, ready, None)
+    loop.run()
+    return report
+
+print(json.dumps(probe(sys.argv[1]), allow_nan=False), flush=True)
+'''
+
+
+def query(data_type):
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", PROBE_CODE, data_type], capture_output=True,
+            text=True, timeout=PROBE_TIMEOUT,
+            env={**os.environ, "LC_ALL": "C", "G_MESSAGES_DEBUG": ""})
+    except subprocess.TimeoutExpired:
+        return {"status": "timed_out"}
+    except OSError as error:
+        return {"status": "launch_failed", "errno": error.errno}
+    if result.returncode:
+        return {"status": "worker_failed", "returncode": result.returncode}
+    if len(result.stdout) > 4096:
+        return {"status": "invalid_response"}
+    try:
+        report = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return {"status": "invalid_response"}
+    if not isinstance(report, dict) or report.get("status") not in (
+            "attributes_reported", "dependency_unavailable", "timed_out",
+            "no_object_returned", "constructor_type_error", "incomplete_attributes", "query_error"):
+        return {"status": "invalid_response"}
+    return report
+
+
+def collect():
+    sensors = {}
+    for data_type in DATA_TYPES:
+        report = query(data_type)
+        sensors[data_type] = report
+        if report["status"] == "dependency_unavailable":
+            break
+    return {"schema_version": 1, "scope": "fixed_ssc_datatype_probe_list",
+            "requested_data_types": list(DATA_TYPES), "results": sensors,
+            "measurement_streams_requested": False,
+            "measurement_validation": "not_tested", "physical_units": "not_verified",
+            "mounting_axes": "not_verified", "complete_hardware_inventory": False}
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 1:
+        sys.exit("Usage: fuxi-sensor-inventory")
+    print(json.dumps(collect(), indent=2, sort_keys=True, allow_nan=False))
