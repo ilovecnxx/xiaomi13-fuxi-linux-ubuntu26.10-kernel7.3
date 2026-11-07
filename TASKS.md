@@ -12,7 +12,7 @@
 - deb5 = 收敛树 a5dcbb9cc（花屏修复）+ 语音移植（未提交，默认关），由 `~/.cache/fuxi-voice74` 构建。cmdline loglevel=3。
 - 开机花屏 SMMU fault 10→0（已实测）；卡 2 IMS 127 s（81voltd v8）；双卡 IMS 正常。
 - 包：fuxi-device/desktop/firmware 0.20261107.1519，fuxi-modem 0.20261107.1619。
-- 充电（11-07 晚，deb5）：电脑 SDP 约 1.8 W，实测净放电；换墙充后 5 V PD 约 6.9 W，121 秒电荷 +44 mAh、电量 26%→27%。未改充电参数；高功率快充未验收，见 `docs/充电验收-20261107.md`。
+- 充电（11-07 晚，deb5）：电脑 SDP 约 1.8 W，实测净放电；换墙充后 5 V PD 约 6.9 W，121 秒电荷 +44 mAh、电量 26%→27%。**快充未解决**，未改充电参数；见 `docs/充电验收-20261107.md`。已找到 Armbian sheng 的 MiPPS 认证程序和配套 qcom_battmgr 扩展，尚未移植，机型/固件差异见 `docs/快充开源实现调研-20261107.md`。
 - 相机第 1 步（17:10 用户叫停，**未编译内核、未上机**）：MCLK 修法写好 → 补丁 `work/patches/camera-mclk-gdsc-20261107/`
   （收敛树与语音树都已打上、未提交）。相机 DTB 编译通过，并已确认是日常 DTB 的超集（只多开 cci0/cci1/camss + LDO 电压）。
 - 子 agent 16:45 起 API 余额不足（403），充值前别派。
