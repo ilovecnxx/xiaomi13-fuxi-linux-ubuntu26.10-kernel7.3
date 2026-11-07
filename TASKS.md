@@ -1,6 +1,6 @@
 # 当前任务与验收状态
 
-当前请求：内核 CI 收尾交给子代理，主任务推进相机。充电故障排查暂停。
+当前请求：完成 cam4 故障后的恢复检查后暂停。恢复检查已完成，相机及充电故障排查均暂停。
 CI 已完成云端完整 deb、候选产物/对应源码校验与同条件计时；本地约 296 秒、Actions 约 847 秒，详见 [`构建对比`](docs/完整内核CI与速度对比-20261108.md)。
 
 ## 维护入口
@@ -39,8 +39,9 @@ CI 已完成云端完整 deb、候选产物/对应源码校验与同条件计时
 
 ## 设备基线
 
-- 日常基线 std2、回退 chg3；cam4 实验再次阻塞后尚未确认恢复，最后运行 cam4。
-  故障前已预置 default=std2、fallback=chg3、pending=1 tries=0 once=0；需物理重启并复验。
+- cam4 故障后用户物理恢复安卓，已通过 ADB 返回 Linux；当前运行及默认 std2，回退 chg3。
+  启动自动确认 pending=0 tries=0 once=0；根文件系统写入同步、dpkg 审计及 WiFi/传感器检查通过。
+  采样未见 D 状态线程或新 RPMh/I/O 错误；journal 有非正常关机后的替换记录，未执行离线 fsck。
   保留 deb5 及 cam1/cam2/cam3/cam4 实验包。
 - cam3 采集曾出现 RPMh/ICC 阻塞并影响存储；用户物理恢复安卓后，经无线 ADB 返回 Linux，已恢复 std2 默认。
   当时根文件系统读写、dpkg 审计及 WiFi/传感器健康检查通过；这不代表 cam4 新故障后的健康状态。
@@ -58,8 +59,9 @@ CI 已完成云端完整 deb、候选产物/对应源码校验与同条件计时
 2. 相机：TITAN_TOP/MCLK 修复已上机；IMX800/OV13B10 ID 匹配，前摄未确认，长焦读 ID 后重复超时。
    OV13B10 超广角 RAW 连续 600 帧约 60 fps，CPU RGB 2104×1560 连续 1200 帧约 30 fps；GPU RGB 反复停帧。
    cam4 全尺寸 CPU RGB 启流仍触发 RPMh/ICC 阻塞，影响 UFS/调频；已捕获 MC0/SH1/SH0/MM1/MM0/ACV 超时批次。
-   QoS 300 us 与 GPU 去 Agc 对照均未解决停帧；CPU 不能当作修复。优先恢复设备，再定位共享互连。
+   QoS 300 us 与 GPU 去 Agc 对照均未解决停帧；CPU 不能当作修复。设备恢复检查已完成，后续定位共享互连。
    高速模式短横线、标定、桌面取景仍未验收。
+   用户要求本次恢复检查后暂停；未再运行相机采集。
    标准配方未混入实验，固定补丁见 [`kernel/experiments/camera/`](kernel/experiments/camera/README.md)，结果见 [`相机实机记录`](docs/相机验收-20261108.md)。
 3. 通话：VoLTE 来电、短信、双卡注册可用；ADSP TX GRAPH_START 返回 -22，通话仍无声。
 4. WiFi/蓝牙功耗、挂起、扬声器保护/标定与蓝牙 A2DP 需要单独验收；当前关闭空闲自动挂起。
