@@ -80,14 +80,40 @@ class ModemCacheTest(unittest.TestCase):
         controller.manager.get_objects.return_value = [self.object("/modem/0")]
         controller.path, controller.busy = "/modem/0", False
         controller.unreg_since, controller.reg_since = 1, None
+        controller.ims_checked = controller.ims2_checked = 1000
         controller.cycle, controller.check_ims, controller.check_ims2 = Mock(), Mock(), Mock()
         with patch.object(keeper.time, "monotonic", return_value=1000), patch.object(keeper, "log"):
             self.assertTrue(controller.tick())
         controller.cycle.assert_not_called()
         controller.check_ims.assert_called_once_with(1000)
         controller.check_ims2.assert_called_once_with(1000)
+        self.assertEqual(controller.poll_interval, keeper.IMS_POLL)
         self.assertIsNone(controller.unreg_since)
         self.assertIsNone(controller.reject_at)
+
+    def test_events_and_early_timer_do_not_postpone_ims_deadline(self):
+        for now, expected in ((1010, 20), (1029.8, 1), (1030.1, 1)):
+            with self.subTest(now=now):
+                controller = self.controller()
+                controller.manager.get_objects.return_value = [self.object("/modem/0")]
+                controller.path, controller.busy = "/modem/0", False
+                controller.unreg_since, controller.reg_since = None, 1000
+                controller.ims_checked, controller.ims2_checked = 1000, 1002
+                controller.check_ims, controller.check_ims2 = Mock(), Mock()
+                with patch.object(keeper.time, "monotonic", return_value=now):
+                    controller.tick()
+                self.assertEqual(controller.poll_interval, expected)
+
+    def test_ims_cycle_returns_to_short_recovery_poll(self):
+        controller = self.controller()
+        controller.manager.get_objects.return_value = [self.object("/modem/0")]
+        controller.path, controller.busy = "/modem/0", False
+        controller.unreg_since, controller.reg_since = None, 1000
+        controller.check_ims = Mock(side_effect=lambda _: setattr(controller, "reg_since", None))
+        controller.check_ims2 = Mock()
+        with patch.object(keeper.time, "monotonic", return_value=1001):
+            controller.tick()
+        self.assertEqual(controller.poll_interval, keeper.POLL)
 
     def test_stalled_cache_still_obeys_recovery_threshold(self):
         for lost in (keeper.STALL_LIMIT - 1, keeper.STALL_LIMIT):
@@ -102,6 +128,84 @@ class ModemCacheTest(unittest.TestCase):
                         patch.object(keeper, "uptime", return_value=1000), patch.object(keeper, "log"):
                     self.assertTrue(controller.tick())
                 self.assertEqual(controller.cycle.call_count, int(lost >= keeper.STALL_LIMIT))
+                self.assertEqual(controller.poll_interval, keeper.POLL)
+
+
+class ModemMonitorTest(unittest.TestCase):
+    def setUp(self):
+        self.controller = Mock(path="/modem/0", poll_interval=keeper.IMS_POLL)
+        self.monitor = keeper.Monitor(self.controller)
+        self.glib = Mock()
+        self.glib.idle_add.side_effect = range(10, 30)
+        self.glib.timeout_add_seconds.side_effect = range(30, 60)
+        patcher = patch.object(keeper, "GLib", self.glib)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def properties(self, interface, changed=None, invalidated=()):
+        proxy = Mock()
+        proxy.get_interface_name.return_value = interface
+        self.monitor.properties_changed(None, None, proxy,
+                                        Mock(unpack=Mock(return_value=changed or {})), invalidated)
+
+    def test_event_burst_replaces_timer_with_only_one_idle_dispatch(self):
+        self.monitor.dispatch()
+        self.glib.timeout_add_seconds.assert_called_once_with(30, self.monitor.dispatch)
+        self.properties(keeper.IF_MODEM, {"State": 7})
+        self.properties(keeper.IF_3GPP, {"RegistrationState": 2})
+        self.monitor.changed()
+        self.glib.source_remove.assert_called_once_with(30)
+        self.glib.idle_add.assert_called_once_with(self.monitor.dispatch)
+        self.controller.tick.assert_called_once()
+        self.controller.poll_interval = keeper.POLL
+        self.assertFalse(self.monitor.dispatch())
+        self.assertEqual(self.controller.tick.call_count, 2)
+        self.glib.timeout_add_seconds.assert_called_with(5, self.monitor.dispatch)
+
+    def test_signal_quality_and_unrelated_interfaces_do_not_wake_monitor(self):
+        self.properties(keeper.IF_MODEM, {"SignalQuality": (70, True)})
+        self.properties(keeper.IF_3GPP, {"OperatorName": "example"})
+        self.properties("unrelated", {"State": 7})
+        self.glib.idle_add.assert_not_called()
+
+    def test_rejection_and_invalidated_registration_trigger_immediate_check(self):
+        self.properties(keeper.IF_3GPP, {"NetworkRejection": {"error": 1}})
+        self.glib.idle_add.assert_called_once()
+        self.monitor.dispatch()
+        self.properties(keeper.IF_3GPP, invalidated=["RegistrationState"])
+        self.assertEqual(self.glib.idle_add.call_count, 2)
+
+    def test_owner_replacement_and_removed_current_modem_reset_identity(self):
+        self.monitor.owner_changed()
+        self.assertIsNone(self.controller.path)
+        self.monitor.dispatch()
+        self.controller.path = "/modem/0"
+        obj = Mock()
+        obj.get_object_path.return_value = "/modem/0"
+        self.monitor.removed(None, obj)
+        self.assertIsNone(self.controller.path)
+
+    def test_removing_another_object_keeps_current_modem_identity(self):
+        obj = Mock()
+        obj.get_object_path.return_value = "/sim/0"
+        self.monitor.removed(None, obj)
+        self.assertEqual(self.controller.path, "/modem/0")
+
+    def test_event_during_check_keeps_its_pending_dispatch(self):
+        self.controller.tick.side_effect = self.monitor.request
+        self.monitor.dispatch()
+        self.assertTrue(self.monitor.pending)
+        self.glib.idle_add.assert_called_once()
+        self.glib.timeout_add_seconds.assert_not_called()
+
+    def test_cancel_removes_source_and_can_be_restarted(self):
+        self.monitor.request()
+        self.monitor.cancel()
+        self.glib.source_remove.assert_called_once_with(10)
+        self.assertIsNone(self.monitor.source)
+        self.assertFalse(self.monitor.pending)
+        self.monitor.request()
+        self.assertEqual(self.glib.idle_add.call_count, 2)
 
 
 class ModemRecoveryTest(unittest.TestCase):
@@ -239,6 +343,7 @@ class ModemRecoveryTest(unittest.TestCase):
     def check_ims_restart_failure(self, fail_start=False):
         controller = self.controller
         controller.ims_checked = 0
+        controller.ims2_checked = 1000
         controller.datacard = "1"
         controller.ims_ok, controller.ims_cycles = False, 0
         controller.reg_since = 1

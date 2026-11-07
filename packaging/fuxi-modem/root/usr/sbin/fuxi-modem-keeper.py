@@ -6,6 +6,7 @@
 #    Enable(false) -> SetPowerState(low) -> SetPowerState(on) -> Enable(true)，然后重设 data-centric。
 #    循环之间按 MIN_GAP 起步、失败翻倍、最多 MAX_GAP 退避。
 # 只在 modem 处于 enabled/searching 时动作；被人为 disable 的 modem 不碰。
+import math
 import os
 import subprocess
 import sys
@@ -106,6 +107,7 @@ class Keeper:
         self.ims2_last = None
         self.ims_held = False
         self.datacard = datacard()
+        self.poll_interval = POLL
         self.bus.signal_subscribe(MM, "org.freedesktop.DBus.Properties", "PropertiesChanged",
                                   None, None, Gio.DBusSignalFlags.NONE, self.on_props)
 
@@ -299,6 +301,7 @@ class Keeper:
         self.cycle()
 
     def tick(self):
+        self.poll_interval = POLL
         if self.busy:
             return True
         mods = self.modems()
@@ -323,6 +326,10 @@ class Keeper:
                 self.gap = MIN_GAP
             self.check_ims(now)
             self.check_ims2(now)
+            if self.reg_since is not None:
+                # Events and GLib timer coalescing must not postpone an IMS deadline.
+                due = min(self.ims_checked, self.ims2_checked) + IMS_POLL
+                self.poll_interval = max(1, min(IMS_POLL, math.ceil(due - time.monotonic())))
             return True
         self.reg_since = None
         if state not in (ST_ENABLED, ST_SEARCHING):
@@ -343,12 +350,73 @@ class Keeper:
         return True
 
 
+class Monitor:
+    """Coalesce relevant bus events; retain a timer for recovery and IMS checks."""
+
+    def __init__(self, controller):
+        self.controller = controller
+        self.source = None
+        self.pending = False
+        manager = controller.manager
+        manager.connect("object-added", self.changed)
+        manager.connect("object-removed", self.removed)
+        manager.connect("interface-added", self.changed)
+        manager.connect("interface-removed", self.changed)
+        manager.connect("notify::name-owner", self.owner_changed)
+        manager.connect("interface-proxy-properties-changed", self.properties_changed)
+
+    def request(self):
+        if self.pending:
+            return
+        self.cancel()
+        self.pending = True
+        self.source = GLib.idle_add(self.dispatch)
+
+    def changed(self, *_):
+        self.request()
+
+    def removed(self, _manager, obj):
+        if obj.get_object_path() == self.controller.path:
+            self.controller.path = None
+        self.request()
+
+    def owner_changed(self, *_):
+        # A restarted service can reuse the same modem path before idle dispatch.
+        self.controller.path = None
+        self.request()
+
+    def properties_changed(self, _manager, _obj, proxy, changed, invalidated):
+        fields = {IF_MODEM: {"State"},
+                  IF_3GPP: {"RegistrationState", "NetworkRejection"}}
+        relevant = fields.get(proxy.get_interface_name(), set())
+        if relevant.intersection(changed.unpack()) or relevant.intersection(invalidated):
+            self.request()
+
+    def dispatch(self):
+        self.source = None
+        self.pending = False
+        self.controller.tick()
+        if self.source is None:
+            self.source = GLib.timeout_add_seconds(self.controller.poll_interval, self.dispatch)
+        return False
+
+    def cancel(self):
+        if self.source is not None:
+            GLib.source_remove(self.source)
+        self.source = None
+        self.pending = False
+
+
 def main():
     k = Keeper()
     log(f"start: reject_grace={REJECT_GRACE}s stall_limit={STALL_LIMIT}s "
         f"boot_holdoff={BOOT_HOLDOFF}s sub2_quiet={SUB2_QUIET}s")
-    GLib.timeout_add_seconds(POLL, k.tick)
-    GLib.MainLoop().run()
+    monitor = Monitor(k)
+    monitor.request()
+    try:
+        GLib.MainLoop().run()
+    finally:
+        monitor.cancel()
 
 
 if __name__ == "__main__":
