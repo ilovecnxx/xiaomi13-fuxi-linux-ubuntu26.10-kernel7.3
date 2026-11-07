@@ -46,5 +46,17 @@ MIGRATE
 	fi
 fi
 
+# 卡槽 1 兜底移动数据连接（非电信卡时按运营商自动选 APN），只在没有时创建，不改已有的；
+# 上网卡是卡槽 2 时先不自动连接（fuxi-datacard set 1 会打开）。回滚：nmcli con delete fuxi-mobile-auto
+if command -v nmcli >/dev/null 2>&1 && nmcli -t general status >/dev/null 2>&1 &&
+   ! nmcli -g connection.id con show fuxi-mobile-auto >/dev/null 2>&1; then
+	ac=yes
+	[ "$(cat /var/lib/fuxi/datacard 2>/dev/null)" = 2 ] && ac=no
+	nmcli con add type gsm con-name fuxi-mobile-auto ifname '*' gsm.auto-config yes \
+		connection.autoconnect "$ac" connection.autoconnect-priority -10 \
+		ipv4.method auto ipv6.method auto >/dev/null 2>&1 ||
+		echo "fuxi-modem: 警告：创建 fuxi-mobile-auto 失败" >&2
+fi
+
 [ -d /run/systemd/system ] && { systemctl daemon-reload || true; }
 exit 0

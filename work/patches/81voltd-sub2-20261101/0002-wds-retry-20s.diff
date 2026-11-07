@@ -1,0 +1,16 @@
+--- ../81voltd-sub2.v7/qvd-connection.c	2026-11-06 15:56:47.900742333 +0800
++++ qvd-connection.c	2026-11-07 15:59:50.389822152 +0800
+@@ -328,9 +328,10 @@
+ 
+ static void wds_retry_later(QVDConnection *conn)
+ {
+-	guint delay = WDS_RETRY_FIRST_S << MIN(conn->wds_retry_n, 3);
+-
+-	delay = MIN(delay, WDS_RETRY_MAX_S);
++	/* fuxi: modem only hands out the IMS PDN some minutes after attach; poll it
++	 * every 20 s for the first 8 tries (old 20/40/80 s backoff overshot by ~1 min),
++	 * then back off to WDS_RETRY_MAX_S. */
++	guint delay = conn->wds_retry_n < 8 ? WDS_RETRY_FIRST_S : WDS_RETRY_MAX_S;
+ 	conn->wds_retry_n++;
+ 	g_printerr("WDS sub %u: wrong PDN (not apn %s), stopping it, retry in %u s\n",
+ 		   conn->wds_sub, conn->wds_apn, delay);

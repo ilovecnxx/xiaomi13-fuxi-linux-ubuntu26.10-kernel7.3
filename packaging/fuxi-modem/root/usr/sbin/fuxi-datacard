@@ -27,11 +27,23 @@ from gi.repository import GLib, Qmi, Qrtr
 STATE = "/var/lib/fuxi/datacard"
 NM_CON = "fuxi-mobile-ct"
 STALE_NM_CON = "fuxi-mobile"
+# 卡槽 1 换成非电信卡（fuxi-mobile-ct 按 sim-id 绑在电信卡上，匹配不上）时的兜底：gsm.auto-config 按
+# mobile-broadband-provider-info 选 APN，autoconnect-priority -10 低于 fuxi-mobile-ct。由 fuxi-modem postinst 创建。
+AUTO_NM_CON = "fuxi-mobile-auto"
 DNS_CONF = "/etc/NetworkManager/conf.d/90-fuxi-datacard-dns.conf"
 FALLBACK_DNS = "223.5.5.5"
 MUX = 8
 IF = f"qmapmux0.{MUX}"
 PROFILE = int(os.environ.get("FUXI_DATACARD_PROFILE", "1"))  # 卡槽 2 profile 1 = 3GNET
+# 按卡槽 2 的归属 PLMN 选 APN。联通卡（11-06 起实测）沿用 profile 1 = 3GNET，不带 APN、行为不变；
+# 其他运营商在 start network 里直接带 APN 覆盖 profile 里的（不往 modem 写 profile）。
+# FUXI_DATACARD_APN=<apn> 强制指定，=profile 强制只用 profile。
+APN_BY_PLMN = {
+    **dict.fromkeys(("46000", "46002", "46004", "46007", "46008"), "cmnet"),
+    **dict.fromkeys(("46003", "46005", "46011", "46012"), "ctnet"),
+    **dict.fromkeys(("46001", "46006", "46009"), None),
+    "46015": "cbnet",
+}
 METRIC = 710  # usb0 默认路由是 700，同 metric 会被 replace 掉
 ctx = GLib.MainContext.default()
 
@@ -97,6 +109,36 @@ class Modem:
             raise RuntimeError(f"{service.value_nick} 0x{msg_id:04x}: error 0x{error:04x}")
         return resp
 
+    def raw_u8(self, c, service, msg_id, tlv, value):
+        msg = Qmi.message_new(service, c.get_cid(), c.get_next_transaction_id(), msg_id)
+        off = Qmi.message_tlv_write_init(msg, tlv)
+        Qmi.message_tlv_write_guint8(msg, value)
+        Qmi.message_tlv_write_complete(msg, off)
+        resp = self.dev.command_full_finish(
+            wait(self.dev.command_full, msg, Qmi.MessageContext.new(), 10, None))
+        off = Qmi.message_tlv_read_init(resp, 0x02)[0]
+        _, o, result = Qmi.message_tlv_read_guint16(resp, off, 0, Qmi.Endian.LITTLE)
+        _, o, error = Qmi.message_tlv_read_guint16(resp, off, o, Qmi.Endian.LITTLE)
+        if result:
+            raise RuntimeError(f"{service.value_nick} 0x{msg_id:04x}: error 0x{error:04x}")
+
+    def home_plmn(self, sub=1):
+        """订阅 sub（0=卡槽 1，1=卡槽 2）SIM 的归属 PLMN，如 "46001"；读不到返回 None。"""
+        c = self.alloc(Qmi.Service.NAS)
+        try:
+            self.raw_u8(c, Qmi.Service.NAS, 0x0045, 0x01, sub)  # NAS Bind Subscription
+            out = call("get_home_network", c, None, 10, None)
+            out.get_result()
+            v = out.get_home_network()
+            if isinstance(v, tuple) and v and v[0] is True:
+                v = v[1:]
+            return f"{v[0]:03d}{v[1]:02d}"
+        except (GLib.Error, RuntimeError) as e:
+            log(f"home network: {getattr(e, 'message', e)}")
+            return None
+        finally:
+            self.release(c)
+
     def get_dds(self):
         resp = self.raw(self.dsd, Qmi.Service.DSD, 0x004F)
         off = Qmi.message_tlv_read_init(resp, 0x10)[0]
@@ -118,6 +160,14 @@ class Modem:
         self.release(self.dsd)
 
 
+def pick_apn(plmn):
+    """返回要带进 start network 的 APN；None = 只用 profile。"""
+    forced = os.environ.get("FUXI_DATACARD_APN", "").strip()
+    if forced:
+        return None if forced == "profile" else forced
+    return APN_BY_PLMN.get(plmn) if plmn else None
+
+
 def conn_status(o):
     # 输出是 (ok, status) 或指示里的 (ok, status, reconfiguration_required)
     v = o.get_connection_status()
@@ -137,6 +187,7 @@ class Session:
         self.pdh = None
         self.dns = []
         self.down = False
+        self.apn = None
 
     def up(self):
         self.wds = self.m.alloc(Qmi.Service.WDS)
@@ -154,6 +205,8 @@ class Session:
 
         i = Qmi.MessageWdsStartNetworkInput.new()
         i.set_profile_index_3gpp(PROFILE)
+        if self.apn:
+            i.set_apn(self.apn)
         i.set_ip_family_preference(Qmi.WdsIpFamily.IPV4)
         try:
             o = call("start_network", self.wds, i, 60, None)
@@ -244,6 +297,10 @@ def nm_slot1(enable):
         # 在卡 1 上拨 3gnet，占住 internet 呼叫导致卡槽 2 call-already-present
         sh(f"nmcli con mod {STALE_NM_CON} connection.autoconnect no")
         sh(f"nmcli con down {STALE_NM_CON}")
+    # 兜底连接同样会在卡槽 1 上占 internet 呼叫：选卡槽 2 时关掉，切回时恢复自动连接
+    sh(f"nmcli con mod {AUTO_NM_CON} connection.autoconnect {'yes' if enable else 'no'}")
+    if not enable:
+        sh(f"nmcli con down {AUTO_NM_CON}")
     sh(f"nmcli con {'up' if enable else 'down'} {NM_CON}")
 
 
@@ -262,6 +319,9 @@ def run():
             s = Session(m)
             try:
                 m.set_dds(2)
+                plmn = m.home_plmn(1)
+                s.apn = pick_apn(plmn)
+                log(f"slot 2 home {plmn or '?'}: apn {s.apn or f'profile {PROFILE}'}")
                 s.up()
                 fails = 0
                 next_poll = time.monotonic() + 20

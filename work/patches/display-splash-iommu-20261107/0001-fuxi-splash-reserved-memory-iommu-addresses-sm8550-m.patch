@@ -1,0 +1,68 @@
+From a5dcbb9ccd807ef7113072b8919b1970c48b7ca6 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sat, 7 Nov 2026 16:37:52 +0800
+Subject: [PATCH] fuxi: splash reserved-memory iommu-addresses + sm8550-mdss
+ identity domain
+
+The bootloader leaves MDSS autorefresh scanning the splash buffer at
+0xb8000000. Once the SMMU attaches a translating domain to the MDSS SID
+(0x1c00) every fetch faults until DPU takes over, which shows as a
+corrupted screen for ~0.7 s during boot.
+
+- DTS: describe the splash region with iommu-addresses and point mdss
+  memory-region at it, so a 1:1 direct mapping is requested.
+- arm-smmu-qcom: add qcom,sm8550-mdss to qcom_smmu_client_of_match like
+  the other MDSS generations, so the device starts in an identity domain
+  (the direct mapping alone could not be installed before attach and
+  one fault remained).
+
+Tested on Xiaomi 13 (deb4/deb5): context faults 10 -> 1 -> 0, panel and
+DPU work.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts | 6 ++++++
+ drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c      | 1 +
+ 2 files changed, 7 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts
+index acefe056f..6c05b3700 100644
+--- a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi.dts
+@@ -188,8 +188,13 @@ ramoops@a7000000 {
+ 		};
+ 
+ 		/* 厂商 DTB 的 cont_splash_region：bootloader 帧缓冲，不能给内核当普通内存用 */
++		/*
++		 * iommu-addresses：SMMU 一挂上就给 mdss 建 1:1 直通映射，MDSS autorefresh 在
++		 * DPU 接管前继续读 splash 不再触发 SID 0x1c00 context fault（开机花屏）。
++		 */
+ 		cont_splash_mem: splash-region@b8000000 {
+ 			reg = <0x0 0xb8000000 0x0 0x2b00000>;
++			iommu-addresses = <&mdss 0x0 0xb8000000 0x0 0x2b00000>;
+ 			no-map;
+ 		};
+ 
+@@ -917,6 +922,7 @@ &framebuffer0 {
+ };
+ 
+ &mdss {
++	memory-region = <&cont_splash_mem>;
+ 	status = "okay";
+ };
+ 
+diff --git a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+index 795e8ec7e..483e9e414 100644
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+@@ -426,6 +426,7 @@ static const struct of_device_id qcom_smmu_client_of_match[] __maybe_unused = {
+ 	{ .compatible = "qcom,sm8150-mdss" },
+ 	{ .compatible = "qcom,sm8250-mdss" },
+ 	{ .compatible = "qcom,sm8450-mdss" },
++	{ .compatible = "qcom,sm8550-mdss" },
+ 	{ .compatible = "qcom,x1e80100-mdss" },
+ 	{ }
+ };
+-- 
+2.55.0
+
