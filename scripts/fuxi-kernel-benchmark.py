@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,19 @@ def sha256(path):
 
 def git(*args):
     return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
+
+
+def kernel_archive(manifest):
+    archive = ROOT / "work/sources" / manifest["archive"]
+    if archive.exists():
+        if sha256(archive) != manifest["archive_sha256"]:
+            raise ValueError("Upstream kernel archive checksum mismatch")
+        return archive
+    spec = importlib.util.spec_from_file_location(
+        "benchmark_sources", Path(__file__).with_name("fuxi-sources.py"))
+    sources = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sources)
+    return sources.fetch(manifest["url"], manifest["archive_sha256"], ROOT / "build/source-cache")
 
 
 def run_phase(report, output, name, command, env):
@@ -62,9 +76,7 @@ def collect_artifacts(name, output, manifest, commit):
     # Include actual upstream input and exact tracked recipes, not just URLs.
     source_dir = output / "corresponding-source"
     source_dir.mkdir()
-    archive = ROOT / "work/sources" / manifest["archive"]
-    if sha256(archive) != manifest["archive_sha256"]:
-        raise ValueError("Upstream kernel archive checksum mismatch")
+    archive = kernel_archive(manifest)
     shutil.copy2(archive, source_dir / manifest["archive"])
     with (source_dir / "project-recipes.tar").open("wb") as stream:
         subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", commit],
@@ -151,7 +163,7 @@ def main(argv=None):
                    f"SOURCE_DATE_EPOCH={manifest['source_date_epoch']}",
                    "FUXI_KTREE=", "FUXI_EXTRA_CFG=",
                    "bash", "scripts/fuxi-build-deb.sh", args.name], env)
-        phase = {"name": "collect-artifacts"}
+        phase = {"name": "collect-artifacts", "exit_code": 1}
         report["phases"].append(phase)
         collected = time.monotonic()
         try:

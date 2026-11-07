@@ -1,6 +1,7 @@
 """Benchmark safety and failure records without containers or device access."""
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -83,6 +84,31 @@ class KernelBenchmarkTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "build environment"):
             benchmark.collect_artifacts("trial", self.root / "result",
                                         {"tree": "pinned-tree"}, "project-commit")
+
+    def test_reused_source_tree_can_use_verified_shared_archive_cache(self):
+        cache = self.root / "build/source-cache"
+        cache.mkdir(parents=True)
+        digest = hashlib.sha256(b"archive").hexdigest()
+        archive = cache / digest
+        archive.write_bytes(b"archive")
+        manifest = {"archive": "linux.tar.gz", "archive_sha256": digest,
+                    "url": "https://invalid.example/not-needed"}
+        self.assertEqual(benchmark.kernel_archive(manifest), archive)
+
+    def test_missing_archive_is_fetched_and_verified(self):
+        original = self.root / "upstream.tar.gz"
+        original.write_bytes(b"upstream input")
+        digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        archive = benchmark.kernel_archive({"archive": "linux.tar.gz", "archive_sha256": digest,
+                                             "url": original.as_uri()})
+        self.assertEqual(archive.read_bytes(), original.read_bytes())
+
+    def test_corrupt_download_cache_is_rejected(self):
+        cache = self.root / "work/sources"
+        cache.mkdir(parents=True)
+        (cache / "linux.tar.gz").write_bytes(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            benchmark.kernel_archive({"archive": "linux.tar.gz", "archive_sha256": "wrong"})
 
 
 if __name__ == "__main__":
