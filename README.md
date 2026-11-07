@@ -66,6 +66,8 @@ scripts/fuxi-build-deb.sh <唯一名字>
 ```
 
 构建产物在 `work/kbuild/<名字>/`：内核 deb、配置、源码记录、`build.json` 与校验和。
+完整云端打包可在 Actions 手动运行 `Full Kernel Package`，保留 deb、对应源码、日志及分阶段计时 7 天；
+本地同条件计时入口为 `python3 scripts/fuxi-kernel-benchmark.py <相同名字>`，详见 [`完整包和速度对比`](docs/内核持续维护与发布.md#完整包和速度对比)。
 标准源码在 `build/linux-standard/`（不提交第三方源码），默认构建前必须通过完整源码树校验。
 安装内核 deb 后由 initramfs-tools 和设备包钩子更新启动项，日常升级不重刷 recovery_b。
 构建依赖、实验源码入口和补丁维护见 [`kernel/README.md`](kernel/README.md)。

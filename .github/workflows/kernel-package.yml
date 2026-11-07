@@ -1,0 +1,39 @@
+name: Full Kernel Package
+on:
+  workflow_dispatch:
+    inputs:
+      name:
+        description: Unique kernel name (a-z, 0-9, dots); reuse locally for comparison
+        required: true
+        type: string
+      jobs:
+        description: Parallel compiler jobs (0 uses all available CPUs)
+        default: '0'
+        type: choice
+        options: ['0', '4', '8', '12']
+permissions:
+  contents: read
+concurrency:
+  group: kernel-package-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build clean kernel deb and record timings
+        env:
+          FUXI_CONTAINER_ENGINE: docker
+          BUILD_NAME: ${{ inputs.name }}
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: python3 scripts/fuxi-kernel-benchmark.py "$BUILD_NAME" --jobs "$BUILD_JOBS"
+      - name: Retain package, corresponding source, provenance and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: kernel-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work/benchmarks/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0

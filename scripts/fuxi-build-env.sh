@@ -13,7 +13,12 @@ case "${1:-}" in
     ;;
   run)
     shift
+    userns=()
+    if [ "${engine##*/}" = podman ] && [ "$(id -u)" -ne 0 ]; then
+      userns=(--userns=keep-id)
+    fi
     "$engine" run --rm --pull=never --network=none --platform="linux/$arch" \
+      "${userns[@]}" \
       --user "$(stat -c %u "$B"):$(stat -c %g "$B")" \
       -v "$B:/src:rw" -w /src "$tag" "$@"
     ;;

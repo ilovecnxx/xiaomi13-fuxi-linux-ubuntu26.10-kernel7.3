@@ -25,7 +25,10 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$K" log -1 --format=%ct
 export KBUILD_BUILD_TIMESTAMP="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%d %H:%M:%S UTC')"
 export KBUILD_BUILD_USER=fuxi KBUILD_BUILD_HOST=builder KBUILD_BUILD_VERSION=1
 read -r -a EXTRA_CFG <<< "${FUXI_EXTRA_CFG:-}"
-M=(make -C "$K" O="$O" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$(nproc)" LOCALVERSION="-fuxi-$NAME")
+JOBS="${FUXI_BUILD_JOBS:-$(nproc)}"
+[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo 'FUXI_BUILD_JOBS must be a positive integer'; exit 1; }
+export FUXI_BUILD_JOBS="$JOBS"
+M=(make -C "$K" O="$O" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$JOBS" LOCALVERSION="-fuxi-$NAME")
 {
   "${M[@]}" fuxi_defconfig
   # 防御：defconfig 以后被谁改回内建 initramfs / ABL 直启也不行
@@ -89,6 +92,7 @@ record = {
     "source_dirty": bool(git("status", "--porcelain")),
     "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
     "extra_config": os.environ.get("FUXI_EXTRA_CFG", ""),
+    "build_jobs": int(os.environ["FUXI_BUILD_JOBS"]),
     "manifest_sha256": hashlib.sha256((root / "kernel/manifest.json").read_bytes()).hexdigest(),
     "compiler": subprocess.check_output(["aarch64-linux-gnu-gcc", "--version"], text=True).splitlines()[0],
     "build_environment_sha256": hashlib.sha256(Path("/build-environment.lock").read_bytes()).hexdigest()
