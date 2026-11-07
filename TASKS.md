@@ -28,8 +28,10 @@
 - 通信：两卡数据/短信/VoLTE 信令/来电通；**通话音频不通（语音 TX -22）**；卡 2 IMS 待查。
 
 ## 下一步（都先问用户）
-1. U-Boot uboot5（`work/kbuild/abl-fuxi-uboot5.img`，sha 0e251a9794eb0ff4）：菜单「Boot <entry> (booti)」改到 deb3 + initrd + root=PARTUUID；
-   刷写走 `scripts/fuxi-test-recovery.sh`（要进 Android，需用户确认），回滚 uboot4。验证手动条目要按住音量下（物理操作）。
+1. （已完成）U-Boot 现为 uboot7（`work/kbuild/abl-fuxi-uboot7.img`，sha b78e2462f6658c0b，11-07 15:10 刷入 recovery_b）；回滚 uboot5 → uboot4 → shim7。
+   菜单「Boot <entry> (booti)」= deb3 + initrd + root=UUID。按音量下进菜单基本按不中（早了 ABL 进 fastboot，晚了 bootdelay=0 直接启动），
+   测手动条目改用 `fuxi-bootcount manual-once`（计数块字节 10，U-Boot 先清 0 再走固定条目，cmdline 带 fuxi.boot=once）：实测 1.9 s + 14.1 s。
+   注意 root=PARTUUID 会让 initramfs 的 wait-for-root 等满 30 s（uboot6 实测），手动条目不要用 PARTUUID。
 2. 回通信线：卡 2 IMS 只读排查（通信交接 §9.1–9.2）、5G 自动回切、移动卡 APN。
 3. 功能缺口：挂起默认开、alsa-ucm 通话路由、GPU 加速确认；Denial 退出回 Phosh、basic-check 适配。
 4. U-Boot env 手动 booti 条目改指 deb3/新 DTB 名（删 deb2 前必须做）。
