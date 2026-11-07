@@ -1,0 +1,161 @@
+From 820f1dfc63556bf21a03250104d92b3779805d8a Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sat, 7 Nov 2026 21:10:46 +0800
+Subject: [PATCH] power: supply: qcom_battmgr: expose on-demand fuxi charger
+ logs
+
+---
+ drivers/power/supply/qcom_battmgr.c | 102 ++++++++++++++++++++++++++++
+ 1 file changed, 102 insertions(+)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index e2515fe70..3670f630c 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -52,6 +52,10 @@ enum qcom_battmgr_variant {
+ 
+ #define BATTMGR_BAT_CHARGE_TIME		0xd
+ 
++#define BATTMGR_CHG_ULOG_GET		0x18
++#define BATTMGR_CHG_INIT_ULOG_GET		0x23
++#define BATTMGR_CHG_ULOG_SIZE		8192
++
+ #define BATTMGR_BAT_PROPERTY_GET	0x30
+ #define BATTMGR_BAT_PROPERTY_SET	0x31
+ #define BATT_STATUS			0
+@@ -362,6 +366,10 @@ struct qcom_battmgr {
+ 	size_t xm_len;
+ 	u8 verify_slave;
+ 
++	bool ulog_pending;
++	u32 ulog_opcode;
++	char *ulog_buf;
++
+ 	/*
+ 	 * @lock is used to prevent concurrent power supply requests to the
+ 	 * firmware, as it then stops responding.
+@@ -1531,6 +1539,24 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 	size_t payload_len = len - sizeof(struct pmic_glink_hdr);
+ 	unsigned int val;
+ 
++	if (opcode == BATTMGR_CHG_ULOG_GET || opcode == BATTMGR_CHG_INIT_ULOG_GET) {
++		/* Late log replies must not acknowledge a power-supply request. */
++		if (!READ_ONCE(battmgr->ulog_pending) || opcode != battmgr->ulog_opcode)
++			return;
++		if (payload_len != BATTMGR_CHG_ULOG_SIZE) {
++			battmgr->error = -ENODATA;
++		} else {
++			memcpy(battmgr->ulog_buf, (const u8 *)resp + sizeof(resp->hdr),
++			       BATTMGR_CHG_ULOG_SIZE);
++			battmgr->error = 0;
++		}
++		WRITE_ONCE(battmgr->ulog_pending, false);
++		complete(&battmgr->ack);
++		return;
++	}
++	if (READ_ONCE(battmgr->ulog_pending))
++		return;
++
+ 	if (payload_len < sizeof(__le32)) {
+ 		dev_warn(battmgr->dev, "invalid payload length for %#x: %zd\n",
+ 			 opcode, len);
+@@ -1927,6 +1953,76 @@ static int qcom_battmgr_diag_show(struct seq_file *s, void *unused)
+ }
+ DEFINE_SHOW_ATTRIBUTE(qcom_battmgr_diag);
+ 
++/* Read the existing ADSP log buffer without changing log level or category. */
++static int qcom_battmgr_ulog_read(struct seq_file *s, u32 opcode)
++{
++	struct qcom_battmgr *battmgr = s->private;
++	struct {
++		struct pmic_glink_hdr hdr;
++		__le32 log_size;
++	} request = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
++		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
++		.hdr.opcode = cpu_to_le32(opcode),
++		.log_size = cpu_to_le32(BATTMGR_CHG_ULOG_SIZE),
++	};
++	int ret;
++
++	mutex_lock(&battmgr->lock);
++	if (!battmgr->service_up) {
++		ret = -EAGAIN;
++		goto out;
++	}
++	memset(battmgr->ulog_buf, 0, BATTMGR_CHG_ULOG_SIZE + 1);
++	battmgr->ulog_opcode = opcode;
++	WRITE_ONCE(battmgr->ulog_pending, true);
++	ret = qcom_battmgr_request(battmgr, &request, sizeof(request));
++	WRITE_ONCE(battmgr->ulog_pending, false);
++	if (!ret)
++		seq_write(s, battmgr->ulog_buf,
++			  strnlen(battmgr->ulog_buf, BATTMGR_CHG_ULOG_SIZE));
++out:
++	mutex_unlock(&battmgr->lock);
++	return ret;
++}
++
++static int qcom_battmgr_ulog_show(struct seq_file *s, void *unused)
++{
++	return qcom_battmgr_ulog_read(s, BATTMGR_CHG_ULOG_GET);
++}
++
++static int qcom_battmgr_ulog_init_show(struct seq_file *s, void *unused)
++{
++	return qcom_battmgr_ulog_read(s, BATTMGR_CHG_INIT_ULOG_GET);
++}
++
++static int qcom_battmgr_ulog_open(struct inode *inode, struct file *file)
++{
++	/* Avoid a seq_file resize consuming a second firmware log chunk. */
++	return single_open_size(file, qcom_battmgr_ulog_show, inode->i_private,
++				BATTMGR_CHG_ULOG_SIZE + 1);
++}
++
++static int qcom_battmgr_ulog_init_open(struct inode *inode, struct file *file)
++{
++	return single_open_size(file, qcom_battmgr_ulog_init_show, inode->i_private,
++				BATTMGR_CHG_ULOG_SIZE + 1);
++}
++
++static const struct file_operations qcom_battmgr_ulog_fops = {
++	.owner = THIS_MODULE,
++	.open = qcom_battmgr_ulog_open,
++	.read = seq_read,
++	.release = single_release,
++};
++
++static const struct file_operations qcom_battmgr_ulog_init_fops = {
++	.owner = THIS_MODULE,
++	.open = qcom_battmgr_ulog_init_open,
++	.read = seq_read,
++	.release = single_release,
++};
++
+ /*
+  * fuxi OTG experiment: write "<prop> <value>" to send BC_XM_SET (0x51).
+  * e.g. echo 6 0 > /sys/kernel/debug/qcom_battmgr/xm_set
+@@ -2355,6 +2451,10 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 	if (battmgr->shifted_props) {
+ 		struct dentry *d;
+ 
++		battmgr->ulog_buf = devm_kzalloc(dev, BATTMGR_CHG_ULOG_SIZE + 1, GFP_KERNEL);
++		if (!battmgr->ulog_buf)
++			return -ENOMEM;
++
+ 		dev_set_drvdata(dev, battmgr);
+ 		ret = devm_device_add_group(dev, &qcom_battmgr_xiaomi_group);
+ 		if (ret)
+@@ -2362,6 +2462,8 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 
+ 		d = debugfs_create_dir("qcom_battmgr", NULL);
+ 		debugfs_create_file("diag", 0400, d, battmgr, &qcom_battmgr_diag_fops);
++		debugfs_create_file("ulog", 0400, d, battmgr, &qcom_battmgr_ulog_fops);
++		debugfs_create_file("ulog_init", 0400, d, battmgr, &qcom_battmgr_ulog_init_fops);
+ 		debugfs_create_file("xm_set", 0200, d, battmgr, &qcom_battmgr_xm_set_fops);
+ 		devm_add_action_or_reset(dev, qcom_battmgr_debugfs_remove, d);
+ 	}
+-- 
+2.55.0
+

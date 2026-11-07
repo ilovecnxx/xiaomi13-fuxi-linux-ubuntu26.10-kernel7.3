@@ -17,12 +17,13 @@
 - 充电复测（20:11–20:17）：用户重插后恢复约 6.9 W，但 real_type=2（DCP）、PDO2=0、Type-C PD=no。重启 chg2 后约 4.6 W；换原 deb5 对照也约 4.6 W、PD=no，认证服务因无接口未运行。现已恢复 default=deb5 / fallback=deb4，pending=0，电池 60%、净入电 +392 mA、26.1 摄氏度，桌面/基带服务正常。下一步需确认充电头型号与线材，必要时给充电头断电复位；不能归因于认证代码或宣称快充已修复。
 - 充电头断电后（20:21 起）：恢复 PD、约 6.9 W；随后安装 chg3，启动与电池认证均通过，pending=0。固定 PDO 可读，含 9 V / 3 A；UVDM 版本查询无完成响应。受限 ICL 接口 0/负值/超过固件上限均被拒绝，1.6/1.8/2 A 请求虽 ACK 成功，实际限流仍 1.5 A，结束已恢复原值。UCSI 18 W 设置返回 EOPNOTSUPP，**快充仍未解决**。保持当前 PD 连接，下一步等充电头型号与 A-C/C-C 线材信息；不要再反复要求插拔或重启。详情见同一进展文档。
 - 型号确认与认证开始信号复测（20:45 起）：充电头为小米 MDY-12-EF 67 W 定制 USB-A，已查拆解资料；原装 6A A-C 线尚未确认。写 VERIFY_PROCESS=1 后仍读回 0，UVDM 版本查询仍无完成响应，结束已写回 0；当前原厂模块的属性号、24 字节标量 SET 布局与实现一致。UCSI 线缆查询不支持，不能自动判定线材额定电流。20:52:51–20:53:31 电荷增加 16 mAh、约 6.9 W 输入、82% / 26.4 摄氏度，确认净充电但未提速；未重启、切角色或安装新包。详情见同一进展文档。
+- 用户已确认配套原装 6A A-C 线。约 21:05 起设备读回 USB offline、输入 0 V/0 A、无 Type-C partner，需确认当前物理连接，不能直接归因为线材或固件故障。已准备 chg4（820f1dfc6），新增按需只读 ADSP 运行/启动日志接口，完整包与 `W=1 drivers/power/supply/qcom_battmgr.o` 通过；**尚未安装或实测**，设备仍为 chg3。补丁、哈希与诊断计划见同一进展文档。
 - 相机第 1 步（17:10 用户叫停，**未编译内核、未上机**）：MCLK 修法写好 → 补丁 `work/patches/camera-mclk-gdsc-20261107/`
   （收敛树与语音树都已打上、未提交）。相机 DTB 编译通过，并已确认是日常 DTB 的超集（只多开 cci0/cci1/camss + LDO 电压）。
 - 子 agent 16:45 起 API 余额不足（403），充值前别派。
 
 ## 下一步
-当前优先：PD 已恢复，充电头已确认小米 MDY-12-EF 67 W；核对是否为配套原装 6A A-C 线，继续定位小米 UVDM 无响应与固件 5 V / 1.5 A 策略。不要盲目切数据角色、反复重启，或将基础充电/AUTHENTIC=1 单独记为快充通过。
+当前优先：充电头和线材已确认小米 MDY-12-EF 67 W + 配套原装 6A A-C 线。最近 USB 离线，先确认当前物理连接；chg4 日志诊断包已构建待上机，用 ADSP 日志继续定位小米 UVDM 无响应与固件 5 V / 1.5 A 策略。不要盲目切数据角色、反复重启，或将基础充电/AUTHENTIC=1 单独记为快充通过。
 
 1. 相机：编 deb6——`FUXI_KTREE=~/.cache/fuxi-voice74 FUXI_KOUT=~/.cache/fuxi-voice74-out FUXI_EXTRA_CFG="-e FUXI_CAMERA_POWER -e I2C_QCOM_CCI -e I2C_CHARDEV -e MEDIA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e MEDIA_CAMERA_SUPPORT -e VIDEO_DEV -e V4L_PLATFORM_DRIVERS -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10" scripts/fuxi-build-deb.sh deb6`
    → 装上后 `fuxi-kernel-install add 7.4.0-rc1-fuxi-deb6 /boot/vmlinuz-7.4.0-rc1-fuxi-deb6 /usr/lib/linux-image-7.4.0-rc1-fuxi-deb6/qcom/sm8550-xiaomi-fuxi-camera.dtb`
