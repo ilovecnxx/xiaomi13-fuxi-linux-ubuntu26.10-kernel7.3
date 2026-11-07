@@ -110,7 +110,7 @@ if [ "${2:-}" != "--no-kernel" ]; then
   # FUXI_DEB=1：标准内核 Debian 包（make bindeb-pkg），配 FUXI_EXTRA_CFG="-d FUXI_FORCE_BUILTIN_DTB"
   # （DTB 由 shim 从 /boot/fuxi/<条目>/ 传入）。内核版本 = <kernelversion>-fuxi-<名字>，
   # 产物 work/kbuild/<名字>/linux-image-*.deb；DTB 随包装在 /usr/lib/linux-image-<版本>/qcom/，
-  # 手机上 dpkg -i 后由 /etc/kernel/postinst.d/zz-fuxi → fuxi-kernel-install 生成条目（scripts/fuxi-boot/）
+  # 手机上 dpkg -i 后由 /etc/kernel/postinst.d/zz-fuxi → fuxi-kernel-install 生成条目（packaging/fuxi-device）
   if [ "${FUXI_DEB:-0}" = 1 ]; then
     case "$NAME" in *[!a-z0-9.]*) echo "FUXI_DEB 的名字只能用小写字母、数字、点"; exit 1 ;; esac
     ! grep -q '^CONFIG_FUXI_FORCE_BUILTIN_DTB=y' .config ||

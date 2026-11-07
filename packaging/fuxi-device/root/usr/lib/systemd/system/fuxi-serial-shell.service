@@ -1,0 +1,20 @@
+# fuxi：USB 串口 ttyGS0 上的 root 自动登录（调试用，默认不启用；fuxi-usb-serial on/off 切换）。
+# 不用 serial-getty@：BindsTo dev-ttyGS0.device，gadget 端口不一定有 udev 设备单元，会超时。
+[Unit]
+Description=fuxi root shell on USB serial ttyGS0
+After=systemd-user-sessions.service
+Before=getty.target
+
+[Service]
+ExecStart=-/sbin/agetty --autologin root --noclear --keep-baud 115200 ttyGS0 vt100
+Type=idle
+Restart=always
+RestartSec=1
+TimeoutStopSec=5s
+UtmpIdentifier=ttyGS0
+KillMode=process
+IgnoreSIGPIPE=no
+SendSIGHUP=yes
+
+[Install]
+WantedBy=multi-user.target

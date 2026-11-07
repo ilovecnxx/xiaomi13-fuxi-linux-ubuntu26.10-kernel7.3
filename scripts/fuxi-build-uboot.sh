@@ -6,7 +6,7 @@
 #   配置：qcom_defconfig + qcom-phone.config（主机工具不用 libcrypto：本机 OpenSSL 没有 ENGINE），再关掉所有会写盘的功能：
 #     EFI capsule（ABL 引导时会写当前槽 boot 分区 = Android）、UMS（把 LUN0 读写暴露给 PC）、
 #     fastboot flash、EFI 变量文件存储（往它认为的 ESP 写 ubootefi.var）；环境换成 scripts/fuxi-uboot/fuxi.env
-#   唯一的写盘：env 里受保护的启动计数块（/boot/fuxi/bootcount 的 4 KiB 数据块，见 scripts/fuxi-boot/fuxi-bootcount）
+#   唯一的写盘：env 里受保护的启动计数块（/boot/fuxi/bootcount 的 4 KiB 数据块，见 packaging/fuxi-device/root/usr/sbin/fuxi-bootcount）
 # 用法: scripts/fuxi-build-uboot.sh [名字，默认 uboot0]  （uboot2 起 booti/extlinux 实测进桌面，11-07）   源码：FUXI_UBOOT=~/.cache/u-boot
 #       FUXI_UBOOT_DTB=<主线 dtb 路径>（默认 7.4 树的日常 DTB）
 set -euo pipefail

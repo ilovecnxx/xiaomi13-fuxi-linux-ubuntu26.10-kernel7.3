@@ -34,7 +34,13 @@
    注意 root=PARTUUID 会让 initramfs 的 wait-for-root 等满 30 s（uboot6 实测），手动条目不要用 PARTUUID。
 2. 回通信线：卡 2 IMS 只读排查（通信交接 §9.1–9.2）、5G 自动回切、移动卡 APN。
 3. 功能缺口：挂起默认开、alsa-ucm 通话路由、GPU 加速确认；Denial 退出回 Phosh、basic-check 适配。
-4. U-Boot env 手动 booti 条目改指 deb3/新 DTB 名（删 deb2 前必须做）。
+4. （已完成，uboot7）U-Boot env 手动 booti 条目改指 deb3/新 DTB 名。
+（11-07 15:20 收尾）fuxi-serial-shell.service 改由 fuxi-device 提供（/usr/lib，默认不启用，fuxi-usb-serial on/off）；
+   旧 /etc 的 fuxi-remoteproc / fuxi-serial-shell(.d) 移到 /var/backups/fuxi-device-migrate；/etc/systemd/system 已无 fuxi 文件。
+   scripts/ 里和包内重复的旧副本（fuxi-boot/、fuxi-qmi-*.py 等）已删，以 packaging/ 为准。手机四个包都是 0.20261107.1519，work/apt 只留最新版。
+5. 开机花屏（外观问题，不影响功能）：0.17–0.18 s 有 10 条 arm-smmu context fault，SID 0x1c00（MDSS）读 ABL splash 缓冲 0xB8xxxxxx，
+   持续到 0.85 s DPU 接管。修法：DT reserved-memory 的 splash 区加 `iommu-addresses = <&mdss …>` 做直通映射（内核 deb4，要重编 DTB）。
+   同一时段的 a740_sqe.fw -2 是 initrd 里没有 GPU 固件，之后从根分区加载成功，无害。
 
 ## 红线
 - 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
