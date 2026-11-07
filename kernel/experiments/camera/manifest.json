@@ -3,10 +3,10 @@
   "standard_manifest_sha256": "bd9be9a7c402429ceb371bf6b52bb5384827e4265298f9d69118bf4832195a96",
   "base_commit": "b67e0d4c8b8366114ec5c2cda120061bb9fd0778",
   "base_tree": "90afc07da83d97efc71e2a2d2776e6a88681d242",
-  "result_tree": "dddedead4e7bd190635ac518294cd9acc0aa32e0",
+  "result_tree": "599970e4ba1c1cbff7d4c113c85476d6ceb2e3cb",
   "source_date_epoch": 1794070400,
   "dtb": "qcom/sm8550-xiaomi-fuxi-ov13b10.dtb",
-  "extra_config": "-e I2C_QCOM_CCI -e I2C_CHARDEV -e FUXI_CAMERA_POWER -e MEDIA_SUPPORT -e MEDIA_SUPPORT_FILTER -e MEDIA_CAMERA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e V4L_PLATFORM_DRIVERS -e VIDEO_DEV -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10 -e DMABUF_HEAPS -e DMABUF_HEAPS_SYSTEM",
+  "extra_config": "-e I2C_QCOM_CCI -e I2C_CHARDEV -e FUXI_CAMERA_POWER -e MEDIA_SUPPORT -e MEDIA_SUPPORT_FILTER -e MEDIA_CAMERA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e V4L_PLATFORM_DRIVERS -e VIDEO_DEV -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10 -e DMABUF_HEAPS -e DMABUF_HEAPS_SYSTEM -e FTRACE -e ENABLE_DEFAULT_TRACERS -d FUNCTION_TRACER",
   "patches": [
     {
       "file": "0001-camera-power-TITAN_TOP-around-sensor-MCLK-bring-up.patch",
@@ -23,6 +23,10 @@
     {
       "file": "0004-arm64-dts-qcom-mark-fuxi-OV13B10-as-rear-facing.patch",
       "sha256": "b1e7e657ea713f6b2432853dd248ad3074389b964e395ac3f6fb3669d3750441"
+    },
+    {
+      "file": "0005-soc-qcom-log-RPMh-batch-commands-on-timeout-for-fuxi.patch",
+      "sha256": "3adcb0972d6b3a30cbc5ab29b932c7fcaf1dca0c739c7ebfba260802c976ec7e"
     }
   ]
 }

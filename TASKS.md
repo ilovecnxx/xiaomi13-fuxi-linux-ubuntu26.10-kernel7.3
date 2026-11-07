@@ -39,10 +39,11 @@ CI 已完成云端完整 deb、候选产物/对应源码校验与同条件计时
 
 ## 设备基线
 
-- 当前运行与默认：7.4.0-rc1-fuxi-std2，回退 chg3，保留 deb5 及 cam1/cam2/cam3 实验包。
-  启动确认 pending=0 tries=0 once=0。
+- 日常基线 std2、回退 chg3；cam4 实验再次阻塞后尚未确认恢复，最后运行 cam4。
+  故障前已预置 default=std2、fallback=chg3、pending=1 tries=0 once=0；需物理重启并复验。
+  保留 deb5 及 cam1/cam2/cam3/cam4 实验包。
 - cam3 采集曾出现 RPMh/ICC 阻塞并影响存储；用户物理恢复安卓后，经无线 ADB 返回 Linux，已恢复 std2 默认。
-  根文件系统读写、dpkg 审计及 WiFi/传感器健康检查通过；这不代表相机阻塞已修复。
+  当时根文件系统读写、dpkg 审计及 WiFi/传感器健康检查通过；这不代表 cam4 新故障后的健康状态。
 - fuxi-device 0.20261108.2；已安装 desktop/firmware 0.20261107.1519、modem 0.20261107.1619。
   本轮测试源独立保存在 work/apt-maintenance-20261108 与 work/apt-final-maintenance-20261108；主用旧源未切换。
 - 相机 DMA heap 权限规则已纳入设备包；0.20261108.2 经传输校验、安装和重启确认。
@@ -55,8 +56,10 @@ CI 已完成云端完整 deb、候选产物/对应源码校验与同条件计时
    ADSP 专用日志显示 5 V 合同、1.5 A 内部投票、VDM TxNOK/DiscModes 超时及 RP_SHORT_VBUS；根因未定。
    见 [`docs/快充修复进展-20261107.md`](docs/快充修复进展-20261107.md)。自动服务仅做电池认证，不切数据角色。
 2. 相机：TITAN_TOP/MCLK 修复已上机；IMX800/OV13B10 ID 匹配，前摄未确认，长焦读 ID 后重复超时。
-   OV13B10 超广角已接通 CAMSS/libcamera，RAW 与普通用户 RGB 实机出图，2104×1560 RGB 连续 120 帧约 30 fps。
-   高速模式短横线、标定和桌面取景未验收；后续全尺寸 RGB 启流触发 RPMh/ICC 阻塞，影响 UFS/调频，启停稳定性是下一优先项。
+   OV13B10 超广角 RAW 连续 600 帧约 60 fps，CPU RGB 2104×1560 连续 1200 帧约 30 fps；GPU RGB 反复停帧。
+   cam4 全尺寸 CPU RGB 启流仍触发 RPMh/ICC 阻塞，影响 UFS/调频；已捕获 MC0/SH1/SH0/MM1/MM0/ACV 超时批次。
+   QoS 300 us 与 GPU 去 Agc 对照均未解决停帧；CPU 不能当作修复。优先恢复设备，再定位共享互连。
+   高速模式短横线、标定、桌面取景仍未验收。
    标准配方未混入实验，固定补丁见 [`kernel/experiments/camera/`](kernel/experiments/camera/README.md)，结果见 [`相机实机记录`](docs/相机验收-20261108.md)。
 3. 通话：VoLTE 来电、短信、双卡注册可用；ADSP TX GRAPH_START 返回 -22，通话仍无声。
 4. WiFi/蓝牙功耗、挂起、扬声器保护/标定与蓝牙 A2DP 需要单独验收；当前关闭空闲自动挂起。

@@ -1,9 +1,11 @@
 # Fuxi Camera Experiment
 
 This series is separate from `kernel/manifest.json`. It demonstrates OV13B10
-capture, but is not a daily-use or release candidate: a later stream start
-triggered an RPMh interconnect timeout and blocked storage and CPU-frequency
-workers. See the [device results](../../../docs/相机验收-20261108.md) before device work.
+capture, but is not a daily-use or release candidate: both cam3 and cam4 stream
+starts triggered RPMh interconnect timeouts and blocked storage and CPU-frequency
+workers. CPU RGB passed 1200 frames at 2104x1560, but its subsequent full-size
+start reproduced the fault. See the [device results](../../../docs/相机验收-20261108.md)
+before device work. CPU mode is not a validated workaround.
 
 `manifest.json` records the standard base tree, ordered patch hashes, final tree,
 configuration and timestamp. These are development patches, without a claim of
@@ -23,13 +25,13 @@ git -C build/linux-standard rev-parse 'HEAD^{tree}'
 git -C build/linux-standard worktree add --detach ../linux-camera HEAD
 git -C build/linux-camera am "$PWD"/kernel/experiments/camera/000*.patch
 git -C build/linux-camera rev-parse 'HEAD^{tree}'
-# Must be dddedead4e7bd190635ac518294cd9acc0aa32e0.
+# Must be 599970e4ba1c1cbff7d4c113c85476d6ceb2e3cb.
 git -C build/linux-camera status --porcelain
 # Must be empty.
 ```
 
 Verify each patch's SHA-256 against the manifest before applying it. The final
-tree was independently checked by applying all four patches to an isolated Git
+tree is checked by applying the ordered patches to an isolated Git
 index initialized from the standard base. Commit IDs after `git am` may differ;
 the content tree must match.
 
@@ -46,15 +48,34 @@ scripts/fuxi-build-env.sh run env \
   FUXI_KTREE=/src/build/linux-camera \
   FUXI_KOUT=/src/work/kbuild/camera-out \
   SOURCE_DATE_EPOCH=1794070400 \
-  FUXI_EXTRA_CFG='-e I2C_QCOM_CCI -e I2C_CHARDEV -e FUXI_CAMERA_POWER -e MEDIA_SUPPORT -e MEDIA_SUPPORT_FILTER -e MEDIA_CAMERA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e V4L_PLATFORM_DRIVERS -e VIDEO_DEV -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10 -e DMABUF_HEAPS -e DMABUF_HEAPS_SYSTEM' \
-  scripts/fuxi-build-deb.sh cam3
+  FUXI_EXTRA_CFG='-e I2C_QCOM_CCI -e I2C_CHARDEV -e FUXI_CAMERA_POWER -e MEDIA_SUPPORT -e MEDIA_SUPPORT_FILTER -e MEDIA_CAMERA_SUPPORT -e MEDIA_PLATFORM_SUPPORT -e V4L_PLATFORM_DRIVERS -e VIDEO_DEV -e VIDEO_QCOM_CAMSS -e VIDEO_OV13B10 -e DMABUF_HEAPS -e DMABUF_HEAPS_SYSTEM -e FTRACE -e ENABLE_DEFAULT_TRACERS -d FUNCTION_TRACER' \
+  scripts/fuxi-build-deb.sh cam4
 ```
 
-Use a new build name for any changed source/configuration. The tested package is
+Use a new build name for any changed source/configuration. The historical cam3 package is
 `linux-image-7.4.0-rc1-fuxi-cam3_7.4.0-rc1-cam3_arm64.deb`, SHA-256
 `92ecd0f10dc3369d2b4d280ced8bea43ee559b79de94cfa9183c350f52e7063f`.
 The saved config SHA-256 is
 `30b6dea23703dffcb87f6825ecb2d2f674c58ed6482994060572fe3cd79510c9`.
+
+The first four patches produce the historical cam3 tree
+`dddedead4e7bd190635ac518294cd9acc0aa32e0`. Patch 5 adds timeout diagnostics;
+cam4 also enables the existing RPMh and runtime-PM trace events. Neither change
+fixes the interconnect failure. Trace events are disabled by default; collect
+`trace_pipe` on the host before starting a controlled capture test so evidence
+does not depend on the device's UFS storage remaining responsive.
+
+cam4 captured a six-command timeout batch (MC0, SH1, SH0, MM1, MM0, ACV) during
+CAMSS runtime resume. This identifies the batch, not an individual failed command.
+GPU RGB also repeatedly stopped producing frames; temporary CPU-latency 300 us
+and no-Agc tuning controls did not prevent that. These are separate observations
+until their relationship is established. Do not deploy a global CPU ISP override.
+
+cam4 deb SHA-256:
+`a8b5b2791e09bf56a5b05473510ac52acd91f128b27352c6fa78861b4c427d22`;
+config SHA-256:
+`c61fde8382a4ae6b509acab8027afc77ec52dcfe64228ee6b84419650df7e549`.
+Its full build and focused `W=1 drivers/soc/qcom/rpmh.o` check passed.
 
 Focused checks used `W=1` for `drivers/misc/fuxi-camera-power.o`,
 `drivers/i2c/busses/i2c-qcom-cci.o`,

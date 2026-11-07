@@ -1,0 +1,33 @@
+From a35e36054d7a34645f87b524ec94859ee158a211 Mon Sep 17 00:00:00 2001
+From: codex <ilovecnxx@gmail.com>
+Date: Sun, 8 Nov 2026 01:47:28 +0800
+Subject: [PATCH] soc: qcom: log RPMh batch commands on timeout for fuxi
+ diagnostics
+
+---
+ drivers/soc/qcom/rpmh.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/drivers/soc/qcom/rpmh.c b/drivers/soc/qcom/rpmh.c
+index 360242a31..3199db32a 100644
+--- a/drivers/soc/qcom/rpmh.c
++++ b/drivers/soc/qcom/rpmh.c
+@@ -433,6 +433,15 @@ int rpmh_write_batch(const struct device *dev, enum rpmh_state state,
+ 	while (i--) {
+ 		time_left = wait_for_completion_timeout(&compls[i], time_left);
+ 		if (!time_left) {
++			const struct tcs_request *msg = &rpm_msgs[i].msg;
++			int j;
++
++			dev_err(dev, "RPMh batch %d timed out (%u commands)\n",
++				i, msg->num_cmds);
++			for (j = 0; j < msg->num_cmds; j++)
++				dev_err(dev, "RPMh pending addr=%#x data=%#x wait=%u\n",
++					msg->cmds[j].addr, msg->cmds[j].data,
++					msg->cmds[j].wait);
+ 			/*
+ 			 * Better hope they never finish because they'll signal
+ 			 * the completion that we're going to free once
+-- 
+2.55.0
+
