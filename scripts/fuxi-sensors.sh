@@ -90,12 +90,13 @@ say "== 4. 读传感器（libssc 自带的 ssccli；请拿起手机转一转、�
 notify-send fuxi "传感器测试：转动手机、遮挡听筒附近 20 秒" 2>/dev/null || true
 T=200 ssh_ 'set -eu
 failed=0
-for s in accelerometer proximity light magnetometer compass; do
+for s in accelerometer proximity light magnetometer compass gyroscope; do
   echo "--- $s"
-  output=$(timeout 12 ssccli --sensor "$s" --timeout 6 2>&1) || failed=1
+  output=$(timeout -k 2s 12s ssccli --sensor "$s" --timeout 6 2>&1) || failed=1
   printf "%s\n" "$output"
   # ssccli 0.4.4 在服务缺失时也可能返回 0，不能仅凭退出码记作测试成功。
-  if ! printf "%s\n" "$output" | grep -q "sensor measurement:"; then
+  if ! printf "%s\n" "$output" | grep -q "^${s^} sensor measurement:" ||
+     printf "%s\n" "$output" | grep -q "^Unable to "; then
     failed=1
   fi
 done

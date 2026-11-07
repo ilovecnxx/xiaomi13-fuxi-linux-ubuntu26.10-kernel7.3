@@ -140,11 +140,24 @@ if [ "$require_sensors" = 1 ]; then
   done
   value=$(timeout 5 busctl get-property net.hadess.SensorProxy /net/hadess/SensorProxy/Compass net.hadess.SensorProxy.Compass HasCompass 2>/dev/null || true)
   if [ "$value" = 'b true' ]; then pass 'SensorProxy HasCompass'; else fail "SensorProxy HasCompass=$value"; fi
-  for sensor in accelerometer light proximity magnetometer compass; do
-    if output=$(timeout 10 ssccli --sensor "$sensor" --timeout 3 2>&1) && grep -q 'sensor measurement:' <<< "$output"; then
-      sample=$(grep 'sensor measurement:' <<< "$output" | tail -n 1)
+  for sensor in accelerometer light proximity magnetometer compass gyroscope; do
+    pattern="^${sensor^} sensor measurement:"
+    if [ "$sensor" = gyroscope ]; then
+      # libssc 0.4.4 prints an unverified unit; require finite XYZ, not that label.
+      number='-?[0-9]+[.][0-9]+'
+      pattern="^Gyroscope sensor measurement: X=$number Y=$number Z=$number "
+    fi
+    if output=$(timeout -k 2s 10s ssccli --sensor "$sensor" --timeout 3 2>&1) &&
+       ! grep -q '^Unable to ' <<< "$output" && grep -Eq "$pattern" <<< "$output"; then
+      sample=$(grep -E "$pattern" <<< "$output" | tail -n 1)
       pass "$sensor: $sample"
-    else fail "$sensor 没有有效测量值"; fi
+      if grep -q 'Mount matrix provided by firmware is all 0' <<< "$output"; then
+        printf 'WARN %s 固件安装矩阵全零，库使用单位矩阵；轴方向未验收\n' "$sensor"
+      fi
+      if [ "$sensor" = gyroscope ]; then
+        printf 'WARN gyroscope 单位沿用 CLI 原文，尚未核实；运动响应与标定未验收\n'
+      fi
+    else fail "$sensor 采样失败、没有有效测量值或关闭失败"; fi
   done
   crashes=$(journalctl -b -k --no-pager | grep -iE 'adsp.*(fatal|crash)|remoteproc.*crash' || true)
   if [ -z "$crashes" ]; then pass '本次启动未发现 ADSP/remoteproc 崩溃记录'; else fail '本次启动有 ADSP/remoteproc 崩溃记录'; printf '%s\n' "$crashes"; fi
