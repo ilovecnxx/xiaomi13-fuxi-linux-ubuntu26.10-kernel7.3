@@ -9,7 +9,8 @@ if (( $# > 1 )) || [[ ! "$seconds" =~ ^([1-9]|[1-9][0-9]|1[01][0-9]|120)$ ]]; th
 fi
 mkdir -p "$B/work/gnss-session"
 log="$B/work/gnss-session/$(date +%Y%m%d-%H%M%S).json"
-timeout -k 25s "$((seconds + 100))s" "$B/scripts/fuxi-ssh.sh" \
-    "timeout -s TERM -k 25s $((seconds + 70))s python3 - $seconds" \
+# Allow an in-flight call plus Stop/release/close (4 x 8s) after TERM.
+timeout -k 10s "$((seconds + 145))s" "$B/scripts/fuxi-ssh.sh" \
+    "timeout -s TERM -k 40s $((seconds + 90))s python3 - $seconds" \
     < "$B/packaging/fuxi-modem/root/usr/sbin/fuxi-gnss-session" | tee "$log"
 echo "Saved: $log" >&2
