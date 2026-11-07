@@ -12,8 +12,9 @@ Description: Xiaomi 13 (fuxi, SM8550) device support for mainline Linux
   - fuxi-kernel-install / fuxi-bootcount: kernel entries under /boot/fuxi,
     extlinux.conf and U-Boot boot-count fallback; hooked into kernel
     postinst/postrm and initramfs post-update
-  - fuxi-firmware-devices: start ADSP / IPA / WiFi / Bluetooth once the root
-    filesystem (and so /lib/firmware) is available
+  - fuxi-firmware-devices: independent ADSP/IPA, WiFi and Bluetooth startup
+    jobs once the root filesystem (and so /lib/firmware) is available
+  - fuxi-driver-audit: read-only CPU idle and peripheral power measurements
   - USB network (usb0 10.42.0.2), WiFi regdom, Bluetooth address, panel
     DPMS kick, VT switch
   - sensors (SSC via hexagonrpcd), ALSA UCM profile, power settings override

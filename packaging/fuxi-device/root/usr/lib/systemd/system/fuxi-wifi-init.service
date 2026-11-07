@@ -1,0 +1,13 @@
+[Unit]
+Description=fuxi: recover WCN7850 WLAN after root firmware becomes available
+After=local-fs.target
+Before=NetworkManager.service fuxi-wifi-regdom.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/fuxi-firmware-devices wifi
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

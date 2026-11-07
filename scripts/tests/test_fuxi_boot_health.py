@@ -17,6 +17,26 @@ loader.exec_module(health)
 
 
 class BootHealthTest(unittest.TestCase):
+    def test_inactive_radio_recovery_keeps_boot_unconfirmed(self):
+        for service in ("fuxi-wifi-init", "fuxi-bt-init"):
+            with self.subTest(service=service), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / "proc").mkdir()
+                (root / "boot/fuxi").mkdir(parents=True)
+                (root / "proc/cmdline").write_text("fuxi.entry=new")
+
+                def run(command, **kwargs):
+                    if command[-1] == service:
+                        raise subprocess.CalledProcessError(3, command)
+                    return subprocess.CompletedProcess(command, 0)
+
+                with patch.object(health, "Path", side_effect=lambda p: root / str(p).lstrip("/")), \
+                     patch.object(health.subprocess, "run", side_effect=run) as mocked, \
+                     patch.object(health.subprocess, "check_output", return_value=""):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        health.main()
+                    self.assertFalse(any("confirm" in call.args[0] for call in mocked.call_args_list))
+
     def test_failed_service_keeps_boot_unconfirmed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

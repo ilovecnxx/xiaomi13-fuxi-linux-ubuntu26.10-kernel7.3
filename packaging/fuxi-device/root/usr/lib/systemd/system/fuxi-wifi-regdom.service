@@ -1,6 +1,7 @@
 [Unit]
 Description=fuxi: set the WiFi regulatory domain (default world "00" limits 5 GHz)
-After=fuxi-firmware-devices.service
+Requires=fuxi-wifi-init.service
+After=fuxi-wifi-init.service
 Before=NetworkManager.service
 
 [Service]

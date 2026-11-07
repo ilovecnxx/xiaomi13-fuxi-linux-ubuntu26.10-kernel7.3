@@ -1,0 +1,13 @@
+[Unit]
+Description=fuxi: recover WCN7850 Bluetooth after root firmware becomes available
+After=local-fs.target
+Before=bluetooth.service fuxi-bt-address.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/fuxi-firmware-devices bluetooth
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target

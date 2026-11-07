@@ -9,10 +9,15 @@ for i in $(seq 120); do
 	info=$(btmgmt info 2>/dev/null)
 	# 未配置的控制器不在 "btmgmt info" 的列表里，要看 config 的 missing options
 	if timeout 5 btmgmt --index hci0 config 2>/dev/null | grep -q "missing options: public-address"; then
+		if ! timeout 5 btmgmt -i hci0 public-addr "$a" >/dev/null; then
+			echo 'fuxi-bt-address: setting public address failed' >&2
+			exit 1
+		fi
 		echo "fuxi-bt-address: hci0 public-addr 已设置"
-		btmgmt -i hci0 public-addr "$a" >/dev/null
 		# bluetoothd 若已启动，它记着旧的未配置索引，需要重启才能开电
-		systemctl is-active -q bluetooth && systemctl restart bluetooth
+		if systemctl is-active -q bluetooth; then
+			systemctl restart bluetooth || exit 1
+		fi
 		exit 0
 	fi
 	if echo "$info" | grep -A1 "^hci0:" | grep -q "addr " && ! echo "$info" | grep -q "addr 00:00:00:00:"; then

@@ -43,7 +43,7 @@ elif systemctl is-active --quiet phosh; then
 else
   fail 'Denial/Phosh 桌面均未运行'
 fi
-for service in fuxi-firmware-devices bluetooth; do
+for service in fuxi-firmware-devices fuxi-wifi-init fuxi-bt-init bluetooth; do
   if systemctl is-active --quiet "$service"; then pass "$service active"; else fail "$service 未运行"; fi
 done
 if systemctl --user --machine=fuxi@.host is-active --quiet mobi.phosh.OSK.service ||

@@ -9,53 +9,77 @@
 #   - WCN7850 蓝牙（uart14 上的 serdev，hci_uart_qca）：固件在 hci0 上电时才加载；initramfs 阶段那次必失败，
 #     所以无论是否已绑定都重绑一次（见文件末尾）。
 log() { echo "fuxi-firmware-devices: $*"; }
+# Separate systemd jobs let SSC start without waiting for WLAN or Bluetooth.
+mode=${1:-all}
+case "$mode" in core|wifi|bluetooth|all) ;; *) echo 'Usage: fuxi-firmware-devices [core|wifi|bluetooth|all]' >&2; exit 2 ;; esac
+sys=${FUXI_SYSFS_ROOT:-/sys}
+fw=${FUXI_FIRMWARE_ROOT:-/lib/firmware}
+config=${FUXI_CONFIG_ROOT:-/etc/fuxi}
+failed=0
 
-for r in /sys/class/remoteproc/remoteproc*; do
+start_core() {
+for r in "$sys"/class/remoteproc/remoteproc*; do
 	[ -e "$r/state" ] || continue
 	case "$(readlink -f "$r")" in */4080000.remoteproc/*) continue ;; esac
 	if [ "$(cat "$r/state")" = offline ]; then
 		log "start $(cat "$r/name")"
-		echo start > "$r/state" || log "start $(cat "$r/name") failed"
+		echo start > "$r/state" || { log "start $(cat "$r/name") failed"; failed=1; }
 	fi
 done
 
-ipa=/sys/bus/platform/devices/3f40000.ipa
-if [ -e "$ipa" ] && [ ! -e "$ipa/driver" ] && ls /lib/firmware/qcom/sm8550/xiaomi/fuxi/ipa_fws.* >/dev/null 2>&1; then
+ipa=$sys/bus/platform/devices/3f40000.ipa
+if [ -e "$ipa" ] && [ ! -e "$ipa/driver" ]; then
+	if ! ls "$fw"/qcom/sm8550/xiaomi/fuxi/ipa_fws.* >/dev/null 2>&1; then
+		log 'missing IPA firmware'; failed=1; return
+	fi
 	log "bind 3f40000.ipa"
-	echo 3f40000.ipa > /sys/bus/platform/drivers/ipa/bind || log "bind 3f40000.ipa failed"
+	echo 3f40000.ipa > "$sys/bus/platform/drivers/ipa/bind" || { log "bind 3f40000.ipa failed"; failed=1; }
 fi
+}
 
+start_wifi() {
 # 调试：/etc/fuxi/ath12k-debug_mask 存在时，bind 前设 ath12k 的 debug_mask（需要 CONFIG_ATH12K_DEBUG），
 # 例如 0x60 = BOOT|QMI，看固件握手停在哪一步
-if [ -r /etc/fuxi/ath12k-debug_mask ] && [ -w /sys/module/ath12k/parameters/debug_mask ]; then
-	m=$(cat /etc/fuxi/ath12k-debug_mask)
+if [ -r "$config/ath12k-debug_mask" ] && [ -w "$sys/module/ath12k/parameters/debug_mask" ]; then
+	m=$(cat "$config/ath12k-debug_mask")
 	log "ath12k debug_mask=$m"
-	echo "$m" > /sys/module/ath12k/parameters/debug_mask || log "set debug_mask failed"
+	echo "$m" > "$sys/module/ath12k/parameters/debug_mask" || { log "set debug_mask failed"; failed=1; }
 fi
 
-for d in /sys/bus/pci/devices/*; do
+for d in "$sys"/bus/pci/devices/*; do
 	[ "$(cat "$d/vendor" 2>/dev/null):$(cat "$d/device" 2>/dev/null)" = "0x17cb:0x1107" ] || continue
 	[ -e "$d/driver" ] && continue
-	drv=/sys/bus/pci/drivers/ath12k_wifi7_pci
-	[ -d "$drv" ] || drv=/sys/bus/pci/drivers/ath12k_pci
-	if [ -f /lib/firmware/ath12k/WCN7850/hw2.0/amss.bin ] && [ -d "$drv" ]; then
+	drv=$sys/bus/pci/drivers/ath12k_wifi7_pci
+	[ -d "$drv" ] || drv=$sys/bus/pci/drivers/ath12k_pci
+	if [ -f "$fw/ath12k/WCN7850/hw2.0/amss.bin" ] && [ -d "$drv" ]; then
 		log "bind $(basename "$d") to $(basename "$drv")"
-		echo "$(basename "$d")" > "$drv/bind" || log "bind $(basename "$d") failed"
+		echo "$(basename "$d")" > "$drv/bind" || { log "bind $(basename "$d") failed"; failed=1; }
+	else
+		log "missing WCN7850 firmware or PCI driver"; failed=1
 	fi
 done
+}
 
-for d in /sys/bus/serial/devices/*; do
+start_bluetooth() {
+for d in "$sys"/bus/serial/devices/*; do
 	[ -e "$d" ] || continue
 	grep -q 'wcn7850-bt' "$d/of_node/compatible" 2>/dev/null || continue
+	if [ ! -f "$fw/qca/hmtbtfw20.tlv" ] || [ ! -f "$fw/qca/hmtnv20.bin" ]; then
+		log 'missing WCN7850 Bluetooth firmware'; failed=1; continue
+	fi
 	# initramfs 里没有 qca 固件，0.5 s 时的那次 probe 必然 -2（hci0 没地址，fuxi-bt-address 空等 120 s），
 	# 但驱动已经绑上了。所以已绑定也要 unbind 再 bind 一次，让 hci0 在根文件系统里重新上电加载固件。
 	# 蓝牙 serdev 可以安全重绑（2026-11-06 实测），和 ath12k 不同。
 	if [ -e "$d/driver" ]; then
 		log "rebind $(basename "$d") (initramfs probe had no firmware)"
-		echo "$(basename "$d")" > "$d/driver/unbind" || log "unbind $(basename "$d") failed"
+		echo "$(basename "$d")" > "$d/driver/unbind" || { log "unbind $(basename "$d") failed"; failed=1; continue; }
 		sleep 1
 	fi
 	log "bind $(basename "$d") to hci_uart_qca"
-	echo "$(basename "$d")" > /sys/bus/serial/drivers/hci_uart_qca/bind || log "bind $(basename "$d") failed"
+	echo "$(basename "$d")" > "$sys/bus/serial/drivers/hci_uart_qca/bind" || { log "bind $(basename "$d") failed"; failed=1; }
 done
-exit 0
+}
+case "$mode" in core|all) start_core ;; esac
+case "$mode" in wifi|all) start_wifi ;; esac
+case "$mode" in bluetooth|all) start_bluetooth ;; esac
+exit "$failed"

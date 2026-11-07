@@ -12,6 +12,7 @@
 构建环境、持续集成、内核更新与签名发布规则见 [`维护与发布`](docs/内核持续维护与发布.md)。
 新增维护工具的验收不等同于相机、通话、快充完成；对外发布还需真实作者签字和许可证审核。
 本轮构建、故障测试和设备重启结果见 [`维护补强验收`](docs/维护补强验收-20261108.md)。
+CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](docs/驱动初始化与功耗验收-20261108.md)；持续功耗和挂起恢复仍待验收。
 
 ## 当前状态
 
@@ -81,6 +82,7 @@ scripts/fuxi-build-deb.sh <唯一名字>
 scripts/fuxi-ssh.sh                       # USB SSH，手机 10.42.0.2；FUXI_HOST=<无线 IP> 走 WiFi
 scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
+scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
 FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
 scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
 python3 -m unittest discover -s scripts/tests -v

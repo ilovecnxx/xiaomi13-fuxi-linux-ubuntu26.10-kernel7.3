@@ -7,7 +7,7 @@
 #  3. daemon-reload、udev reload
 set -e
 BK=/var/backups/fuxi-device-migrate
-UNITS="fuxi-boot-ok fuxi-firmware-devices fuxi-usbnet fuxi-wifi-regdom fuxi-bt-address fuxi-display-kick fuxi-vt fuxi-mipps-auth"
+UNITS="fuxi-boot-ok fuxi-firmware-devices fuxi-wifi-init fuxi-bt-init fuxi-usbnet fuxi-wifi-regdom fuxi-bt-address fuxi-display-kick fuxi-vt fuxi-mipps-auth"
 
 [ "$1" = configure ] || exit 0
 
@@ -63,6 +63,12 @@ fi
 
 if [ -d /run/systemd/system ]; then
 	systemctl daemon-reload || true
+	# Upgrade existing installations too; do not start/rebind live radio devices.
+	if systemctl is-enabled --quiet fuxi-firmware-devices.service; then
+		for u in fuxi-wifi-init fuxi-bt-init; do
+			systemctl enable "$u.service" >/dev/null
+		done
+	fi
 	if systemctl is-enabled --quiet fuxi-boot-ok.service; then
 		systemctl reenable fuxi-boot-ok.service >/dev/null
 	fi
