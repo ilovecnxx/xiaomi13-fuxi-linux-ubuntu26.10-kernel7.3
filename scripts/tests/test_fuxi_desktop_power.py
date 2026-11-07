@@ -3,7 +3,10 @@ import importlib.util
 import json
 import math
 from pathlib import Path
+import signal
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -51,6 +54,26 @@ class DesktopPowerTest(unittest.TestCase):
 
 
 class AmbientLightTest(unittest.TestCase):
+    def test_signal_handlers_work_with_current_and_legacy_glib(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                glib = Mock(PRIORITY_DEFAULT=0)
+                signal_add = Mock()
+                unix = SimpleNamespace() if legacy else SimpleNamespace(signal_add=signal_add)
+                glib.unix_signal_add = signal_add if legacy else Mock()
+                repository = SimpleNamespace(Gio=Mock(), GLib=glib, GLibUnix=unix)
+                controller = Mock()
+                glib.MainLoop.return_value.run.side_effect = lambda: signal_add.call_args.args[2]()
+                with patch.dict(sys.modules, {"gi": Mock(), "gi.repository": repository}), \
+                        patch.object(light, "Controller", return_value=controller):
+                    light.main()
+                self.assertEqual([call.args[1] for call in signal_add.call_args_list],
+                                 [signal.SIGTERM, signal.SIGINT])
+                glib.MainLoop.return_value.quit.assert_called_once()
+                controller.release.assert_called_once()
+                if not legacy:
+                    glib.unix_signal_add.assert_not_called()
+
     def test_curve_is_bounded_and_monotonic(self):
         values = [light.target_brightness(lux, 4095)
                   for lux in (0, 1, 5, 30, 100, 300, 1000, 5000, 20000, 1e9)]

@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -76,6 +77,14 @@ class ListenerTest(unittest.TestCase):
         self.assertEqual(listener.listen(Mock(), 2, glib, unix), 0)
         self.assertFalse(self.active)
 
+    def test_older_glib_uses_legacy_signal_registration(self):
+        glib, unix = self.backend()
+        glib.unix_signal_add.side_effect = unix.signal_add.side_effect
+        glib.MainLoop.return_value.run.side_effect = lambda: self.fire(self.signals, signal.SIGTERM)
+        self.assertEqual(listener.listen(Mock(), 0, glib, SimpleNamespace()), 0)
+        self.assertEqual(glib.unix_signal_add.call_count, 2)
+        self.assertFalse(self.active)
+
     def test_exception_removes_sources(self):
         glib, unix = self.backend()
         glib.MainLoop.return_value.run.side_effect = RuntimeError("dispatch failed")
@@ -97,6 +106,7 @@ class ListenerTest(unittest.TestCase):
             self.skipTest("GLibUnix typelib unavailable on host")
         program = """
 import importlib.util, os, signal, sys
+from types import SimpleNamespace
 import gi
 gi.require_version('GLibUnix', '2.0')
 from gi.repository import GLib, GLibUnix
@@ -108,13 +118,16 @@ def event():
     os.kill(os.getpid(), signal.SIGTERM)
     return False
 GLib.idle_add(event)
-sys.exit(module.listen(lambda: None, 0, GLib, GLibUnix))
+unix = GLibUnix if sys.argv[2] == 'native' else SimpleNamespace()
+sys.exit(module.listen(lambda: None, 0, GLib, unix))
 """
-        result = subprocess.run([sys.executable, "-c", program, str(SOURCE)],
-                                capture_output=True, text=True, timeout=10)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("event dispatched", result.stdout)
-        self.assertNotIn("CRITICAL", result.stderr)
+        for backend in ("native", "legacy"):
+            with self.subTest(backend=backend):
+                result = subprocess.run([sys.executable, "-c", program, str(SOURCE), backend],
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("event dispatched", result.stdout)
+                self.assertNotIn("CRITICAL", result.stderr)
 
 
 class SmsPersistenceTest(unittest.TestCase):

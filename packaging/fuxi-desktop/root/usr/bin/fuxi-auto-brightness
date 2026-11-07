@@ -122,8 +122,9 @@ def main():
         loop.quit()
         return False
 
-    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
-    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
+    signal_add = getattr(GLibUnix, "signal_add", None) or GLib.unix_signal_add
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
+    signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
     GLib.timeout_add_seconds(1, controller.tick)
     print("auto-brightness: active for Denial; stop service for manual-only brightness", flush=True)
     try:

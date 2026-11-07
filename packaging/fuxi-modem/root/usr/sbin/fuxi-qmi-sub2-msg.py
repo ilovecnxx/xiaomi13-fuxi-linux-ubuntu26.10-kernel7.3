@@ -159,8 +159,9 @@ def listen(watchdog, duration, glib, unix):
         return True
 
     try:
+        signal_add = getattr(unix, "signal_add", None) or glib.unix_signal_add
         for sig in (signal.SIGTERM, signal.SIGINT):
-            sources.append(unix.signal_add(glib.PRIORITY_DEFAULT, sig, stop))
+            sources.append(signal_add(glib.PRIORITY_DEFAULT, sig, stop))
         # 基带或 QRTR 重启后 client 会失效；失败退出后由 systemd 重新绑定。
         sources.append(glib.timeout_add_seconds(30, check))
         if duration:
