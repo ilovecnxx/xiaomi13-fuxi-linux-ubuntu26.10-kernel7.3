@@ -27,6 +27,10 @@ Telegram chat_id 1699534680：所有进度都要转发。
 - D 花屏：【已实测】SMMU fault 10→1（deb4）→0（deb5），补丁 work/patches/display-splash-iommu-20261107/。用户反馈 deb4 花屏变短，deb5 视觉待确认。
 - E：adsp 来源已查清（24 个 = 原厂 309 NON-HLOS，fuxi-firmware-pull.sh 会标 stock309）；shim 退役、defconfig、上游补丁未做。
 
+## 用户最新指令（11-07 16:40）
+- 先做 E（shim 退役 / defconfig 整理 / 上游补丁分组 + checkpatch），再查蓝牙、WiFi 省电和功耗管理 bug（WCN7850：ath12k power_save、PCIe ASPM、hci_qca 关 BT 时是否仍上电、电池电流、唤醒源、cpuidle 深睡）。
+- 16:45 子 agent 因 API 余额不足（403 insufficient balance）没跑起来，两项都还没开始；先只读调研，变更前在 Telegram 问。
+
 ## 红线
 - 禁写 GPT/槽位、xbl/abl/tz/hyp、modemst1/2、fsg/fsc、persist、efs；Android 分区只读。
 - recovery_b 只用 `scripts/fuxi-test-recovery.sh`；回滚 uboot5 → uboot4 → shim7。试验间不刷回基线。
