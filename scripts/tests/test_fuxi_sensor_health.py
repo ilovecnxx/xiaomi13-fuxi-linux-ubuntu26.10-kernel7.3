@@ -48,7 +48,8 @@ ssccli() {
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS gyroscope:", result.stdout)
-        self.assertIn("WARN gyroscope 固件安装矩阵全零", result.stdout)
+        self.assertIn("WARN gyroscope 库报告安装矩阵回退为单位矩阵", result.stdout)
+        self.assertNotIn("固件安装矩阵全零", result.stdout)
         self.assertIn("WARN gyroscope 单位沿用 CLI 原文", result.stdout)
 
     def test_discovery_without_measurements_does_not_pass(self):

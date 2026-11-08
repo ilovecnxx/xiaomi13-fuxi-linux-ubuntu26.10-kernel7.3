@@ -152,7 +152,7 @@ if [ "$require_sensors" = 1 ]; then
       sample=$(grep -E "$pattern" <<< "$output" | tail -n 1)
       pass "$sensor: $sample"
       if grep -q 'Mount matrix provided by firmware is all 0' <<< "$output"; then
-        printf 'WARN %s 固件安装矩阵全零，库使用单位矩阵；轴方向未验收\n' "$sensor"
+        printf 'WARN %s 库报告安装矩阵回退为单位矩阵；原始属性和轴方向未验收\n' "$sensor"
       fi
       if [ "$sensor" = gyroscope ]; then
         printf 'WARN gyroscope 单位沿用 CLI 原文，尚未核实；运动响应与标定未验收\n'

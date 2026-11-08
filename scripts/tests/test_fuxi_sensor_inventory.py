@@ -86,9 +86,9 @@ class SensorInventoryTest(unittest.TestCase):
         self.assertEqual(report, {"status": "timed_out"})
         self.assertEqual(cancelled, [True])
 
-    def query(self, stdout, returncode=0):
+    def query(self, stdout, returncode=0, stderr="private raw transport log"):
         with patch.object(AUDIT.subprocess, "run", return_value=SimpleNamespace(
-                stdout=stdout, stderr="private raw transport log", returncode=returncode)) as run:
+                stdout=stdout, stderr=stderr, returncode=returncode)) as run:
             report = AUDIT.query("accel")
         self.assertNotIn("private", json.dumps(report))
         return report, run.call_args
@@ -99,6 +99,32 @@ class SensorInventoryTest(unittest.TestCase):
         self.assertEqual(call.args[0], [AUDIT.sys.executable, "-c", AUDIT.PROBE_CODE, "accel"])
         self.assertEqual(call.kwargs["timeout"], 8)
         self.assertEqual(call.kwargs["env"]["G_MESSAGES_DEBUG"], "")
+
+    def test_identity_fallback_warning_is_reported_without_trusting_zero_claim(self):
+        report, _ = self.query('{"status":"attributes_reported"}', stderr=(
+            "private transport log\n** (process:123): WARNING **: 01:23:45.123: "
+            + AUDIT.MATRIX_FALLBACK_WARNING + "\n"))
+        self.assertEqual(report["library_mount_matrix"], {
+            "identity_fallback_warning": "reported",
+            "raw_attribute_validation": "not_performed"})
+        self.assertNotIn("all 0", json.dumps(report))
+
+    def test_no_warning_does_not_establish_valid_mounting_axes(self):
+        for stderr in ("", "private unrelated warning"):
+            with self.subTest(stderr=stderr):
+                report, _ = self.query('{"status":"attributes_reported"}', stderr=stderr)
+                self.assertEqual(report["library_mount_matrix"], {
+                    "identity_fallback_warning": "not_observed",
+                    "raw_attribute_validation": "not_performed"})
+
+    def test_diagnostics_do_not_promote_failed_worker_to_attributes(self):
+        report, _ = self.query('{"status":"attributes_reported"}', -11,
+                               AUDIT.MATRIX_FALLBACK_WARNING)
+        self.assertEqual(report, {"status": "worker_failed", "returncode": -11})
+
+    def test_excessive_diagnostics_are_rejected_without_raw_log(self):
+        report, _ = self.query('{"status":"attributes_reported"}', stderr="x" * 16385)
+        self.assertEqual(report, {"status": "invalid_response"})
 
     def test_timeout_does_not_imply_missing_hardware(self):
         with patch.object(AUDIT.subprocess, "run", side_effect=subprocess.TimeoutExpired(

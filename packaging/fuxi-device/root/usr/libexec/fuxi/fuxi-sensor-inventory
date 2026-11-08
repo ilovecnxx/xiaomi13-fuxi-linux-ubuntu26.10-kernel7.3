@@ -11,6 +11,8 @@ DATA_TYPES = ("accel", "gyro", "mag", "ambient_light", "proximity", "rotv",
               "gravity", "linear_accel", "game_rv", "geomag_rv", "step_counter",
               "step_detect", "sig_motion", "tilt", "device_orient", "pressure")
 PROBE_TIMEOUT = 8
+MATRIX_FALLBACK_WARNING = (
+    "Mount matrix provided by firmware is all 0, falling back to identity matrix!")
 PROBE_CODE = r'''
 import json
 import sys
@@ -79,7 +81,7 @@ def query(data_type):
         return {"status": "launch_failed", "errno": error.errno}
     if result.returncode:
         return {"status": "worker_failed", "returncode": result.returncode}
-    if len(result.stdout) > 4096:
+    if len(result.stdout) > 4096 or len(result.stderr) > 16384:
         return {"status": "invalid_response"}
     try:
         report = json.loads(result.stdout)
@@ -89,6 +91,14 @@ def query(data_type):
             "attributes_reported", "dependency_unavailable", "timed_out",
             "no_object_returned", "constructor_type_error", "incomplete_attributes", "query_error"):
         return {"status": "invalid_response"}
+    if report["status"] == "attributes_reported":
+        # The warning describes the library's decision, not verified raw data.
+        # 0.4.4 also emits it for some nonzero matrices due to integer summation.
+        report["library_mount_matrix"] = {
+            "identity_fallback_warning": (
+                "reported" if MATRIX_FALLBACK_WARNING in result.stderr else "not_observed"),
+            "raw_attribute_validation": "not_performed",
+        }
     return report
 
 
