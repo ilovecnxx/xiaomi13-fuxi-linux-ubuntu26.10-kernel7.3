@@ -20,6 +20,7 @@ case "${1:-host}" in
   userspace)
     scripts/fuxi-build-hexagonrpc.sh
     scripts/fuxi-build-modem.sh
+    scripts/fuxi-build-libssc.sh
     python3 scripts/fuxi-verify-deps.py
     ;;
   bindings)

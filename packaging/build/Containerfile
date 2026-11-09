@@ -28,4 +28,10 @@ RUN --mount=type=secret,id=host-ca,mode=0444 \
     dpkg-query -W -f='${binary:Package}=${Version}\n' > /build-environment.lock && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/opt/schema/bin:${PATH}"
+RUN --mount=type=secret,id=host-ca,mode=0444 \
+    apt-get -o Acquire::https::CaInfo=/run/secrets/host-ca -o APT::Update::Error-Mode=any -o Acquire::Check-Valid-Until=false update && \
+    apt-get -o Acquire::https::CaInfo=/run/secrets/host-ca install -y --no-install-recommends \
+      libprotobuf-c-dev protobuf-c-compiler protobuf-compiler && \
+    dpkg-query -W -f='${binary:Package}=${Version}\n' > /build-environment.lock && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /src

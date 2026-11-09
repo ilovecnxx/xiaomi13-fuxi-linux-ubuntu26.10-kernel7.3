@@ -1,4 +1,14 @@
 {
+  "libssc": {
+    "revision": "0.4.4",
+    "archive": "https://archive.ubuntu.com/ubuntu/pool/universe/libs/libssc/libssc_0.4.4.orig.tar.gz",
+    "sha256": "716d6bd6b34d2d753060c6b54c9a87e34fae75b724c763bf9ef487efa3621587",
+    "root": "libssc",
+    "license": "GPL-3.0-or-later; per-file notices apply",
+    "patches": [
+      {"path": "packaging/sources/libssc-matrix-validation.patch", "sha256": "6e52d2f4093de6890704c7f8204f830f0952bc1c2c2e7e14ee9bc1367c96ef7f"}
+    ]
+  },
   "hexagonrpc": {
     "revision": "23a69640bf10dc498226c602c5b5db11d8cb3d8e",
     "archive": "https://codeload.github.com/linux-msm/hexagonrpc/tar.gz/23a69640bf10dc498226c602c5b5db11d8cb3d8e",

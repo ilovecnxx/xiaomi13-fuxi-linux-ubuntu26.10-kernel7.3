@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - run: python3 scripts/fuxi-sources.py prepare hexagonrpc modemmanager 81voltd
+      - run: python3 scripts/fuxi-sources.py prepare hexagonrpc modemmanager 81voltd libssc
       - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh image
       - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh run bash scripts/fuxi-ci.sh userspace
       - run: FUXI_CONTAINER_ENGINE=docker FUXI_BUILD_ARCH=arm64 bash scripts/fuxi-build-env.sh run env FUXI_APT_LOCAL=1 FUXI_APT_SUPPORT_ONLY=1 FUXI_APT_OUT=/src/work/ci-apt bash scripts/fuxi-build-pkgs.sh 0.0+ci

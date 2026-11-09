@@ -7,6 +7,7 @@
 | ModemManager | same manifest; upstream COPYING and COPYING.LIB | GPL-2.0-or-later daemon; LGPL library, per-file notices | Preserve both license scopes; supply exact patched source |
 | 81voltd | same manifest; per-file SPDX | GPL-2.0-or-later | Supply patched source and license notices |
 | hexagonrpc | same manifest; COPYING and file headers | GPL-3.0-or-later and per-file exceptions | Supply patched source and notices |
+| libssc isolated candidate | same manifest; LICENSE and file headers | GPL-3.0-or-later and per-file notices | Supply exact patched source and notices; not yet used by installed support packages |
 | mkbootimg.py | pinned edk2-msm file in source manifest | Apache-2.0 header | Preserve copyright, license and applicable notices |
 | Xiaomi compatibility DTB | pinned edk2-msm file in source manifest | Redistribution not cleared | Local build input; no new public release until checked |
 | Xiaomi/Qualcomm firmware and calibration | `scripts/fuxi-firmware-pull.sh`, private PROVENANCE.txt | Vendor terms; not granted here | Excluded from Git and public APT publishing |
