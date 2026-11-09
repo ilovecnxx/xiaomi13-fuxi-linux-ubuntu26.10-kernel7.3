@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Bounded ambient-light control for the Denial session on fuxi."""
+"""Bounded ambient-light control for fuxi desktop sessions."""
 import math
 from pathlib import Path
 import signal
@@ -126,7 +126,7 @@ def main():
     signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, stop)
     signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, stop)
     GLib.timeout_add_seconds(1, controller.tick)
-    print("auto-brightness: active for Denial; stop service for manual-only brightness", flush=True)
+    print("auto-brightness: active for desktop session; stop service for manual-only brightness", flush=True)
     try:
         loop.run()
     finally:

@@ -4,7 +4,7 @@ Documentation=https://github.com/denialwm/denial
 # 与 Phosh / Plasma Mobile 互斥：同一时刻只允许一个 DRM 会话占用 tty7。
 Conflicts=phosh.service plasmamobile.service getty@tty7.service
 After=systemd-user-sessions.service dbus.socket systemd-logind.service user@1000.service
-Wants=dbus.socket user@1000.service
+Wants=dbus.socket user@1000.service fuxi-auto-brightness.service
 ConditionPathExists=/dev/tty0
 
 [Service]

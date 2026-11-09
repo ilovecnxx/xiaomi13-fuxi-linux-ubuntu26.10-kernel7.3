@@ -1,7 +1,7 @@
 [Unit]
-Description=Fuxi ambient-light brightness for Denial
-After=denial.service iio-sensor-proxy.service
-BindsTo=denial.service
+Description=Fuxi ambient-light brightness for the active desktop session
+After=iio-sensor-proxy.service
+PartOf=phosh.service denial.service plasmamobile.service
 Wants=iio-sensor-proxy.service
 ConditionPathExists=/sys/class/backlight/ae94000.dsi.0/brightness
 

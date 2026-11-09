@@ -54,6 +54,16 @@ class DesktopPowerTest(unittest.TestCase):
 
 
 class AmbientLightTest(unittest.TestCase):
+    def test_auto_brightness_tracks_each_supported_desktop_session(self):
+        root = ROOT / "packaging/fuxi-desktop/root/usr/lib/systemd/system"
+        service = (root / "fuxi-auto-brightness.service").read_text()
+        self.assertIn("PartOf=phosh.service denial.service plasmamobile.service", service)
+        self.assertNotIn("BindsTo=denial.service", service)
+        for session in ("phosh.service.d/20-fuxi-session.conf", "denial.service",
+                        "plasmamobile.service"):
+            text = (root / session).read_text()
+            self.assertRegex(text, r"(?m)^Wants=.*\bfuxi-auto-brightness\.service\b")
+
     def test_signal_handlers_work_with_current_and_legacy_glib(self):
         for legacy in (False, True):
             with self.subTest(legacy=legacy):

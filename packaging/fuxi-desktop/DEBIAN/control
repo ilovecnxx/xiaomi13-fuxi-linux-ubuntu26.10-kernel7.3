@@ -14,6 +14,6 @@ Description: Xiaomi 13 (fuxi, SM8550) graphical session glue
   - fuxi-session: switch between Denial / Phosh / Plasma Mobile and clean up
     leftover compositors
   - fuxi-autorotate: iio-sensor-proxy orientation -> kscreen for Plasma
-  - opt-in Denial ambient-light brightness and explicit power preferences
+  - session-bound ambient-light brightness and explicit power preferences
   - fuxi-desktop-app: software-render fallback when no GPU render node
   - xdg-desktop-portal preference for Phosh (conffile)
