@@ -127,5 +127,83 @@ class DatacardPersistenceTest(unittest.TestCase):
                 modem.assert_not_called()
 
 
+class DatacardWaitTest(unittest.TestCase):
+    class MainLoop:
+        def __init__(self):
+            self.action = None
+            self.quit_called = False
+
+        def run(self):
+            if self.action is not None:
+                self.action()
+
+        def quit(self):
+            self.quit_called = True
+
+    def setUp(self):
+        self.loop = self.MainLoop()
+        self.callbacks = {}
+        self.removed = []
+        self.patches = [
+            patch.object(datacard.GLib.MainLoop, "new", return_value=self.loop),
+            patch.object(datacard.GLib, "timeout_add_seconds",
+                         side_effect=self.add_timeout),
+            patch.object(datacard.GLib, "source_remove", side_effect=self.removed.append),
+        ]
+        for patcher in self.patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def add_timeout(self, _seconds, callback):
+        source = len(self.callbacks) + 1
+        self.callbacks[source] = callback
+        return source
+
+    def test_packet_status_event_quits_wait_without_polling(self):
+        session = datacard.Session(None)
+        session.alive = Mock(side_effect=AssertionError("event path must not poll"))
+        datacard.Qmi.WdsConnectionStatus.CONNECTED = 0
+        event = SimpleNamespace(get_connection_status=lambda: (True, 1))
+        self.loop.action = lambda: session.on_status(None, event)
+        active_loop = [None]
+
+        session.wait_until_down(lambda: False, active_loop)
+
+        self.assertTrue(session.down)
+        self.assertTrue(self.loop.quit_called)
+        self.assertEqual(active_loop, [None])
+        self.assertIsNone(session.loop)
+        self.assertEqual(self.removed, [1])
+
+    def test_timeout_status_fallback_quits_and_source_is_removed_once(self):
+        session = datacard.Session(None)
+        session.alive = Mock(return_value=False)
+        active_loop = [None]
+        self.loop.action = lambda: self.assertTrue(self.callbacks[1]())
+
+        session.wait_until_down(lambda: False, active_loop)
+
+        session.alive.assert_called_once_with()
+        self.assertTrue(session.down)
+        self.assertTrue(self.loop.quit_called)
+        self.assertEqual(self.removed, [1])
+        self.assertEqual(active_loop, [None])
+
+    def test_stop_signal_quits_wait_and_cleans_timeout(self):
+        session = datacard.Session(None)
+        stop = []
+        active_loop = [None]
+        self.loop.action = lambda: self.assertFalse(
+            datacard.request_stop(stop, active_loop))
+
+        session.wait_until_down(lambda: bool(stop), active_loop)
+
+        self.assertEqual(stop, [1])
+        self.assertTrue(self.loop.quit_called)
+        self.assertEqual(self.removed, [1])
+        self.assertEqual(active_loop, [None])
+        self.assertIsNone(session.loop)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,7 @@ class Session:
         self.dns = []
         self.down = False
         self.apn = None
+        self.loop = None
 
     def up(self):
         self.wds = self.m.alloc(Qmi.Service.WDS)
@@ -263,6 +264,31 @@ class Session:
         log(f"packet service status: {st.value_nick if hasattr(st, 'value_nick') else st}")
         if st != Qmi.WdsConnectionStatus.CONNECTED:
             self.down = True
+            if self.loop is not None:
+                self.loop.quit()
+
+    def wait_until_down(self, stopping, active_loop):
+        if self.down or stopping():
+            return
+        self.loop = GLib.MainLoop.new(ctx, False)
+        active_loop[0] = self.loop
+        source = GLib.timeout_add_seconds(20, self.check_alive)
+        try:
+            if not self.down and not stopping():
+                self.loop.run()
+        finally:
+            GLib.source_remove(source)
+            active_loop[0] = None
+            self.loop = None
+
+    def check_alive(self):
+        if self.alive():
+            return True
+        self.down = True
+        if self.loop is not None:
+            self.loop.quit()
+        # Keep the source registered until wait_until_down removes it in finally.
+        return True
 
     def alive(self):
         if self.down:
@@ -305,12 +331,21 @@ def nm_slot1(enable):
     sh(f"nmcli con {'up' if enable else 'down'} {NM_CON}")
 
 
+def request_stop(stop, active_loop):
+    stop.append(1)
+    if active_loop[0] is not None:
+        active_loop[0].quit()
+    return False
+
+
 def run():
     stop = []
     import warnings
     warnings.simplefilter("ignore", DeprecationWarning)
     for s in (signal.SIGTERM, signal.SIGINT):
-        GLib.unix_signal_add(GLib.PRIORITY_HIGH, s, lambda: stop.append(1) or False)
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, s,
+                             lambda: request_stop(stop, active_loop))
+    active_loop = [None]
     nm_slot1(False)
     m = Modem()
     backoff = [5, 10, 30, 60]
@@ -325,13 +360,8 @@ def run():
                 log(f"slot 2 home {plmn or '?'}: apn {s.apn or f'profile {PROFILE}'}")
                 s.up()
                 fails = 0
-                next_poll = time.monotonic() + 20
                 while not stop and not s.down:
-                    ctx.iteration(False) or time.sleep(0.2)
-                    if time.monotonic() >= next_poll:
-                        if not s.alive():
-                            break
-                        next_poll = time.monotonic() + 20
+                    s.wait_until_down(lambda: bool(stop), active_loop)
                 if not stop:
                     log("connection lost, reconnecting")
             except (GLib.Error, RuntimeError) as e:
@@ -342,9 +372,17 @@ def run():
             finally:
                 s.teardown()
             delay = backoff[min(fails, len(backoff)) - 1] if fails else 2
-            end = time.monotonic() + delay
-            while not stop and time.monotonic() < end:
-                ctx.iteration(False) or time.sleep(0.2)
+            if not stop:
+                active_loop[0] = GLib.MainLoop.new(ctx, False)
+                def finish_backoff():
+                    active_loop[0].quit()
+                    return True
+                source = GLib.timeout_add_seconds(delay, finish_backoff)
+                try:
+                    active_loop[0].run()
+                finally:
+                    GLib.source_remove(source)
+                    active_loop[0] = None
     finally:
         m.close()
     log("stopped")
