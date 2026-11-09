@@ -38,6 +38,81 @@ class DriverAuditTest(unittest.TestCase):
         self.assertEqual(report["sensor_processes"], [])
         self.assertIsNone(report["cpu_busy_percent_all_cores"])
 
+    def test_wakeup_source_table_is_parsed_by_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "kernel/debug/wakeup_sources"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                "name active_count event_count wakeup_count expire_count active_since "
+                "total_time max_time last_change prevent_suspend_time\n"
+                "rpmh 0 12 4 1 0 250 100 230 50\n"
+                "qcom usb-pm 1 8 3 0 10 90 25 80 20\n")
+            self.assertEqual(AUDIT.wakeup_sources(root), {
+                "rpmh": {"active_count": 0, "event_count": 12, "wakeup_count": 4,
+                         "expire_count": 1, "active_since": 0, "total_time": 250,
+                         "max_time": 100, "last_change": 230, "prevent_suspend_time": 50},
+                "qcom usb-pm": {"active_count": 1, "event_count": 8, "wakeup_count": 3,
+                                "expire_count": 0, "active_since": 10, "total_time": 90,
+                                "max_time": 25, "last_change": 80, "prevent_suspend_time": 20}})
+
+    def wakeup_sample(self, when, sources):
+        sample = self.sample(when, [0] * 8, 0, {})
+        sample["wakeup_sources"] = sources
+        return sample
+
+    def test_wakeup_interval_reports_counter_deltas(self):
+        before = self.wakeup_sample(1, {"rpmh": {
+            "active_count": 0, "event_count": 12, "wakeup_count": 4,
+            "total_time": 250, "prevent_suspend_time": 50}})
+        after = self.wakeup_sample(3, {"rpmh": {
+            "active_count": 1, "event_count": 18, "wakeup_count": 6,
+            "total_time": 550, "prevent_suspend_time": 90}})
+        report = AUDIT.interval(before, after, 100)
+        self.assertTrue(report["wakeup_source_set_unchanged"])
+        self.assertEqual(report["wakeup_sources"], [{
+            "name": "rpmh", "active_count": 1, "event_count_delta": 6,
+            "wakeup_count_delta": 2, "total_time_ms_delta": 300,
+            "prevent_suspend_time_ms_delta": 40}])
+
+    def test_wakeup_counter_resets_are_unknown_and_source_changes_flagged(self):
+        before = self.wakeup_sample(1, {
+            "stays": {"active_count": 0, "event_count": 8, "wakeup_count": 4,
+                      "total_time": 50, "prevent_suspend_time": 20},
+            "removed": {"active_count": 0, "event_count": 3, "wakeup_count": 2,
+                        "total_time": 10, "prevent_suspend_time": 5}})
+        after = self.wakeup_sample(2, {
+            "stays": {"active_count": 0, "event_count": 1, "wakeup_count": 5,
+                      "total_time": 60, "prevent_suspend_time": 4},
+            "added": {"active_count": 1, "event_count": 2, "wakeup_count": 1,
+                      "total_time": 4, "prevent_suspend_time": 3}})
+        report = AUDIT.interval(before, after, 100)
+        self.assertFalse(report["wakeup_source_set_unchanged"])
+        self.assertEqual(report["wakeup_sources"], [{
+            "name": "stays", "active_count": 0, "event_count_delta": None,
+            "wakeup_count_delta": 1, "total_time_ms_delta": 10,
+            "prevent_suspend_time_ms_delta": None}])
+
+    def test_unreadable_or_malformed_wakeup_source_data_is_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertIsNone(AUDIT.wakeup_sources(root))
+            path = root / "kernel/debug/wakeup_sources"
+            path.parent.mkdir(parents=True)
+            path.write_text("name event_count\nrpmh not-a-number\n")
+            self.assertIsNone(AUDIT.wakeup_sources(root))
+            path.write_text(
+                "name active_count event_count wakeup_count expire_count active_since "
+                "total_time max_time last_change prevent_suspend_time\n"
+                "rpmh 0 invalid 0 0 0 0 0 0 0\n")
+            self.assertIsNone(AUDIT.wakeup_sources(root))
+
+        before = self.wakeup_sample(1, None)
+        after = self.wakeup_sample(2, {"rpmh": {"event_count": 1}})
+        report = AUDIT.interval(before, after, 100)
+        self.assertIsNone(report["wakeup_source_set_unchanged"])
+        self.assertEqual(report["wakeup_sources"], [])
+
     def test_truncated_proc_comm_is_recognized(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

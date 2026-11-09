@@ -100,7 +100,9 @@ python3 -m unittest discover -s scripts/tests -v
 
 `scripts/fuxi-test-recovery.sh` 默认测完回 Android，`FUXI_KEEP=1` 留在 Linux。测试前先核对设备、镜像和备份。
 `fuxi-driver-audit.sh` 同时记录指定常驻服务的 CPU 与主线程上下文切换增量、每秒速率和进程身份变化，
-不等同整机唤醒次数或续航测量。区间首尾附带背光、供电及带单位的电池原始读数，
+并按区间记录内核 `wakeup_sources` 中各源的 `event_count`、`wakeup_count`、`total_time`、
+`prevent_suspend_time` 增量及源集合是否变化；计数器重置或数据不可读时报告未知。
+这些是内核唤醒源计数，不等同整机唤醒次数或续航测量。区间首尾附带背光、供电及带单位的电池原始读数，
 `power_condition_endpoints_match` 标记可读的背光设置、供电在线状态和电池状态是否相同。
 首尾相同不能排除区间内变化；瞬时电流及 USB 合同值不用于自动计算续航或整机功耗。
 事件驱动双卡监听及自动采样结果见 [`持续优化记录`](docs/功耗性能持续优化-20261108.md)。

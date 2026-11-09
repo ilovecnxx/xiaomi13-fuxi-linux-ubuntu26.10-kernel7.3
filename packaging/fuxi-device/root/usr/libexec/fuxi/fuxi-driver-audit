@@ -10,6 +10,7 @@ import time
 
 SERVICES = {"fuxi-sub2-msg.service", "fuxi-modem-keeper.service",
             "fuxi-auto-brightness.service", "hexagonrpcd.service", "iio-sensor-proxy.service"}
+WAKEUP_COUNTERS = ("event_count", "wakeup_count", "total_time", "prevent_suspend_time")
 
 
 def read(path):
@@ -41,6 +42,36 @@ def power_conditions(sys):
             supply[label] = number(path / field)
         supplies[path.name] = supply
     return {"backlights": backlights, "power_supplies": supplies}
+
+
+def wakeup_sources(sys):
+    path = sys / "kernel/debug/wakeup_sources"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+    columns = lines[0].split()[1:]
+    if not columns or any(column not in columns for column in WAKEUP_COUNTERS):
+        return None
+    result = {}
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        fields = line.split()
+        if len(fields) < len(columns) + 1:
+            return None
+        name = " ".join(fields[:len(fields) - len(columns)])
+        values = fields[-len(columns):]
+        if not name:
+            return None
+        try:
+            counters = dict(zip(columns, (int(value) for value in values)))
+        except ValueError:
+            return None
+        result[name] = counters
+    return result
 
 
 def matching_power_endpoints(before, after):
@@ -109,6 +140,7 @@ def snapshot(sys=Path("/sys"), proc=Path("/proc")):
                 services[path.name] = {"name": sorted(selected)[0], **counters, **switches}
     return {"monotonic": time.monotonic(), "cpu_ticks": ticks,
             "idle": idle, "sensors": sensors, "services": services,
+            "wakeup_sources": wakeup_sources(sys),
             "power_conditions": power_conditions(sys)}
 
 
@@ -156,10 +188,28 @@ def interval(before, after, ticks_per_second):
     same_processes = (
         {pid: (item["name"], item["started"]) for pid, item in before.get("services", {}).items()} ==
         {pid: (item["name"], item["started"]) for pid, item in after.get("services", {}).items()})
+    wakeup_before, wakeup_after = before.get("wakeup_sources"), after.get("wakeup_sources")
+    wakeups = []
+    if wakeup_before is not None and wakeup_after is not None:
+        for name in sorted(wakeup_before.keys() & wakeup_after.keys()):
+            start, end = wakeup_before[name], wakeup_after[name]
+            deltas = {}
+            for key in WAKEUP_COUNTERS:
+                a, b = start.get(key), end.get(key)
+                deltas[key] = b - a if a is not None and b is not None and b >= a else None
+            wakeups.append({"name": name, "active_count": end.get("active_count"),
+                            "event_count_delta": deltas["event_count"],
+                            "wakeup_count_delta": deltas["wakeup_count"],
+                            "total_time_ms_delta": deltas["total_time"],
+                            "prevent_suspend_time_ms_delta": deltas["prevent_suspend_time"]})
+    same_wakeup_sources = (
+        wakeup_before.keys() == wakeup_after.keys()
+        if wakeup_before is not None and wakeup_after is not None else None)
     return {"seconds": round(seconds, 3),
             "cpu_busy_percent_all_cores": round(100 * busy / total, 2) if total > 0 else None,
             "idle": residency, "sensor_processes": sensors, "service_processes": services,
             "service_process_set_unchanged": same_processes,
+            "wakeup_sources": wakeups, "wakeup_source_set_unchanged": same_wakeup_sources,
             "power_conditions": {"before": before.get("power_conditions"),
                                  "after": after.get("power_conditions")},
             "power_condition_endpoints_match": matching_power_endpoints(
