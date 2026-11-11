@@ -1,0 +1,126 @@
+From 9a094219d5506c0386bf0281d4eeb0ca59ff2bcf Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Wed, 11 Nov 2026 22:15:41 +0800
+Subject: [PATCH] soc: qcom: snapshot timed-out RPMh TCS commands for
+ diagnostics
+
+Match the live request under the controller lock and read TCS and command
+registers before the batch allocation is released. Use trylock and print
+after unlocking. IRQ cleanup can race the sequential reads, so retain
+before/after enable and IRQ values and label the snapshot accordingly.
+
+Experimental diagnostics only: this does not fix stalled votes, unbounded
+TCS waits, or request lifetime after a batch timeout.
+---
+ drivers/soc/qcom/rpmh-internal.h |  1 +
+ drivers/soc/qcom/rpmh-rsc.c      | 69 ++++++++++++++++++++++++++++++++
+ drivers/soc/qcom/rpmh.c          |  1 +
+ 3 files changed, 71 insertions(+)
+
+diff --git a/drivers/soc/qcom/rpmh-internal.h b/drivers/soc/qcom/rpmh-internal.h
+index 39441a25a..d54d353c4 100644
+--- a/drivers/soc/qcom/rpmh-internal.h
++++ b/drivers/soc/qcom/rpmh-internal.h
+@@ -145,6 +145,7 @@ struct rsc_drv {
+ };
+ 
+ int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg);
++void rpmh_rsc_dump_request(struct rsc_drv *drv, const struct tcs_request *msg);
+ int rpmh_rsc_write_ctrl_data(struct rsc_drv *drv,
+ 			     const struct tcs_request *msg);
+ void rpmh_rsc_invalidate(struct rsc_drv *drv);
+diff --git a/drivers/soc/qcom/rpmh-rsc.c b/drivers/soc/qcom/rpmh-rsc.c
+index c4542318e..395a5ce8b 100644
+--- a/drivers/soc/qcom/rpmh-rsc.c
++++ b/drivers/soc/qcom/rpmh-rsc.c
+@@ -405,6 +405,75 @@ static void __tcs_set_trigger(struct rsc_drv *drv, int tcs_id, bool trigger)
+ 	}
+ }
+ 
++/* Timeout-only diagnostic; never retrigger, acknowledge or reclaim a TCS. */
++void rpmh_rsc_dump_request(struct rsc_drv *drv, const struct tcs_request *msg)
++{
++	struct {
++		u32 msgid, addr, data, status;
++	} cmds[MAX_CMDS_PER_TCS];
++	struct tcs_group *tcs;
++	unsigned long flags;
++	u32 irq_before, irq_after, irq_enable;
++	u32 control, status, enabled_before, enabled_after, wait;
++	int i, j, count, tcs_id = -1;
++
++	tcs = get_tcs_for_msg(drv, msg);
++	if (IS_ERR(tcs))
++		return;
++
++	if (!spin_trylock_irqsave(&drv->lock, flags)) {
++		dev_err(drv->dev, "RPMh timeout snapshot unavailable: controller lock busy\n");
++		return;
++	}
++
++	for (i = 0; i < tcs->num_tcs; i++) {
++		if (test_bit(tcs->offset + i, drv->tcs_in_use) &&
++		    tcs->req[i] == msg) {
++			tcs_id = tcs->offset + i;
++			break;
++		}
++	}
++	if (tcs_id < 0) {
++		spin_unlock_irqrestore(&drv->lock, flags);
++		dev_err(drv->dev, "RPMh timeout snapshot: request no longer in flight\n");
++		return;
++	}
++
++	/*
++	 * The lock prevents reuse, but IRQ completion can clear hardware before
++	 * acquiring it. These are sequential reads, not an atomic HW snapshot.
++	 * Copy under lock and print afterwards to keep IRQ-off time bounded.
++	 */
++	irq_before = readl_relaxed(drv->tcs_base + drv->regs[RSC_DRV_IRQ_STATUS]);
++	irq_enable = readl_relaxed(drv->tcs_base + drv->regs[RSC_DRV_IRQ_ENABLE]);
++	control = read_tcs_reg(drv, drv->regs[RSC_DRV_CONTROL], tcs_id);
++	status = read_tcs_reg(drv, drv->regs[RSC_DRV_STATUS], tcs_id);
++	wait = read_tcs_reg(drv, drv->regs[RSC_DRV_CMD_WAIT_FOR_CMPL], tcs_id);
++	enabled_before = read_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], tcs_id);
++	count = min_t(u32, msg->num_cmds, min(tcs->ncpt, MAX_CMDS_PER_TCS));
++	for (j = 0; j < count; j++) {
++		cmds[j].msgid = read_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_MSGID], tcs_id, j);
++		cmds[j].addr = read_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_ADDR], tcs_id, j);
++		cmds[j].data = read_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_DATA], tcs_id, j);
++		cmds[j].status = read_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_STATUS], tcs_id, j);
++	}
++	enabled_after = read_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], tcs_id);
++	irq_after = readl_relaxed(drv->tcs_base + drv->regs[RSC_DRV_IRQ_STATUS]);
++	spin_unlock_irqrestore(&drv->lock, flags);
++
++	dev_err(drv->dev, "RPMh timeout snapshot %s TCS %d: sequential reads, IRQ may race\n",
++		drv->name, tcs_id);
++	dev_err(drv->dev, "RPMh TCS %d control=%#x status=%#x wait=%#x enable=%#x->%#x irq=%#x->%#x irq_enable=%#x\n",
++		tcs_id, control, status, wait, enabled_before, enabled_after,
++		irq_before, irq_after, irq_enable);
++	for (j = 0; j < count; j++)
++		dev_err(drv->dev, "RPMh TCS %d cmd %d addr=%#x data=%#x msgid=%#x status=%#x issued=%u complete=%u response_required=%u\n",
++			tcs_id, j, cmds[j].addr, cmds[j].data, cmds[j].msgid,
++			cmds[j].status, !!(cmds[j].status & CMD_STATUS_ISSUED),
++			!!(cmds[j].status & CMD_STATUS_COMPL),
++			!!(cmds[j].msgid & CMD_MSGID_RESP_REQ));
++}
++
+ /**
+  * enable_tcs_irq() - Enable or disable interrupts on the given TCS.
+  * @drv:     The controller.
+diff --git a/drivers/soc/qcom/rpmh.c b/drivers/soc/qcom/rpmh.c
+index 3199db32a..8858c74e1 100644
+--- a/drivers/soc/qcom/rpmh.c
++++ b/drivers/soc/qcom/rpmh.c
+@@ -438,6 +438,7 @@ int rpmh_write_batch(const struct device *dev, enum rpmh_state state,
+ 
+ 			dev_err(dev, "RPMh batch %d timed out (%u commands)\n",
+ 				i, msg->num_cmds);
++			rpmh_rsc_dump_request(ctrlr_to_drv(ctrlr), msg);
+ 			for (j = 0; j < msg->num_cmds; j++)
+ 				dev_err(dev, "RPMh pending addr=%#x data=%#x wait=%u\n",
+ 					msg->cmds[j].addr, msg->cmds[j].data,
+-- 
+2.55.0
+

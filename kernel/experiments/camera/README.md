@@ -12,6 +12,11 @@ configuration and timestamp. These are development patches, without a claim of
 upstream review or author DCO approval. Do not add this kernel to the APT kernel
 allowlist until the failures have been resolved and regression tested.
 
+2026-11-11 follow-up: an isolated [RPMh register diagnostic candidate](rpmh-diag/README.md)
+adds per-command timeout evidence on top of this unchanged cam4 recipe. Its two
+RPMh objects pass a focused ARM64 build; no full kernel or device validation has
+been performed for that candidate.
+
 ## Reconstruct
 
 Start with the standard recipe and a new, unused worktree path. Do not overwrite

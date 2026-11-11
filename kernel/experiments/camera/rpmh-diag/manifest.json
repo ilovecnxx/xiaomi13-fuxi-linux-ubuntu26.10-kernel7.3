@@ -1,0 +1,22 @@
+{
+  "status": "diagnostic-only-not-device-validated",
+  "base_manifest": "../manifest.json",
+  "base_manifest_sha256": "e0643b6412507933dacd02ad42ac012e13446e84c344ead491359a6f65d96564",
+  "base_tree": "599970e4ba1c1cbff7d4c113c85476d6ceb2e3cb",
+  "result_tree": "4307ddbda85cb6880309ffd09fdfb755d213d668",
+  "source_date_epoch": 1794406541,
+  "patches": [
+    {
+      "file": "0001-soc-qcom-snapshot-timed-out-RPMh-TCS-commands-for-di.patch",
+      "sha256": "78b9254ff2d73d9a722b0cfc359d55b69aa0c9a6d6c967f24f8c98b74a7b61ab"
+    }
+  ],
+  "validation": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 15.3.0-4ubuntu1) 15.3.0",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "make_targets": ["drivers/soc/qcom/rpmh.o", "drivers/soc/qcom/rpmh-rsc.o"],
+    "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
+    "full_kernel_built": false,
+    "device_tested": false
+  }
+}
