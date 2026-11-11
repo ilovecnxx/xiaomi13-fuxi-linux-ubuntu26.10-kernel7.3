@@ -1,6 +1,6 @@
 # 当前任务与验收状态
 
-2026-11-12 启动恢复复核：用户报告无法进入 Android 后，WiFi SSH 已确认手机恢复运行 deb9，默认 deb9、回退 deb8，pending/tries/once 均为 0，无失败系统服务或 D 状态线程。普通 `systemctl reboot` 正常完成关机后仍返回 deb9；只读发现 `misc` 的 BCB command 为 `boot-recovery`。已完整备份 4 MiB 并核对两端哈希，尚未清除启动命令，Android 恢复未完成。此状态取代下文“仍需物理恢复”；拟仅清空 command 的 32 字节，涉及禁写 Android 分区边界，等待用户明确例外授权。详见 [`MM0 诊断与恢复交接`](docs/相机MM0诊断-20261112.md)。
+2026-11-12 启动恢复复核：用户报告无法进入 Android 后，WiFi SSH 已确认手机恢复运行 deb9，默认 deb9、回退 deb8，pending/tries/once 均为 0，无失败系统服务或 D 状态线程。普通重启仍返回 deb9；发现 `misc` 的 BCB command 为 `boot-recovery`。完整备份 4 MiB 并核对两端哈希后，用户明确授权仅清空 command 的 32 字节；已执行并验证其余字节全部不变。再次正常重启后出现 Android MTP/ADB 接口，USB 与无线 ADB 均为 unauthorized，启动完成标志和桌面仍待授权后核验。手机保留在 Android，未再次运行相机；本次授权仅限该启动命令清除。详见 [`MM0 诊断与恢复交接`](docs/相机MM0诊断-20261112.md)。
 
 2026-11-12 相机诊断推进：cam5diag 完整包、启动及产物校验通过，342 项脚本与 61 项应用测试通过。受控半尺寸→全尺寸再次复现 RPMh 阻塞，逐命令快照首次显示 MM0（0x50030）要求响应且已发出但未完成，MC0/SH0/ACV 已完成；尚无根因修复。手机最后确认仍为 cam5diag，已预置下次默认 deb9、回退 deb8，但正常重启及新 SSH 超时，**当前需要物理恢复，不能记为已回退**。另捕获一次 libcamera 数组越界断言，与 RPMh 故障关系未知。详见 [`MM0 诊断与恢复交接`](docs/相机MM0诊断-20261112.md)。下文为历史记录。
 
