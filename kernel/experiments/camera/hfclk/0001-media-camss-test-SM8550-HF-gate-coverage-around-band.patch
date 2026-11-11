@@ -1,0 +1,27 @@
+From c539e8aaf80f3ccc1ce57bfc6888007020c8ce45 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Thu, 12 Nov 2026 00:04:01 +0800
+Subject: [PATCH] media: camss: test SM8550 HF gate coverage around bandwidth
+ votes
+
+The cam5diag trace has two completed and one stalled identical MM0 enable batches. CAMSS currently votes before VFE enables gcc_axi_hf, and removes votes after VFE disables it. Use the existing PM clock list to test whether keeping that gate enabled over both transitions prevents the stall. Retain VFE clock references, rates, votes and RPMh diagnostics. This is an isolated experiment, not a verified hardware fix.
+---
+ drivers/media/platform/qcom/camss/camss.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index c54185c93..d22c16547 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -5768,6 +5768,8 @@ static const struct camss_resources sc7280_resources = {
+ static const struct camss_resources sm8550_resources = {
+ 	.version = CAMSS_8550,
+ 	.pd_name = "top",
++	/* Keep the HF gate enabled across the runtime-PM bandwidth votes. */
++	.pm_clks = { "gcc_axi_hf" },
+ 	.csiphy_res = csiphy_res_8550,
+ 	.csid_res = csid_res_8550,
+ 	.vfe_res = vfe_res_8550,
+-- 
+2.55.0
+

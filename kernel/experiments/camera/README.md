@@ -18,6 +18,13 @@ RPMh objects pass a focused ARM64 build. The subsequent cam5diag full package an
 boot passed, but streaming reproduced the interconnect stall with MM0 awaiting
 a response; see the [2026-11-12 record](../../../docs/相机MM0诊断-20261112.md).
 
+An isolated [HF clock candidate](hfclk/README.md) subsequently verified clock
+coverage of the ICC votes and completed four CPU half/full pairs. A fifth
+full-size run hit the known libcamera array assertion with normal kernel cleanup.
+No RPMh timeout occurred in that run, but aggregate votes differ from the prior
+failure; this is not a root-cause fix or camera acceptance. The phone returned
+normally to deb9, with deb8 retained as fallback.
+
 ## Reconstruct
 
 Start with the standard recipe and a new, unused worktree path. Do not overwrite

@@ -1,6 +1,8 @@
 # 当前任务与验收状态
 
-2026-11-12 Android 恢复已确认：用户允许 ADB 后，USB 与无线连接均为 device；`sys.boot_completed=1`、`dev.bootcomplete=1`、`init.svc.bootanim=stopped`，焦点应用为 Launcher，当前窗口为通知栏。清除残留 BCB command 后本次正常启动成功；手机保留在 Android，未继续相机测试，也未改动槽位。相机 RPMh 故障仍未修复。
+2026-11-12 相机 HF 门控实验已上机：cam6hfclk 完整包、CAMSS W=1 和 342 项主机测试通过。RAW 5 帧及四轮半尺寸 CPU 300 帧→全尺寸 CPU 120 帧完成；第五轮全尺寸触发 libcamera 数组断言，已停止采集，内核清理正常。本轮未复现 RPMh 超时，跟踪确认 HF 覆盖 ICC 申请及撤销，但 MM0 聚合值与旧故障不同，不能宣称根因修复。已正常回到运行/默认 deb9、回退 deb8，启动计数清零、文件校验通过，无持续阻塞线程。Android→Linux 切换再次留下 BCB boot-recovery，未再次清除；当前保留 Linux。详见 [`HF 时钟实验`](docs/相机HF时钟实验-20261112.md)。下文为历史记录。
+
+2026-11-12 Android 恢复已确认：用户允许 ADB 后，USB 与无线连接均为 device；`sys.boot_completed=1`、`dev.bootcomplete=1`、`init.svc.bootanim=stopped`，焦点应用为 Launcher，当前窗口为通知栏。清除残留 BCB command 后本次正常启动成功；当时保留在 Android，未继续相机测试，也未改动槽位。相机 RPMh 故障仍未修复。
 
 2026-11-12 启动恢复复核：用户报告无法进入 Android 后，WiFi SSH 已确认手机恢复运行 deb9，默认 deb9、回退 deb8，pending/tries/once 均为 0，无失败系统服务或 D 状态线程。普通重启仍返回 deb9；发现 `misc` 的 BCB command 为 `boot-recovery`。完整备份 4 MiB 并核对两端哈希后，用户明确授权仅清空 command 的 32 字节；已执行并验证其余字节全部不变。再次正常重启后出现 Android MTP/ADB 接口，USB 与无线 ADB 均为 unauthorized，启动完成标志和桌面仍待授权后核验。手机保留在 Android，未再次运行相机；本次授权仅限该启动命令清除。详见 [`MM0 诊断与恢复交接`](docs/相机MM0诊断-20261112.md)。
 

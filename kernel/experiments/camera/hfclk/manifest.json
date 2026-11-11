@@ -1,0 +1,29 @@
+{
+  "status": "experimental-device-tested-not-accepted",
+  "base_manifest": "../rpmh-diag/manifest.json",
+  "base_manifest_sha256": "3e5f1c0bd63ee823483e730faa2e79ae5ab425f54a2e5655c796a8f1c67233e0",
+  "base_tree": "4307ddbda85cb6880309ffd09fdfb755d213d668",
+  "result_tree": "6fce8068ea12f794d28ee05b6883c4a478ad1604",
+  "source_date_epoch": 1794413041,
+  "patches": [
+    {
+      "file": "0001-media-camss-test-SM8550-HF-gate-coverage-around-band.patch",
+      "sha256": "e6513f48a71e548c7fc7ac7d96b0dab24252d37fb35c68057478861db9e45e14"
+    }
+  ],
+  "validation": {
+    "full_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-cam6hfclk",
+    "deb_sha256": "1ffcf53aa4a8b3ab7c4be4b10514d39aa64a420190211c03b5ca46b2fa9a451f",
+    "camss_w1_passed": true,
+    "host_tests_passed": 342,
+    "device_tested": true,
+    "raw_frames_passed": 5,
+    "half_cpu_300_frame_runs_passed": 5,
+    "full_cpu_120_frame_runs_passed": 4,
+    "fifth_full_run": "libcamera-array-assertion-exit-134",
+    "rpmh_timeout_observed": false,
+    "hf_gate_vote_coverage_verified": true,
+    "camera_accepted": false
+  }
+}
