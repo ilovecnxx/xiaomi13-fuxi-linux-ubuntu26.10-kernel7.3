@@ -1,5 +1,5 @@
 {
-  "status": "diagnostic-only-not-device-validated",
+  "status": "diagnostic-only-device-stall-reproduced",
   "base_manifest": "../manifest.json",
   "base_manifest_sha256": "e0643b6412507933dacd02ad42ac012e13446e84c344ead491359a6f65d96564",
   "base_tree": "599970e4ba1c1cbff7d4c113c85476d6ceb2e3cb",
@@ -16,7 +16,16 @@
     "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
     "make_targets": ["drivers/soc/qcom/rpmh.o", "drivers/soc/qcom/rpmh-rsc.o"],
     "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
-    "full_kernel_built": false,
-    "device_tested": false
+    "full_kernel_built": true,
+    "device_tested": true,
+    "camera_accepted": false,
+    "device_result": "MM0 response incomplete; shared interconnect stall reproduced",
+    "device_report": "../../../../docs/相机MM0诊断-20261112.md",
+    "full_build": {
+      "kernel_release": "7.4.0-rc1-fuxi-cam5diag",
+      "build_jobs": 6,
+      "deb_sha256": "2ba284ec25378ceb93758564dc53762e0bce6e8a91d87c52dc3471af652a99d3",
+      "build_environment_sha256": "537297f2b366c2abd3a61854d368df0427c6f09c08c90a984832941427510ba6"
+    }
   }
 }

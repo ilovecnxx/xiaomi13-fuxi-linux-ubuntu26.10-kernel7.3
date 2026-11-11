@@ -14,8 +14,9 @@ allowlist until the failures have been resolved and regression tested.
 
 2026-11-11 follow-up: an isolated [RPMh register diagnostic candidate](rpmh-diag/README.md)
 adds per-command timeout evidence on top of this unchanged cam4 recipe. Its two
-RPMh objects pass a focused ARM64 build; no full kernel or device validation has
-been performed for that candidate.
+RPMh objects pass a focused ARM64 build. The subsequent cam5diag full package and
+boot passed, but streaming reproduced the interconnect stall with MM0 awaiting
+a response; see the [2026-11-12 record](../../../docs/相机MM0诊断-20261112.md).
 
 ## Reconstruct
 

@@ -2,10 +2,17 @@
 
 2026-11-11: this candidate adds register evidence for the
 [reproduced cam4 stall](../../../../docs/相机实机复现-20261111.md).
-It is an additional series on the unchanged cam4 content tree, not a fix or
-a device-validated kernel. No deb was built or installed in this session.
-SSH failed locally with `socket: Operation not permitted`, so the device's
-recovery state remains unknown.
+It is an additional series on the unchanged cam4 content tree, not a fix.
+The initial session only completed focused builds.
+The initial SSH attempt failed locally with `socket: Operation not permitted`.
+After execution permissions were updated, the device was reachable and recovery
+to deb9/deb8 was verified; see the [follow-up record](../../../../docs/相机诊断候选-20261111.md).
+
+2026-11-12: the full cam5diag package and boot passed. A controlled restart
+reproduced the stall and the snapshot showed MM0 issued with a required response
+but no completion, while MC0/SH0/ACV completed. The device then required physical
+recovery despite preselected deb9/deb8 entries. See the
+[device record](../../../../docs/相机MM0诊断-20261112.md); this is not camera acceptance.
 
 ## Evidence and Scope
 
@@ -65,9 +72,10 @@ Compilation does not exercise MMIO, timeout or IRQ concurrency on hardware.
 
 First establish recovery to the verified deb9/deb8 entries and check filesystem,
 package audit and blocked threads. Those were the latest actual fallback entries;
-older std2/chg3 documentation is not the current device baseline. A full isolated
-kernel build and boot-artifact verification are still needed before testing this
-candidate. Keep both verified fallback entries and collect logs on the host.
+older std2/chg3 documentation is not the current device baseline. The full isolated
+kernel build and boot-artifact verification passed for cam5diag, but its latest
+stall still requires recovery. Keep both verified fallback entries and collect
+logs on the host.
 
 On a controlled reproduction, correlate the new TCS/command index and address
 with RPMh send/done trace events and CAMSS runtime-PM events. Inspect only enabled
