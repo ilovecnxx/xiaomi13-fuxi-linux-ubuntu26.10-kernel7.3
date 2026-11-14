@@ -1,0 +1,98 @@
+diff --git a/include/libcamera/internal/egl.h b/include/libcamera/internal/egl.h
+index 8a2d96d..6d8fdc7 100644
+--- a/include/libcamera/internal/egl.h
++++ b/include/libcamera/internal/egl.h
+@@ -88,7 +88,7 @@ public:
+ 	GLenum texture_unit_; /**< Texture unit associated with this image eg (GL_TEXTURE0) */
+ 	GLuint texture_; /**< OpenGL texture object ID */
+ 	GLuint fbo_; /**< OpenGL frame buffer object ID */
+-	EGLImageKHR image_; /**< EGL Image handle */
++	EGLImageKHR image_ = EGL_NO_IMAGE_KHR; /**< EGL Image handle */
+ 
+ private:
+ 	LIBCAMERA_DISABLE_COPY_AND_MOVE(eGLImage)
+diff --git a/src/libcamera/egl.cpp b/src/libcamera/egl.cpp
+index 5b9bbf4..745c540 100644
+--- a/src/libcamera/egl.cpp
++++ b/src/libcamera/egl.cpp
+@@ -163,7 +163,7 @@ int eGL::createDMABufTexture2D(eGLImage &eglImage, int fd, bool output)
+ 		GLenum err = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+ 		if (err != GL_FRAMEBUFFER_COMPLETE) {
+ 			LOG(eGL, Error) << "glFrameBufferTexture2D error " << err;
+-			eglDestroyImageKHR(display_, eglImage.image_);
++			destroyDMABufTexture(eglImage);
+ 			ret = -ENODEV;
+ 			goto done;
+ 		}
+@@ -219,7 +219,10 @@ int eGL::createOutputDMABufTexture2D(eGLImage &eglImage, int fd)
+  */
+ void eGL::destroyDMABufTexture(eGLImage &eglImage)
+ {
+-	eglDestroyImage(display_, std::exchange(eglImage.image_, EGL_NO_IMAGE_KHR));
++	ASSERT(tid_ == Thread::currentId());
++
++	if (eglImage.image_ != EGL_NO_IMAGE_KHR)
++		eglDestroyImageKHR(display_, std::exchange(eglImage.image_, EGL_NO_IMAGE_KHR));
+ }
+ 
+ /**
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 4a0b9f5..2adeb0a 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -1020,6 +1020,13 @@ void SimpleCameraData::conversionOutputDone(FrameBuffer *buffer)
+ 
+ 	/* Complete the buffer and the request. */
+ 	Request *request = buffer->request();
++	/* A failed software conversion may not have produced statistics for IPA. */
++	if (swIsp_ && buffer->metadata().status != FrameMetadata::FrameSuccess) {
++		SimpleFrameInfo *info = frameInfo_.find(request->sequence());
++		if (info)
++			info->metadataRequired = false;
++	}
++
+ 	if (pipe->completeBuffer(request, buffer))
+ 		tryCompleteRequest(request);
+ }
+diff --git a/src/libcamera/software_isp/debayer_egl.cpp b/src/libcamera/software_isp/debayer_egl.cpp
+index 4d0caa6..37e2ae2 100644
+--- a/src/libcamera/software_isp/debayer_egl.cpp
++++ b/src/libcamera/software_isp/debayer_egl.cpp
+@@ -515,7 +515,15 @@ int DebayerEGL::debayerGPU(MappedFrameBuffer &in, int out_fd, DebayerParams &par
+ 	egl_.createTexture2D(*eglImageBayerIn_, glFormat_, inputConfig_.stride / bytesPerPixel_, height_, in.planes()[0].data());
+ 
+ 	/* Generate the output render framebuffer as render to texture */
+-	egl_.createOutputDMABufTexture2D(*eglImageBayerOut_, out_fd);
++	int ret = egl_.createOutputDMABufTexture2D(*eglImageBayerOut_, out_fd);
++	if (ret)
++		return ret;
++
++	/* Finish GPU access before returning either a successful or failed buffer. */
++	utils::scope_exit imageGuard([&] {
++		egl_.syncOutput();
++		egl_.destroyDMABufTexture(*eglImageBayerOut_);
++	});
+ 
+ 	setShaderVariableValues(params);
+ 	glViewport(0, 0, width_, height_);
+@@ -526,8 +534,6 @@ int DebayerEGL::debayerGPU(MappedFrameBuffer &in, int out_fd, DebayerParams &par
+ 	if (err != GL_NO_ERROR) {
+ 		LOG(eGL, Error) << "Drawing scene fail " << err;
+ 		return -ENODEV;
+-	} else {
+-		egl_.syncOutput();
+ 	}
+ 
+ 	return 0;
+@@ -574,7 +580,10 @@ void DebayerEGL::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
+ error:
+ 	bench_.finishFrame();
+ 	metadata.status = FrameMetadata::FrameError;
+-	return;
++	metadata.planes()[0].bytesused = 0;
++	dmaSyncers.clear();
++	outputBufferReady.emit(output);
++	inputBufferReady.emit(input);
+ }
+ 
+ int DebayerEGL::start()

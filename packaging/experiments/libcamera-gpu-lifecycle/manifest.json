@@ -1,0 +1,21 @@
+{
+  "name": "libcamera-gpu-image-lifecycle",
+  "status": "isolated-experiment",
+  "source": {
+    "url": "https://git.libcamera.org/libcamera/libcamera.git",
+    "tag": "v0.7.0",
+    "commit": "b7854fd07d42168f099b5ce30d1702e0e0875bf5",
+    "git_archive_sha256": "384eff8b4fd8c3e4b09331ba715da69a793023d54f24d319101b2af93389bf89"
+  },
+  "patches": [
+    {
+      "file": "../libcamera-first-frame/0001-seed-software-isp-parameters.patch",
+      "sha256": "67dc266cda03ab2cbe1a94e3672c7e047f18ea1440ff0303c9f0d3963580fb28"
+    },
+    {
+      "file": "0002-release-egl-images-and-return-failed-buffers.patch",
+      "sha256": "4c51cdba0a3485eb76fa723ff6e63894b130412503a486478b9ea86555976074"
+    }
+  ],
+  "system_install": false
+}
