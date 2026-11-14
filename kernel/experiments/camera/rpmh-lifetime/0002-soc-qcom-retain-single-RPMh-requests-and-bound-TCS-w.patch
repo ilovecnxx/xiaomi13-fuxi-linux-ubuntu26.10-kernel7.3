@@ -1,0 +1,696 @@
+From de9363f69d693c46fbeff60fdbc242057d218d93 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sat, 14 Nov 2026 20:58:32 +0800
+Subject: [PATCH] soc: qcom: retain single RPMh requests and bound TCS waits
+
+Keep synchronous request storage alive until transport completion, release rejected asynchronous requests, and bound each conflict-free TCS availability wait without cancelling outstanding commands. Extend KUnit coverage to single-request ownership and the actual RSC wait path backed by RAM.
+---
+ drivers/soc/qcom/Kconfig         |   9 +-
+ drivers/soc/qcom/rpmh-internal.h |   6 ++
+ drivers/soc/qcom/rpmh-rsc-test.c | 179 +++++++++++++++++++++++++++++++
+ drivers/soc/qcom/rpmh-rsc.c      |  24 +++--
+ drivers/soc/qcom/rpmh-test.c     | 154 +++++++++++++++++++++++++-
+ drivers/soc/qcom/rpmh.c          | 128 ++++++++++++++--------
+ 6 files changed, 444 insertions(+), 56 deletions(-)
+ create mode 100644 drivers/soc/qcom/rpmh-rsc-test.c
+
+diff --git a/drivers/soc/qcom/Kconfig b/drivers/soc/qcom/Kconfig
+index a8b693a68..dc4b8e26e 100644
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -163,12 +163,13 @@ config QCOM_RPMH
+ 	  help apply the aggregated state on the resource.
+ 
+ config QCOM_RPMH_KUNIT_TEST
+-	bool "KUnit tests for RPMh batch request lifetime" if !KUNIT_ALL_TESTS
+-	depends on KUNIT=y && QCOM_RPMH=y
++	bool "KUnit tests for RPMh request lifetime and TCS waits" if !KUNIT_ALL_TESTS
++	depends on KUNIT=y && QCOM_RPMH=y && QCOM_COMMAND_DB=y
+ 	default KUNIT_ALL_TESTS
+ 	help
+-	  Exercise batch completion, submission failures and late responses
+-	  after timeout using a fake transport. No RPMh hardware is accessed.
++	  Exercise completion, submission failures, late responses and TCS
++	  availability waits using a fake transport and register backing memory.
++	  No RPMh hardware is accessed.
+ 	  Enable KASAN to detect accesses to prematurely freed requests.
+ 	  Timeout tests each wait for the normal ten-second response deadline.
+ 
+diff --git a/drivers/soc/qcom/rpmh-internal.h b/drivers/soc/qcom/rpmh-internal.h
+index d4d50332f..230ba84a8 100644
+--- a/drivers/soc/qcom/rpmh-internal.h
++++ b/drivers/soc/qcom/rpmh-internal.h
+@@ -8,6 +8,8 @@
+ #define __RPM_INTERNAL_H__
+ 
+ #include <linux/bitmap.h>
++#include <linux/completion.h>
++#include <linux/refcount.h>
+ #include <linux/wait.h>
+ #include <soc/qcom/tcs.h>
+ 
+@@ -61,6 +63,8 @@ struct tcs_group {
+  * @completion: triggered when request is done
+  * @dev: the device making the request
+  * @needs_free: check to free dynamically allocated request object
++ * @refs: caller and transport references for standalone heap requests
++ * @done: completion storage for standalone synchronous requests
+  * @batch: owner of an active batch request, retained until TX completion
+  */
+ struct rpmh_request {
+@@ -69,6 +73,8 @@ struct rpmh_request {
+ 	struct completion *completion;
+ 	const struct device *dev;
+ 	bool needs_free;
++	refcount_t refs;
++	struct completion done;
+ 	struct batch_cache_req *batch;
+ };
+ 
+diff --git a/drivers/soc/qcom/rpmh-rsc-test.c b/drivers/soc/qcom/rpmh-rsc-test.c
+new file mode 100644
+index 000000000..f7493f894
+--- /dev/null
++++ b/drivers/soc/qcom/rpmh-rsc-test.c
+@@ -0,0 +1,179 @@
++// SPDX-License-Identifier: GPL-2.0
++/* Exercise the real TCS wait/claim path using RAM instead of device registers. */
++#include <kunit/test.h>
++#include <linux/workqueue.h>
++
++#define RPMH_TEST_REG_SIZE 4096
++
++struct rpmh_rsc_test_ctx {
++	struct device dev;
++	struct rsc_drv drv;
++	struct tcs_cmd cmd;
++	struct tcs_request msg;
++	struct tcs_request old_msg;
++	struct delayed_work release;
++	void *registers;
++};
++
++static void rpmh_rsc_test_release(struct work_struct *work)
++{
++	struct rpmh_rsc_test_ctx *ctx = container_of(to_delayed_work(work),
++						struct rpmh_rsc_test_ctx, release);
++	struct rsc_drv *drv = &ctx->drv;
++	unsigned long flags;
++
++	spin_lock_irqsave(&drv->lock, flags);
++	write_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], 0, 0);
++	clear_bit(0, drv->tcs_in_use);
++	spin_unlock_irqrestore(&drv->lock, flags);
++	wake_up(&drv->tcs_wait);
++}
++
++static int rpmh_rsc_test_init(struct kunit *test)
++{
++	struct rpmh_rsc_test_ctx *ctx;
++	struct tcs_group *tcs;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	ctx->registers = kunit_kzalloc(test, RPMH_TEST_REG_SIZE, GFP_KERNEL);
++	if (!ctx->registers)
++		return -ENOMEM;
++	test->priv = ctx;
++	ctx->dev.init_name = "rpmh-rsc-test";
++	ctx->drv.dev = &ctx->dev;
++	ctx->drv.name = "rpmh-rsc-test";
++	ctx->drv.regs = rpmh_rsc_reg_offset_ver_3_0;
++	ctx->drv.tcs_base = (void __iomem *)ctx->registers;
++	spin_lock_init(&ctx->drv.lock);
++	init_waitqueue_head(&ctx->drv.tcs_wait);
++	tcs = &ctx->drv.tcs[ACTIVE_TCS];
++	tcs->drv = &ctx->drv;
++	tcs->type = ACTIVE_TCS;
++	tcs->num_tcs = 1;
++	tcs->ncpt = MAX_CMDS_PER_TCS;
++	ctx->cmd.addr = 0x50030;
++	ctx->cmd.data = 0x123;
++	ctx->msg.state = RPMH_ACTIVE_ONLY_STATE;
++	ctx->msg.num_cmds = 1;
++	ctx->msg.cmds = &ctx->cmd;
++	INIT_DELAYED_WORK(&ctx->release, rpmh_rsc_test_release);
++	return 0;
++}
++
++static void rpmh_rsc_test_exit(struct kunit *test)
++{
++	struct rpmh_rsc_test_ctx *ctx = test->priv;
++
++	cancel_delayed_work_sync(&ctx->release);
++}
++
++static void rpmh_rsc_test_occupy(struct rpmh_rsc_test_ctx *ctx, bool conflict)
++{
++	struct rsc_drv *drv = &ctx->drv;
++
++	set_bit(0, drv->tcs_in_use);
++	drv->tcs[ACTIVE_TCS].req[0] = &ctx->old_msg;
++	write_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], 0, BIT(0));
++	write_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_ADDR], 0, 0,
++		      conflict ? ctx->cmd.addr : 0x60030);
++	write_tcs_reg(drv, drv->regs[RSC_DRV_CONTROL], 0,
++		      TCS_AMC_MODE_ENABLE | TCS_AMC_MODE_TRIGGER);
++}
++
++static void rpmh_rsc_test_timeout(struct kunit *test, bool conflict)
++{
++	struct rpmh_rsc_test_ctx *ctx = test->priv;
++	struct rsc_drv *drv = &ctx->drv;
++	unsigned long started, flags;
++	void *snapshot;
++	bool locked;
++
++	/* For a conflict, a second TCS is free but must not receive this command. */
++	if (conflict)
++		drv->tcs[ACTIVE_TCS].num_tcs = 2;
++	rpmh_rsc_test_occupy(ctx, conflict);
++	snapshot = kunit_kmalloc(test, RPMH_TEST_REG_SIZE, GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, snapshot);
++	memcpy(snapshot, ctx->registers, RPMH_TEST_REG_SIZE);
++	started = jiffies;
++	KUNIT_EXPECT_EQ(test, rpmh_rsc_send_data(drv, &ctx->msg), -ETIMEDOUT);
++	KUNIT_EXPECT_GE(test, jiffies - started, msecs_to_jiffies(RPMH_TCS_TIMEOUT_MS));
++	KUNIT_EXPECT_MEMEQ(test, snapshot, ctx->registers, RPMH_TEST_REG_SIZE);
++	KUNIT_EXPECT_EQ(test, bitmap_weight(drv->tcs_in_use, MAX_TCS_NR), 1);
++	KUNIT_EXPECT_TRUE(test, test_bit(0, drv->tcs_in_use));
++	KUNIT_EXPECT_PTR_EQ(test, drv->tcs[ACTIVE_TCS].req[0], &ctx->old_msg);
++	KUNIT_EXPECT_PTR_EQ(test, drv->tcs[ACTIVE_TCS].req[1], NULL);
++	/* The only waiter ran in this task; there are no concurrent producers. */
++	KUNIT_EXPECT_FALSE(test, waitqueue_active(&drv->tcs_wait));
++	locked = spin_trylock_irqsave(&drv->lock, flags);
++	if (locked)
++		spin_unlock_irqrestore(&drv->lock, flags);
++	KUNIT_EXPECT_TRUE(test, locked);
++}
++
++static void rpmh_rsc_full_timeout_test(struct kunit *test)
++{
++	rpmh_rsc_test_timeout(test, false);
++}
++
++static void rpmh_rsc_conflict_timeout_test(struct kunit *test)
++{
++	rpmh_rsc_test_timeout(test, true);
++}
++
++static void rpmh_rsc_release_before_timeout_test(struct kunit *test)
++{
++	struct rpmh_rsc_test_ctx *ctx = test->priv;
++	struct rsc_drv *drv = &ctx->drv;
++
++	rpmh_rsc_test_occupy(ctx, true);
++	schedule_delayed_work(&ctx->release, msecs_to_jiffies(20));
++	KUNIT_EXPECT_EQ(test, rpmh_rsc_send_data(drv, &ctx->msg), 0);
++	cancel_delayed_work_sync(&ctx->release);
++	KUNIT_EXPECT_TRUE(test, test_bit(0, drv->tcs_in_use));
++	KUNIT_EXPECT_PTR_EQ(test, drv->tcs[ACTIVE_TCS].req[0], &ctx->msg);
++	KUNIT_EXPECT_EQ(test, read_tcs_cmd(drv, drv->regs[RSC_DRV_CMD_DATA], 0, 0),
++			ctx->cmd.data);
++	KUNIT_EXPECT_EQ(test, read_tcs_reg(drv, drv->regs[RSC_DRV_CONTROL], 0),
++			(u32)(TCS_AMC_MODE_ENABLE | TCS_AMC_MODE_TRIGGER));
++}
++
++static void rpmh_rsc_borrow_wake_test(struct kunit *test)
++{
++	struct rpmh_rsc_test_ctx *ctx = test->priv;
++	struct rsc_drv *drv = &ctx->drv;
++	struct tcs_group *wake = &drv->tcs[WAKE_TCS];
++
++	drv->tcs[ACTIVE_TCS].num_tcs = 0;
++	wake->drv = drv;
++	wake->type = WAKE_TCS;
++	wake->offset = 2;
++	wake->num_tcs = 1;
++	wake->ncpt = MAX_CMDS_PER_TCS;
++	write_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], 2, BIT(3));
++	KUNIT_EXPECT_EQ(test, rpmh_rsc_send_data(drv, &ctx->msg), 0);
++	KUNIT_EXPECT_TRUE(test, test_bit(2, drv->tcs_in_use));
++	KUNIT_EXPECT_PTR_EQ(test, wake->req[0], &ctx->msg);
++	KUNIT_EXPECT_EQ(test, read_tcs_reg(drv, drv->regs[RSC_DRV_CMD_ENABLE], 2), 1U);
++	KUNIT_EXPECT_EQ(test, readl_relaxed(drv->tcs_base + drv->regs[RSC_DRV_IRQ_ENABLE]),
++			(u32)BIT(2));
++}
++
++static struct kunit_case rpmh_rsc_cases[] = {
++	KUNIT_CASE_SLOW(rpmh_rsc_full_timeout_test),
++	KUNIT_CASE_SLOW(rpmh_rsc_conflict_timeout_test),
++	KUNIT_CASE(rpmh_rsc_release_before_timeout_test),
++	KUNIT_CASE(rpmh_rsc_borrow_wake_test),
++	{}
++};
++
++static struct kunit_suite rpmh_rsc_suite = {
++	.name = "rpmh-rsc-wait",
++	.init = rpmh_rsc_test_init,
++	.exit = rpmh_rsc_test_exit,
++	.test_cases = rpmh_rsc_cases,
++};
++
++kunit_test_suite(rpmh_rsc_suite);
+diff --git a/drivers/soc/qcom/rpmh-rsc.c b/drivers/soc/qcom/rpmh-rsc.c
+index 745945023..32727da0b 100644
+--- a/drivers/soc/qcom/rpmh-rsc.c
++++ b/drivers/soc/qcom/rpmh-rsc.c
+@@ -12,6 +12,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
++#include <linux/jiffies.h>
+ #include <linux/kernel.h>
+ #include <linux/ktime.h>
+ #include <linux/list.h>
+@@ -40,6 +41,7 @@
+ 
+ 
+ #define RSC_DRV_ID			0
++#define RPMH_TCS_TIMEOUT_MS		10000
+ 
+ #define MAJOR_VER_MASK			0xFF
+ #define MAJOR_VER_SHIFT			16
+@@ -707,8 +709,8 @@ static int claim_tcs_for_req(struct rsc_drv *drv, struct tcs_group *tcs,
+  * - This is only used for "ACTIVE_ONLY" since the limitations of this
+  *   function don't make sense for sleep/wake cases.
+  * - To do the transfer, we will grab a whole TCS for ourselves--we don't
+- *   try to share. If there are none available we'll wait indefinitely
+- *   for a free one.
++ *   try to share. If none are available or a conflicting command is in flight,
++ *   wait at most RPMH_TCS_TIMEOUT_MS for a usable one.
+  * - This function will not wait for the commands to be finished, only for
+  *   data to be programmed into the RPMh. See rpmh_tx_done() which will
+  *   be called when the transfer is fully complete.
+@@ -718,11 +720,13 @@ static int claim_tcs_for_req(struct rsc_drv *drv, struct tcs_group *tcs,
+  *   the interrupt handler to run. If the interrupts is set to run on the
+  *   active CPU this can never happen if interrupts are disabled.
+  *
+- * Return: 0 on success, -EINVAL on error.
++ * Return: 0 on success, -EINVAL for an invalid state, or -ETIMEDOUT if no
++ * conflict-free TCS becomes available. On error the request was not submitted.
+  */
+ int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg)
+ {
+ 	struct tcs_group *tcs;
++	long time_left;
+ 	int tcs_id;
+ 
+ 	KUNIT_STATIC_STUB_REDIRECT(rpmh_rsc_send_data, drv, msg);
+@@ -735,10 +739,14 @@ int rpmh_rsc_send_data(struct rsc_drv *drv, const struct tcs_request *msg)
+ 
+ 	spin_lock_irq(&drv->lock);
+ 
+-	/* Wait forever for a free tcs. It better be there eventually! */
+-	wait_event_lock_irq(drv->tcs_wait,
++	time_left = wait_event_lock_irq_timeout(drv->tcs_wait,
+ 			    (tcs_id = claim_tcs_for_req(drv, tcs, msg)) >= 0,
+-			    drv->lock);
++			    drv->lock, msecs_to_jiffies(RPMH_TCS_TIMEOUT_MS));
++	if (!time_left) {
++		spin_unlock_irq(&drv->lock);
++		dev_err_ratelimited(drv->dev, "RPMh timed out waiting for a free, conflict-free TCS\n");
++		return -ETIMEDOUT;
++	}
+ 
+ 	tcs->req[tcs_id - tcs->offset] = msg;
+ 	set_bit(tcs_id, drv->tcs_in_use);
+@@ -1252,3 +1260,7 @@ core_initcall(rpmh_driver_init);
+ 
+ MODULE_DESCRIPTION("Qualcomm Technologies, Inc. RPMh Driver");
+ MODULE_LICENSE("GPL v2");
++
++#if IS_ENABLED(CONFIG_QCOM_RPMH_KUNIT_TEST)
++#include "rpmh-rsc-test.c"
++#endif
+diff --git a/drivers/soc/qcom/rpmh-test.c b/drivers/soc/qcom/rpmh-test.c
+index 9fc41fe86..7736cc279 100644
+--- a/drivers/soc/qcom/rpmh-test.c
++++ b/drivers/soc/qcom/rpmh-test.c
+@@ -1,5 +1,5 @@
+ // SPDX-License-Identifier: GPL-2.0
+-/* Included by rpmh.c to exercise private batch ownership as well as the API. */
++/* Included by rpmh.c to exercise private request ownership as well as the API. */
+ #include <kunit/static_stub.h>
+ #include <kunit/test.h>
+ 
+@@ -37,6 +37,8 @@ static int rpmh_test_send(struct rsc_drv *drv, const struct tcs_request *msg)
+ 		return -E2BIG;
+ 	ctx->pending[index] = msg;
+ 	if (ctx->calls == ctx->complete_at) {
++		if (msg->is_read)
++			msg->cmds[0].data = 0x5678;
+ 		for (i = index; i >= 0; i--)
+ 			rpmh_test_complete(ctx, i);
+ 	}
+@@ -66,6 +68,7 @@ static int rpmh_test_init(struct kunit *test)
+ 	ctx->dev.parent = &ctx->parent;
+ 	dev_set_drvdata(&ctx->parent, &ctx->drv);
+ 	spin_lock_init(&ctx->drv.client.cache_lock);
++	INIT_LIST_HEAD(&ctx->drv.client.cache);
+ 	INIT_LIST_HEAD(&ctx->drv.client.batch_cache);
+ 	ctx->fail_at = -1;
+ 	ctx->complete_at = -1;
+@@ -77,11 +80,16 @@ static int rpmh_test_init(struct kunit *test)
+ static void rpmh_test_exit(struct kunit *test)
+ {
+ 	struct rpmh_test_ctx *ctx = test->priv;
++	struct cache_req *req, *tmp;
+ 	int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(ctx->pending); i++)
+ 		rpmh_test_complete(ctx, i);
+ 	rpmh_invalidate(&ctx->dev);
++	list_for_each_entry_safe(req, tmp, &ctx->drv.client.cache, list) {
++		list_del(&req->list);
++		kfree(req);
++	}
+ }
+ 
+ static void rpmh_batch_reverse_completion_test(struct kunit *test)
+@@ -221,4 +229,146 @@ static struct kunit_suite rpmh_batch_suite = {
+ 	.test_cases = rpmh_batch_cases,
+ };
+ 
+-kunit_test_suite(rpmh_batch_suite);
++static void rpmh_single_immediate_completion_test(struct kunit *test)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100, .data = 0x1234 };
++
++	ctx->complete_at = 1;
++	KUNIT_EXPECT_EQ(test, rpmh_write(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1), 0);
++	ctx->complete_at = 2;
++	KUNIT_EXPECT_EQ(test, rpmh_read(&ctx->dev, &cmd), 0);
++	KUNIT_EXPECT_EQ(test, cmd.data, 0x5678U);
++	ctx->complete_at = 3;
++	KUNIT_EXPECT_EQ(test, rpmh_write_async(&ctx->dev, RPMH_ACTIVE_ONLY_STATE,
++					     &cmd, 1), 0);
++	KUNIT_EXPECT_EQ(test, ctx->calls, 3);
++}
++
++static void rpmh_single_submit_failure_test(struct kunit *test)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100, .data = 0x1234 };
++	struct rpmh_request *req;
++
++	ctx->fail_at = 0;
++	KUNIT_EXPECT_EQ(test, rpmh_write(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1), -EIO);
++	ctx->fail_at = 1;
++	KUNIT_EXPECT_EQ(test, rpmh_read(&ctx->dev, &cmd), -EIO);
++	KUNIT_EXPECT_EQ(test, cmd.data, 0x1234U);
++	ctx->fail_at = 2;
++	KUNIT_EXPECT_EQ(test, rpmh_write_async(&ctx->dev, RPMH_ACTIVE_ONLY_STATE,
++					     &cmd, 1), -EIO);
++	ctx->fail_at = 3;
++	req = rpmh_alloc_request(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1,
++				 false);
++	KUNIT_ASSERT_FALSE(test, IS_ERR(req));
++	KUNIT_EXPECT_EQ(test, rpmh_submit_request(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, req), -EIO);
++	KUNIT_EXPECT_EQ(test, refcount_read(&req->refs), 1);
++	rpmh_request_put(req);
++}
++
++static void rpmh_single_async_deferred_test(struct kunit *test)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100, .data = 0x1234 };
++	struct rpmh_request *req;
++
++	KUNIT_ASSERT_EQ(test, rpmh_write_async(&ctx->dev, RPMH_ACTIVE_ONLY_STATE,
++					     &cmd, 1), 0);
++	KUNIT_ASSERT_NOT_NULL(test, ctx->pending[0]);
++	req = container_of(ctx->pending[0], struct rpmh_request, msg);
++	KUNIT_EXPECT_EQ(test, refcount_read(&req->refs), 1);
++	KUNIT_EXPECT_PTR_EQ(test, req->completion, NULL);
++	cmd.data = 0;
++	KUNIT_EXPECT_EQ(test, req->cmd[0].data, 0x1234U);
++	rpmh_test_complete(ctx, 0);
++}
++
++static void rpmh_single_late_completion(struct kunit *test, bool read)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100, .data = 0x1234 };
++	struct rpmh_request *req;
++	int ret;
++
++	if (read)
++		ret = rpmh_read(&ctx->dev, &cmd);
++	else
++		ret = rpmh_write(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1);
++	KUNIT_EXPECT_EQ(test, ret, -ETIMEDOUT);
++	KUNIT_EXPECT_EQ(test, cmd.data, 0x1234U);
++	KUNIT_EXPECT_EQ(test, ctx->snapshots, 1);
++	KUNIT_ASSERT_NOT_NULL(test, ctx->pending[0]);
++	req = container_of(ctx->pending[0], struct rpmh_request, msg);
++	KUNIT_EXPECT_EQ(test, refcount_read(&req->refs), 1);
++	KUNIT_EXPECT_PTR_EQ(test, req->completion, &req->done);
++	KUNIT_EXPECT_FALSE(test, completion_done(req->completion));
++	KUNIT_EXPECT_EQ(test, req->msg.is_read, read);
++	KUNIT_EXPECT_TRUE(test, req->msg.wait_for_compl);
++	/* Emulate a delayed read response; the caller's buffer must stay untouched. */
++	if (read)
++		req->cmd[0].data = 0x5678;
++	rpmh_test_complete(ctx, 0);
++	KUNIT_EXPECT_EQ(test, cmd.data, 0x1234U);
++}
++
++static void rpmh_single_write_timeout_test(struct kunit *test)
++{
++	rpmh_single_late_completion(test, false);
++}
++
++static void rpmh_single_read_timeout_test(struct kunit *test)
++{
++	rpmh_single_late_completion(test, true);
++}
++
++static void rpmh_single_cached_test(struct kunit *test)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100, .data = 0x1234 };
++	struct cache_req *cached;
++
++	KUNIT_EXPECT_EQ(test, rpmh_write(&ctx->dev, RPMH_SLEEP_STATE, &cmd, 1), 0);
++	cmd.data = 0x5678;
++	KUNIT_EXPECT_EQ(test, rpmh_write_async(&ctx->dev, RPMH_WAKE_ONLY_STATE, &cmd, 1), 0);
++	KUNIT_ASSERT_FALSE(test, list_empty(&ctx->drv.client.cache));
++	cached = list_first_entry(&ctx->drv.client.cache, struct cache_req, list);
++	KUNIT_EXPECT_EQ(test, cached->sleep_val, 0x1234U);
++	KUNIT_EXPECT_EQ(test, cached->wake_val, 0x5678U);
++	KUNIT_EXPECT_TRUE(test, ctx->drv.client.dirty);
++	KUNIT_EXPECT_EQ(test, ctx->calls, 0);
++}
++
++static void rpmh_single_invalid_test(struct kunit *test)
++{
++	struct rpmh_test_ctx *ctx = test->priv;
++	struct tcs_cmd cmd = { .addr = 0x100 };
++
++	KUNIT_EXPECT_EQ(test, rpmh_read(&ctx->dev, NULL), -EINVAL);
++	KUNIT_EXPECT_EQ(test, rpmh_write(&ctx->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 0), -EINVAL);
++	KUNIT_EXPECT_EQ(test, rpmh_write_async(&ctx->dev, RPMH_SLEEP_STATE,
++					     &cmd, MAX_RPMH_PAYLOAD + 1), -EINVAL);
++	KUNIT_EXPECT_EQ(test, ctx->calls, 0);
++	KUNIT_EXPECT_TRUE(test, list_empty(&ctx->drv.client.cache));
++}
++
++static struct kunit_case rpmh_single_cases[] = {
++	KUNIT_CASE(rpmh_single_immediate_completion_test),
++	KUNIT_CASE(rpmh_single_submit_failure_test),
++	KUNIT_CASE(rpmh_single_async_deferred_test),
++	KUNIT_CASE_SLOW(rpmh_single_write_timeout_test),
++	KUNIT_CASE_SLOW(rpmh_single_read_timeout_test),
++	KUNIT_CASE(rpmh_single_cached_test),
++	KUNIT_CASE(rpmh_single_invalid_test),
++	{}
++};
++
++static struct kunit_suite rpmh_single_suite = {
++	.name = "rpmh-single-lifetime",
++	.init = rpmh_test_init,
++	.exit = rpmh_test_exit,
++	.test_cases = rpmh_single_cases,
++};
++
++kunit_test_suites(&rpmh_batch_suite, &rpmh_single_suite);
+diff --git a/drivers/soc/qcom/rpmh.c b/drivers/soc/qcom/rpmh.c
+index 0a5656b5a..c7c86a355 100644
+--- a/drivers/soc/qcom/rpmh.c
++++ b/drivers/soc/qcom/rpmh.c
+@@ -78,6 +78,12 @@ static void rpmh_batch_put(struct batch_cache_req *req)
+ 		kfree(req);
+ }
+ 
++static void rpmh_request_put(struct rpmh_request *req)
++{
++	if (refcount_dec_and_test(&req->refs))
++		kfree(req);
++}
++
+ static struct rpmh_ctrlr *get_rpmh_ctrlr(const struct device *dev)
+ {
+ 	struct rsc_drv *drv = dev_get_drvdata(dev->parent);
+@@ -111,7 +117,7 @@ void rpmh_tx_done(const struct tcs_request *msg)
+ 	if (batch)
+ 		rpmh_batch_put(batch);
+ 	else if (free)
+-		kfree(rpm_msg);
++		rpmh_request_put(rpm_msg);
+ }
+ 
+ static struct cache_req *__find_req(struct rpmh_ctrlr *ctrlr, u32 addr)
+@@ -235,6 +241,73 @@ static int __fill_rpmh_msg(struct rpmh_request *req, enum rpmh_state state,
+ 	return 0;
+ }
+ 
++static struct rpmh_request *rpmh_alloc_request(const struct device *dev,
++					     enum rpmh_state state,
++					     const struct tcs_cmd *cmd, u32 n,
++					     bool is_read)
++{
++	struct rpmh_request *req;
++	int ret;
++
++	if (!cmd || !n || n > MAX_RPMH_PAYLOAD)
++		return ERR_PTR(-EINVAL);
++
++	/* Power and clock consumers must not recurse into reclaim here. */
++	req = kzalloc_obj(*req, GFP_ATOMIC);
++	if (!req)
++		return ERR_PTR(-ENOMEM);
++	ret = __fill_rpmh_msg(req, state, cmd, n, is_read);
++	if (ret) {
++		kfree(req);
++		return ERR_PTR(ret);
++	}
++	req->dev = dev;
++	req->needs_free = true;
++	refcount_set(&req->refs, 1);
++	init_completion(&req->done);
++	return req;
++}
++
++static int rpmh_submit_request(const struct device *dev, enum rpmh_state state,
++			       struct rpmh_request *req)
++{
++	int ret;
++
++	/* The transport may finish before __rpmh_write() returns. */
++	refcount_inc(&req->refs);
++	ret = __rpmh_write(dev, state, req);
++	if (ret)
++		rpmh_request_put(req);
++	return ret;
++}
++
++static int rpmh_write_sync(const struct device *dev, enum rpmh_state state,
++			   const struct tcs_cmd *cmd, u32 n, u32 *read_value)
++{
++	struct rpmh_request *req;
++	int ret;
++
++	req = rpmh_alloc_request(dev, state, cmd, n, !!read_value);
++	if (IS_ERR(req))
++		return PTR_ERR(req);
++	req->completion = &req->done;
++	req->msg.wait_for_compl = true;
++	ret = rpmh_submit_request(dev, state, req);
++	if (ret)
++		goto out;
++
++	if (!wait_for_completion_timeout(&req->done, RPMH_TIMEOUT_MS)) {
++		dev_err(dev, "RPMh request timed out (%u commands)\n", n);
++		rpmh_rsc_dump_request(ctrlr_to_drv(get_rpmh_ctrlr(dev)), &req->msg);
++		ret = -ETIMEDOUT;
++	} else if (read_value) {
++		*read_value = req->cmd[0].data;
++	}
++out:
++	rpmh_request_put(req);
++	return ret;
++}
++
+ /**
+  * rpmh_read: Read a resource value
+  *
+@@ -250,22 +323,9 @@ static int __fill_rpmh_msg(struct rpmh_request *req, enum rpmh_state state,
+  */
+ int rpmh_read(const struct device *dev, struct tcs_cmd *cmd)
+ {
+-	DECLARE_COMPLETION_ONSTACK(compl);
+-	DEFINE_RPMH_MSG_ONSTACK(dev, RPMH_ACTIVE_ONLY_STATE, &compl, rpm_msg);
+-	int ret;
+-
+-	ret = __fill_rpmh_msg(&rpm_msg, RPMH_ACTIVE_ONLY_STATE, cmd, 1, true);
+-	if (ret)
+-		return ret;
+-
+-	ret = __rpmh_write(dev, RPMH_ACTIVE_ONLY_STATE, &rpm_msg);
+-	if (ret)
+-		return ret;
+-
+-	ret = wait_for_completion_timeout(&compl, RPMH_TIMEOUT_MS);
+-	cmd[0].data = rpm_msg.cmd[0].data;
+-
+-	return (ret > 0) ? 0 : -ETIMEDOUT;
++	if (!cmd)
++		return -EINVAL;
++	return rpmh_write_sync(dev, RPMH_ACTIVE_ONLY_STATE, cmd, 1, &cmd->data);
+ }
+ EXPORT_SYMBOL_GPL(rpmh_read);
+ 
+@@ -288,18 +348,12 @@ int rpmh_write_async(const struct device *dev, enum rpmh_state state,
+ 	struct rpmh_request *rpm_msg;
+ 	int ret;
+ 
+-	rpm_msg = kzalloc_obj(*rpm_msg, GFP_ATOMIC);
+-	if (!rpm_msg)
+-		return -ENOMEM;
+-	rpm_msg->needs_free = true;
+-
+-	ret = __fill_rpmh_msg(rpm_msg, state, cmd, n, false);
+-	if (ret) {
+-		kfree(rpm_msg);
+-		return ret;
+-	}
+-
+-	return __rpmh_write(dev, state, rpm_msg);
++	rpm_msg = rpmh_alloc_request(dev, state, cmd, n, false);
++	if (IS_ERR(rpm_msg))
++		return PTR_ERR(rpm_msg);
++	ret = rpmh_submit_request(dev, state, rpm_msg);
++	rpmh_request_put(rpm_msg);
++	return ret;
+ }
+ EXPORT_SYMBOL_GPL(rpmh_write_async);
+ 
+@@ -318,21 +372,7 @@ EXPORT_SYMBOL_GPL(rpmh_write_async);
+ int rpmh_write(const struct device *dev, enum rpmh_state state,
+ 	       const struct tcs_cmd *cmd, u32 n)
+ {
+-	DECLARE_COMPLETION_ONSTACK(compl);
+-	DEFINE_RPMH_MSG_ONSTACK(dev, state, &compl, rpm_msg);
+-	int ret;
+-
+-	ret = __fill_rpmh_msg(&rpm_msg, state, cmd, n, false);
+-	if (ret)
+-		return ret;
+-
+-	ret = __rpmh_write(dev, state, &rpm_msg);
+-	if (ret)
+-		return ret;
+-
+-	ret = wait_for_completion_timeout(&compl, RPMH_TIMEOUT_MS);
+-	WARN_ON(!ret);
+-	return (ret > 0) ? 0 : -ETIMEDOUT;
++	return rpmh_write_sync(dev, state, cmd, n, NULL);
+ }
+ EXPORT_SYMBOL_GPL(rpmh_write);
+ 
+-- 
+2.55.0
+

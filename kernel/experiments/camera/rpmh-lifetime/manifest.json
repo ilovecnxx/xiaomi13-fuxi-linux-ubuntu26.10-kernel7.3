@@ -4,12 +4,16 @@
   "base_manifest_sha256": "69bfe6bf50f635454332254e16112fdb35a280037d1ba6c9223345d8f27740f6",
   "base_commit": "c539e8aaf80f3ccc1ce57bfc6888007020c8ce45",
   "base_tree": "6fce8068ea12f794d28ee05b6883c4a478ad1604",
-  "result_tree": "62c582439fc1dd6900351df1b789b78a4ebe0f94",
-  "source_date_epoch": 1794660070,
+  "result_tree": "2761fa60d41488c0c9de1f6fb2c02edfe3eee0d8",
+  "source_date_epoch": 1794661112,
   "patches": [
     {
       "file": "0001-soc-qcom-retain-timed-out-RPMh-batches-until-TX-comp.patch",
       "sha256": "a655efe02cd670b3a51d387bc4ab5c4bd86978e9c6d6e6136376e3fbe88201d7"
+    },
+    {
+      "file": "0002-soc-qcom-retain-single-RPMh-requests-and-bound-TCS-w.patch",
+      "sha256": "1106689f8c6bd27d42b9c5ca4c968fa3b7a11885ec885c8fb2c1dbb4fc21d281"
     }
   ],
   "validation": {
@@ -19,10 +23,10 @@
     "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
     "arm64_w1_passed": true,
     "kunit_arch": "x86_64",
-    "kunit_transport": "qemu-with-static-stub-rsc-send-and-snapshot",
-    "kunit_config_sha256": "2166d32b274345f4f764aae240a3526633705233bf88d6ef304596210348b67b",
-    "kunit_generated_config_sha256": "268ce4cf81c8c3a2d4e764c6866218f8ee035e19a853070812c3b13f3b2f714e",
-    "kunit_tests_passed": 7,
+    "kunit_transport": "qemu-lifetime-static-stubs-and-real-rsc-wait-with-ram-registers",
+    "kunit_config_sha256": "1ac070d2ce65d841e55e3104a9150177199af0da772bc017ba4de9a8d91df7a8",
+    "kunit_generated_config_sha256": "40c64ca8dfe95e9ff5e9fe577e8962ff51e2907373aa9f66470bc4c8ba49eaa0",
+    "kunit_tests_passed": 18,
     "kasan_enabled": true,
     "kasan_errors_observed": false,
     "patch_reconstruction_tree_verified": true,
