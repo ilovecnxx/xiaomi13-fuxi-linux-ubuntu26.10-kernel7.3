@@ -1,0 +1,98 @@
+#!/bin/bash
+# Install the newest next build, restoring the complete old installation on failure.
+set -Eeuo pipefail
+umask 077
+STATE="${DSH_WEB_STATE:-$HOME/.local/state/dsh-web}"
+PREFIX="${DSH_INSTALL_PREFIX:-/usr/local}"
+PACKAGE="$PREFIX/lib/node_modules/@deepseek-ai/dsh"
+DSH="$PREFIX/bin/dsh"
+HELPERS="$(dirname -- "$(readlink -f -- "$0")")"
+mkdir -p "$STATE"
+exec >>"$STATE/auto-update.log" 2>&1
+exec 9>"$STATE/auto-update.lock"
+flock -n 9 || exit 0
+echo "=== $(date -Is) auto-update check ==="
+
+ctl() { systemctl --user "$@"; }
+CHANNEL="${DSH_UPDATE_CHANNEL:-next}"
+if ! LATEST=$(timeout 40 npm view "@deepseek-ai/dsh@$CHANNEL" version --registry https://registry.npmjs.org); then
+  echo "cannot resolve latest version; retry at the next scheduled check"
+  exit 1
+fi
+if [[ ! "$LATEST" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  echo "npm returned an invalid version; abort"
+  exit 1
+fi
+CURRENT=$("$DSH" --version)
+echo "current=$CURRENT latest($CHANNEL)=$LATEST"
+if [[ "$LATEST" == "$CURRENT" ]]; then
+  echo "already latest; nothing to do"
+  exit 0
+fi
+
+web_active=0
+window_active=0
+ctl is-active --quiet dsh-web.service && web_active=1
+ctl is-active --quiet dsh-app-window.service && window_active=1
+if (( web_active )) && ! "$HELPERS/dsh-web-health" --idle; then
+  echo "running tasks or activity cannot be verified; defer update"
+  exit 0
+fi
+BACKUP=$(sudo -n mktemp -d "$PREFIX/lib/node_modules/.dsh-backup.XXXXXXXX")
+dirty=0
+preserve_backup=0
+restore_service_state() {
+  if (( web_active )); then
+    ctl start dsh-web.service || return 1
+    "$HELPERS/dsh-web-health" --wait 90 || return 1
+  else
+    ctl stop dsh-web.service || return 1
+  fi
+  if (( window_active )); then
+    ctl restart dsh-app-window.service || return 1
+  fi
+}
+finish() {
+  local result=$?
+  trap - EXIT INT TERM HUP
+  if (( dirty )); then
+    echo "update failed; restoring $CURRENT"
+    if ctl stop dsh-web.service \
+      && { [[ ! -e "$PACKAGE" ]] || sudo -n mv -- "$PACKAGE" "$BACKUP/failed-install"; } \
+      && sudo -n mv -- "$BACKUP/dsh" "$PACKAGE" \
+      && sudo -n cp -a --remove-destination -- "$BACKUP/bin" "$DSH"; then
+      if restore_service_state; then
+        echo "rollback verified: $CURRENT"
+      else
+        echo "old files restored but service recovery failed; backup: $BACKUP"
+        preserve_backup=1
+      fi
+    else
+      echo "ROLLBACK FAILED; recovery files retained at $BACKUP"
+      preserve_backup=1
+    fi
+    (( result != 0 )) || result=1
+  fi
+  if (( ! preserve_backup )); then
+    sudo -n rm -r -- "$BACKUP" || result=1
+  fi
+  exit "$result"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+sudo -n cp -a -- "$PACKAGE" "$BACKUP/dsh"
+sudo -n cp -a -- "$DSH" "$BACKUP/bin"
+# Stop before npm can replace modules still in use by the server.
+dirty=1
+ctl stop dsh-web.service
+sudo -n npm install -g --prefix "$PREFIX" "@deepseek-ai/dsh@$LATEST" \
+  --omit=dev --no-fund --no-audit --registry https://registry.npmjs.org
+[[ "$("$DSH" --version)" == "$LATEST" ]]
+"$HELPERS/dsh-post-update-fixes"
+ctl start dsh-web.service
+"$HELPERS/dsh-web-health" --wait 90
+restore_service_state
+dirty=0
+echo "=== $(date -Is) update OK: $CURRENT -> $LATEST ==="

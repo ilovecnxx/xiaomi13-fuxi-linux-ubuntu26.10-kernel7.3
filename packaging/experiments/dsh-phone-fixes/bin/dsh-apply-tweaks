@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+HELPERS="$(dirname -- "$(readlink -f -- "$0")")"
+window_active=0
+systemctl --user is-active --quiet dsh-app-window.service && window_active=1
+"$HELPERS/dsh-post-update-fixes"
+systemctl --user restart dsh-web.service
+"$HELPERS/dsh-web-health" --wait 90
+if (( window_active )); then
+  systemctl --user restart dsh-app-window.service
+fi

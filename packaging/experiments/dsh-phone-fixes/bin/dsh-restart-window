@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+systemctl --user restart dsh-app-window.service
+systemctl --user is-active --quiet dsh-app-window.service

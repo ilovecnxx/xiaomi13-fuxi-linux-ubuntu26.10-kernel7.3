@@ -1,0 +1,108 @@
+#!/usr/bin/python3
+"""Wait for the authenticated local DSH page without exposing its launch token."""
+import argparse
+import http.cookiejar
+import http.client
+import json
+import os
+from pathlib import Path
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+
+def probe(state, port, timeout, idle=False):
+    url = (state / "url.txt").read_text().strip()
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1"
+            or parsed.port != port or parsed.path != "/" or parsed.fragment
+            or parsed.username is not None or parsed.password is not None
+            or not urllib.parse.parse_qs(parsed.query).get("token")):
+        return False
+    # The token exchange must redirect back to the same local application.
+    class LocalRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            target = urllib.parse.urlsplit(newurl)
+            if (target.scheme, target.netloc) != (parsed.scheme, parsed.netloc):
+                raise ValueError("unexpected redirect")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+        LocalRedirect(),
+    )
+    with opener.open(url, timeout=timeout) as response:
+        body = response.read(2 * 1024 * 1024)
+        ready = (response.status == 200
+                and response.headers.get_content_type() == "text/html"
+                and b"__DSH_BOOT_READY__" in body
+                and b"__DSH_CONNECTION_RECOVERY__" in body)
+    if not ready:
+        return False
+    origin = f"http://127.0.0.1:{port}"
+    rpc_id = str(uuid.uuid4())
+    request = urllib.request.Request(
+        origin + "/api/session/list",
+        data=json.dumps({"type": "client-request", "rpcId": rpc_id,
+                         "method": "session/list", "payload": {"args": {"_request": {}}}}).encode(),
+        headers={"Content-Type": "application/json", "Origin": origin},
+    )
+    with opener.open(request, timeout=timeout) as response:
+        envelope = json.loads(response.read(8 * 1024 * 1024))
+    if not isinstance(envelope, dict) or envelope.get("rpcId") != rpc_id:
+        return False
+    result = envelope.get("result")
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return False
+    value = result.get("value")
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+        return False
+    for item in value["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("running"), bool):
+            return False
+        if idle and item["running"]:
+            return False
+    return url
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wait", type=float, default=0)
+    parser.add_argument("--print-url", action="store_true")
+    parser.add_argument("--idle", action="store_true", help="also require no running Agent")
+    args = parser.parse_args()
+    if not 0 <= args.wait <= 300:
+        parser.error("--wait must be between 0 and 300 seconds")
+    state = Path(os.environ.get("DSH_WEB_STATE", str(Path.home() / ".local/state/dsh-web")))
+    try:
+        port = int(os.environ.get("DSH_WEB_PORT", "3080"))
+        if not 1 <= port <= 65535:
+            raise ValueError()
+    except ValueError:
+        print("invalid DSH_WEB_PORT", file=sys.stderr)
+        return 2
+    deadline = time.monotonic() + args.wait
+    while True:
+        try:
+            timeout = max(0.1, min(2, deadline - time.monotonic())) if args.wait else 2
+            url = probe(state, port, timeout, args.idle)
+            if url:
+                if args.print_url:
+                    print(url)
+                return 0
+        except urllib.error.HTTPError as error:
+            error.close()
+        except (OSError, ValueError, urllib.error.URLError, http.client.HTTPException):
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print("DSH is busy or unavailable" if args.idle else "DSH authenticated application is not ready", file=sys.stderr)
+            return 1
+        time.sleep(min(0.5, remaining))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

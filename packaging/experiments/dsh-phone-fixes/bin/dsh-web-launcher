@@ -1,0 +1,23 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+STATE="${DSH_WEB_STATE:-$HOME/.local/state/dsh-web}"
+PORT="${DSH_WEB_PORT:-3080}"
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 )) || exit 2
+mkdir -p "$STATE"
+chmod 700 "$STATE"
+date +%s > "$STATE/last-activity"
+: > "$STATE/url.txt"
+chmod 600 "$STATE/url.txt"
+"${DSH_INSTALL_PREFIX:-/usr/local}/bin/dsh" --profile web --no-open --host 127.0.0.1 --port "$PORT" 2>&1 |
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" == *"dsh web:"* ]]; then
+    url=$(printf '%s\n' "$line" | sed -nE "s|.*dsh web: (http://127\\.0\\.0\\.1:$PORT/\\?token=[A-Za-z0-9_-]+).*|\\1|p")
+    if [[ -n "$url" ]]; then
+      tmp=$(mktemp "$STATE/.url.XXXXXXXX")
+      printf '%s\n' "$url" > "$tmp"
+      mv -- "$tmp" "$STATE/url.txt"
+    fi
+  fi
+  printf '%s\n' "$line" | sed -E 's/(token=)[^[:space:]&]+/\1[redacted]/g'
+done

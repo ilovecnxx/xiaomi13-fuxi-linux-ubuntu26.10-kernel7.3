@@ -1,0 +1,7 @@
+#!/bin/bash
+# Keep old scheduled entrypoints on the maintained updater and its verified rollback path.
+set -euo pipefail
+if [[ "$(id -un)" != fuxi ]]; then
+  exec sudo -n -u fuxi -H env XDG_RUNTIME_DIR=/run/user/1000 /home/fuxi/.local/bin/dsh-auto-update "$@"
+fi
+exec "$HOME/.local/bin/dsh-auto-update" "$@"

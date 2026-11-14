@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+RUN_AS=fuxi
+if [[ "$(id -un)" != "$RUN_AS" ]]; then
+  exec sudo -n -u "$RUN_AS" -H "$0" "$@"
+fi
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+STATE="${DSH_WEB_STATE:-$HOME/.local/state/dsh-web}"
+umask 077
+mkdir -p "$STATE"
+date +%s > "$STATE/last-activity"
+systemctl --user start dsh-web.service
+# start is idempotent: a second icon tap must not destroy the existing window.
+systemctl --user start dsh-app-window.service

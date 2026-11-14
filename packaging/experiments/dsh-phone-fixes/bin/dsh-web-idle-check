@@ -1,0 +1,44 @@
+#!/bin/bash
+# Stop only after a confirmed idle period; unavailable activity evidence keeps the server alive.
+set -euo pipefail
+umask 077
+STATE="${DSH_WEB_STATE:-$HOME/.local/state/dsh-web}"
+STAMP="$STATE/last-activity"
+PORT="${DSH_WEB_PORT:-3080}"
+IDLE_MIN="${DSH_WEB_IDLE_MIN:-120}"
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$PORT >= 1 && 10#$PORT <= 65535 )) || exit 2
+[[ "$IDLE_MIN" =~ ^[0-9]{1,6}$ ]] || exit 2
+[[ -f "$STAMP" ]] || exit 0
+systemctl --user is-active --quiet dsh-web.service || exit 0
+
+refresh() { date +%s > "$STAMP"; }
+if systemctl --user is-active --quiet dsh-app-window.service \
+  || pgrep -u "$(id -u)" -f 'user-data-dir=.*/dsh-app-chromium' >/dev/null; then
+  refresh
+  exit 0
+fi
+if command -v ss >/dev/null; then
+  connections=$(ss -Htn state established "( sport = :$PORT )") || exit 0
+elif command -v netstat >/dev/null; then
+  connections=$(netstat -tn) || exit 0
+  connections=$(printf '%s\n' "$connections" | awk -v p=":$PORT" '$4 ~ (p "$") && $6 == "ESTABLISHED"')
+else
+  exit 0
+fi
+if [[ -n "$connections" ]]; then
+  refresh
+  exit 0
+fi
+last=$(<"$STAMP")
+now=$(date +%s)
+if [[ ! "$last" =~ ^[0-9]{1,12}$ ]] || (( 10#$last > now )); then
+  refresh
+  exit 0
+fi
+if (( now - 10#$last >= 10#$IDLE_MIN * 60 )); then
+  HELPERS="$(dirname -- "$(readlink -f -- "$0")")"
+  "$HELPERS/dsh-web-health" --idle >/dev/null 2>&1 || exit 0
+  # Re-read in case a concurrent launch refreshed the stamp during this check.
+  [[ "$(<"$STAMP")" == "$last" ]] || exit 0
+  systemctl --user stop dsh-web.service
+fi

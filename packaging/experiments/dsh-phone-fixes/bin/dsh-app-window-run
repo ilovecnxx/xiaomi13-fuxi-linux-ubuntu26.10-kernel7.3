@@ -1,0 +1,37 @@
+#!/bin/bash
+set -euo pipefail
+HELPERS="$(dirname -- "$(readlink -f -- "$0")")"
+RUN_UID=$(id -u)
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$RUN_UID}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+wayland_ok() {
+  local display="${1:-}" socket
+  [[ -n "$display" ]] || return 1
+  if [[ "$display" == /* ]]; then socket="$display"; else socket="$XDG_RUNTIME_DIR/$display"; fi
+  [[ -S "$socket" ]] || return 1
+  if command -v ss >/dev/null; then
+    ss -Hxl | awk -v s="$socket" '{for (i=1;i<=NF;i++) if ($i==s) found=1} END {exit !found}'
+  fi
+}
+if ! wayland_ok "${WAYLAND_DISPLAY:-}"; then
+  unset WAYLAND_DISPLAY
+  for socket in "$XDG_RUNTIME_DIR"/wayland-*; do
+    if wayland_ok "$socket"; then
+      export WAYLAND_DISPLAY="${socket##*/}"
+      break
+    fi
+  done
+fi
+[[ -n "${WAYLAND_DISPLAY:-}" ]] || { echo "no live Wayland display" >&2; exit 1; }
+systemctl --user start dsh-web.service
+URL=$("$HELPERS/dsh-web-health" --wait 90 --print-url) || exit 1
+export LD_LIBRARY_PATH="/opt/chromium/privatelib:/opt/chromium/root/usr/lib/chromium${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec /opt/chromium/root/usr/lib/chromium/chromium --app="$URL" \
+  --user-data-dir="$HOME/.config/dsh-app-chromium" \
+  --no-first-run --no-default-browser-check --no-sandbox --disable-dev-shm-usage \
+  --ozone-platform=wayland --enable-features=UseOzonePlatform \
+  --use-gl=angle --use-angle=gl --enable-gpu-rasterization --ignore-gpu-blocklist \
+  --disable-features=Vulkan --renderer-process-limit=1 \
+  --disable-background-networking --disable-component-update --disable-sync \
+  --disable-domain-reliability --no-pings --test-type \
+  --window-size=412,900 --remote-debugging-port=9333

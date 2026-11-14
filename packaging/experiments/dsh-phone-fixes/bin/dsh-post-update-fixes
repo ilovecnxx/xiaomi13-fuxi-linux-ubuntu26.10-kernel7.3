@@ -1,0 +1,70 @@
+#!/bin/bash
+# Reapply presentation fixes without replacing maintained launch/idle scripts or user profiles.
+set -euo pipefail
+umask 077
+STATE="${DSH_WEB_STATE:-$HOME/.local/state/dsh-web}"
+PREFIX="${DSH_INSTALL_PREFIX:-/usr/local}"
+DIST="$PREFIX/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist"
+mkdir -p "$STATE"
+exec >>"$STATE/post-update-fixes.log" 2>&1
+echo "=== $(date -Is) fixes start ==="
+for helper in dsh-web-idle-check dsh-web-health dsh-app-window-run; do
+  [[ -x "$HOME/.local/bin/$helper" ]] || { echo "missing helper: $helper"; exit 1; }
+done
+
+DESK=/usr/share/applications/dsh-web.desktop
+if [[ -f "$DESK" ]]; then
+  if grep -q '^StartupNotify=true' "$DESK"; then
+    sudo -n sed -i 's/^StartupNotify=true/StartupNotify=false/' "$DESK"
+  fi
+  if ! grep -q '^NoDisplay=true' "$DESK"; then
+    printf 'NoDisplay=true\n' | sudo -n tee -a "$DESK" >/dev/null
+  fi
+fi
+
+TMP_DESK=$(mktemp "$STATE/.desktop.XXXXXXXX")
+trap 'rm -- "$TMP_DESK"' EXIT
+cat > "$TMP_DESK" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=DeepSeek
+Name[zh_CN]=DeepSeek
+Comment=DeepSeek Harness on phone
+Exec=/usr/local/bin/dsh-web-open
+Icon=dsh-web
+Terminal=false
+Categories=Utility;Network;
+StartupNotify=false
+DESKTOP
+CHROME_DESK=/usr/local/share/applications/chrome-127.0.0.1__-Default.desktop
+if ! cmp -s "$TMP_DESK" "$CHROME_DESK"; then
+  sudo -n install -D -m 644 "$TMP_DESK" "$CHROME_DESK"
+  sudo -n update-desktop-database /usr/local/share/applications
+fi
+
+icons_changed=0
+CUSTOM_SVG=/usr/share/icons/hicolor/scalable/apps/dsh-web.svg
+if [[ -d "$DIST" ]]; then
+  if [[ -f "$CUSTOM_SVG" ]]; then
+    mkdir -p "$HOME/.local/share/dsh-icon-backup"
+    sudo -n cp -a "$CUSTOM_SVG" "$HOME/.local/share/dsh-icon-backup/dsh-web-custom.svg.$(date +%s)"
+    sudo -n rm -- "$CUSTOM_SVG"
+    icons_changed=1
+  fi
+  for size in 512 192; do
+    src="$DIST/icon-$size.png"
+    dest="/usr/share/icons/hicolor/${size}x${size}/apps/dsh-web.png"
+    [[ -f "$src" ]] || continue
+    if ! cmp -s "$src" "$dest"; then
+      sudo -n install -D -m 644 "$src" "$dest"
+      icons_changed=1
+    fi
+  done
+  if (( icons_changed )); then
+    sudo -n gtk-update-icon-cache -f -t /usr/share/icons/hicolor
+  fi
+else
+  echo "missing frontend assets: $DIST"
+  exit 1
+fi
+echo "=== $(date -Is) fixes done ==="
