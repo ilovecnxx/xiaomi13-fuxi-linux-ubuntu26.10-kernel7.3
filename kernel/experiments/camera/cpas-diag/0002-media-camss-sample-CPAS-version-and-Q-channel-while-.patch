@@ -1,0 +1,134 @@
+From c31353ecded4bdeac867b6c4095a8d71cac77a0a Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sat, 14 Nov 2026 21:16:25 +0800
+Subject: [PATCH 2/3] media: camss: sample CPAS version and Q-channel while VFE
+ is powered
+
+Map the optional SM8550 CPAS top resource. Record version and Q-channel
+state after reset and before final VFE clock removal, including reset
+failure cleanup. All reads require successful VFE clock enable; no
+registers are accessed at probe or after power removal. This diagnostic
+does not initiate a handshake or fix the MM0 timeout.
+---
+ drivers/media/platform/qcom/camss/camss-vfe.c |  4 ++
+ drivers/media/platform/qcom/camss/camss.c     | 38 +++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.h     |  3 ++
+ 3 files changed, 45 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-vfe.c b/drivers/media/platform/qcom/camss/camss-vfe.c
+index 2680a9914..d9e1b7e51 100644
+--- a/drivers/media/platform/qcom/camss/camss-vfe.c
++++ b/drivers/media/platform/qcom/camss/camss-vfe.c
+@@ -1105,6 +1105,7 @@ int vfe_get(struct vfe_device *vfe)
+ 		ret = vfe_reset(vfe);
+ 		if (ret < 0)
+ 			goto error_reset;
++		camss_cpas_snapshot(vfe->camss, vfe->id, "reset-done");
+ 
+ 		vfe_reset_output_maps(vfe);
+ 
+@@ -1123,6 +1124,7 @@ int vfe_get(struct vfe_device *vfe)
+ 	return 0;
+ 
+ error_reset:
++	camss_cpas_snapshot(vfe->camss, vfe->id, "reset-error");
+ 	camss_disable_clocks(vfe->nclocks, vfe->clock);
+ 
+ error_pm_runtime_get:
+@@ -1148,10 +1150,12 @@ void vfe_put(struct vfe_device *vfe)
+ 		dev_err(vfe->camss->dev, "vfe power off on power_count == 0\n");
+ 		goto exit;
+ 	} else if (vfe->power_count == 1) {
++		camss_cpas_snapshot(vfe->camss, vfe->id, "before-halt");
+ 		if (vfe->was_streaming) {
+ 			vfe->was_streaming = 0;
+ 			vfe->res->hw_ops->vfe_halt(vfe);
+ 		}
++		camss_cpas_snapshot(vfe->camss, vfe->id, "before-clock-off");
+ 		camss_disable_clocks(vfe->nclocks, vfe->clock);
+ 		pm_runtime_put_sync(vfe->camss->dev);
+ 		vfe->res->hw_ops->pm_domain_off(vfe);
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index d22c16547..38d60d055 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -5407,6 +5407,31 @@ static int camss_init_pm_clks(struct camss *camss)
+ 	return 0;
+ }
+ 
++#define CPAS_CAMERA_VERSION	0x00
++#define CPAS_VERSION		0x04
++#define CPAS_QCHANNEL_CTRL	0x5c
++#define CPAS_QCHANNEL_STATUS	0x60
++
++/* Call only while the VFE's CPAS AHB clock and CAMSS power domain are on. */
++void camss_cpas_snapshot(struct camss *camss, unsigned int vfe_id,
++			 const char *phase)
++{
++	void __iomem *base = camss->cpas_top_base;
++	u32 camera, cpas, control, before, after;
++
++	if (!base)
++		return;
++
++	camera = readl(base + CPAS_CAMERA_VERSION);
++	cpas = readl(base + CPAS_VERSION);
++	before = readl(base + CPAS_QCHANNEL_STATUS);
++	control = readl(base + CPAS_QCHANNEL_CTRL);
++	after = readl(base + CPAS_QCHANNEL_STATUS);
++	dev_info(camss->dev,
++		 "CPAS phase=%s vfe=%u camera=%08x cpas=%08x qctrl=%08x qstatus=%08x->%08x\n",
++		 phase, vfe_id, camera, cpas, control, before, after);
++}
++
+ /*
+  * camss_probe - Probe CAMSS platform device
+  * @pdev: Pointer to CAMSS platform device
+@@ -5417,6 +5442,7 @@ static int camss_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+ 	struct camss *camss;
++	struct resource *cpas;
+ 	int ret;
+ 
+ 	camss = devm_kzalloc(dev, sizeof(*camss), GFP_KERNEL);
+@@ -5429,6 +5455,18 @@ static int camss_probe(struct platform_device *pdev)
+ 	camss->dev = dev;
+ 	platform_set_drvdata(pdev, camss);
+ 
++	/* Optional diagnostic resource: older DTBs retain their existing path. */
++	if (camss->res->version == CAMSS_8550) {
++		cpas = platform_get_resource_byname(pdev, IORESOURCE_MEM, "cpas_top");
++		if (cpas) {
++			if (resource_size(cpas) < CPAS_QCHANNEL_STATUS + sizeof(u32))
++				return dev_err_probe(dev, -EINVAL, "CPAS resource is too short\n");
++			camss->cpas_top_base = devm_ioremap_resource(dev, cpas);
++			if (IS_ERR(camss->cpas_top_base))
++				return PTR_ERR(camss->cpas_top_base);
++		}
++	}
++
+ 	camss->csiphy = devm_kcalloc(dev, camss->res->csiphy_num,
+ 				     sizeof(*camss->csiphy), GFP_KERNEL);
+ 	if (!camss->csiphy)
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index 7dc2fd9f0..a408b61af 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -134,6 +134,7 @@ struct camss {
+ 	struct vfe_device *vfe;
+ 	void __iomem *csid_wrapper_base;
+ 	void __iomem *top_base;
++	void __iomem *cpas_top_base;
+ 	atomic_t ref_count;
+ 	int genpd_num;
+ 	struct device *genpd;
+@@ -170,6 +171,8 @@ void camss_add_clock_margin(u64 *rate);
+ int camss_enable_clocks(int nclocks, struct camss_clock *clock,
+ 			struct device *dev);
+ void camss_disable_clocks(int nclocks, struct camss_clock *clock);
++void camss_cpas_snapshot(struct camss *camss, unsigned int vfe_id,
++			 const char *phase);
+ struct media_pad *camss_find_sensor_pad(struct media_entity *entity);
+ s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
+ 			unsigned int lanes);

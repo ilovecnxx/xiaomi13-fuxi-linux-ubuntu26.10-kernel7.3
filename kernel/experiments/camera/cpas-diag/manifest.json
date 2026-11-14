@@ -1,0 +1,49 @@
+{
+  "status": "experimental-host-tested-not-device-tested",
+  "base_manifest": "../rpmh-lifetime/manifest.json",
+  "base_manifest_sha256": "a5bd5c69654296aacec2dc8ceb9ea3d2566b2a60d81e9b49beb3898b2d44af19",
+  "base_commit": "de9363f69d693c46fbeff60fdbc242057d218d93",
+  "base_tree": "2761fa60d41488c0c9de1f6fb2c02edfe3eee0d8",
+  "result_tree": "e4439f14fa6004e92ca40429e900f7e4c25d7966",
+  "source_date_epoch": 1794662197,
+  "patches": [
+    {
+      "file": "0001-dt-bindings-media-qcom-sm8550-camss-describe-optiona.patch",
+      "sha256": "69ab5148d002f7a37eee5bea60e59b1f7665ba2693a5a6f362ae11535bb4b93e"
+    },
+    {
+      "file": "0002-media-camss-sample-CPAS-version-and-Q-channel-while-.patch",
+      "sha256": "2933d9ca07e046bbb7beb2de07b161dc80eaccc908adc71b275c56efa19a5872"
+    },
+    {
+      "file": "0003-arm64-dts-qcom-sm8550-expose-CPAS-top-for-camera-dia.patch",
+      "sha256": "3ed1c31f711be9ab1dfde1e4d442e888fc762e868a1583d142b3058d439b04b1"
+    }
+  ],
+  "validation": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 15.3.0-4ubuntu1) 15.3.0",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "make_targets": [
+      "drivers/media/platform/qcom/camss/",
+      "qcom/sm8550-xiaomi-fuxi-ov13b10.dtb"
+    ],
+    "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
+    "arm64_w1_passed": true,
+    "binding_schema": "media/qcom,sm8550-camss.yaml",
+    "binding_check_passed": true,
+    "camss_node_dtb_validate_passed": true,
+    "full_board_schema_validated": false,
+    "patch_reconstruction_tree_verified": true,
+    "host_script_tests_passed": 366,
+    "superterm_tests_passed": 62,
+    "full_phone_kernel_built": true,
+    "package": "linux-image-7.4.0-rc1-fuxi-cam7cpas_7.4.0-rc1-cam7cpas_arm64.deb",
+    "package_sha256": "f7ec342c09f8746f00dfa540410830e23e9fc389f51dabf2d70ee7d9a46e1552",
+    "ov13b10_dtb_sha256": "691e1aa7c01829453363b6751e5b31807ec36f10f3be606f3fbdd2ae5d882792",
+    "package_payload_matches_build": true,
+    "package_build_environment": "host",
+    "device_tested": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/相机CPAS状态采样-20261114.md"
+  }
+}

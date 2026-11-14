@@ -1,0 +1,37 @@
+From 69c709d250e7a6f9c0ddb8dfb6ab96b5838db1b1 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sat, 14 Nov 2026 21:16:37 +0800
+Subject: [PATCH 3/3] arm64: dts: qcom: sm8550: expose CPAS top for camera
+ diagnostics
+
+Add the CPAS top register window to the isolated camera candidate. The
+resource enables powered-state snapshots only; no Q-channel control
+writes are added.
+---
+ arch/arm64/boot/dts/qcom/sm8550.dtsi | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm8550.dtsi b/arch/arm64/boot/dts/qcom/sm8550.dtsi
+index 03f6d40ed..4ab94f905 100644
+--- a/arch/arm64/boot/dts/qcom/sm8550.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8550.dtsi
+@@ -3880,7 +3880,8 @@ camss: isp@acb7000 {
+ 			      <0x0 0x0ac71000 0x0 0xf000>,
+ 			      <0x0 0x0ac80000 0x0 0xf000>,
+ 			      <0x0 0x0accb000 0x0 0x1800>,
+-			      <0x0 0x0accf000 0x0 0x1800>;
++			      <0x0 0x0accf000 0x0 0x1800>,
++			      <0x0 0x0ac13000 0x0 0x1000>;
+ 			reg-names = "csid0",
+ 				    "csid1",
+ 				    "csid2",
+@@ -3899,7 +3900,8 @@ camss: isp@acb7000 {
+ 				    "vfe1",
+ 				    "vfe2",
+ 				    "vfe_lite0",
+-				    "vfe_lite1";
++				    "vfe_lite1",
++				    "cpas_top";
+ 
+ 			clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
+ 				 <&camcc CAM_CC_CPAS_AHB_CLK>,
