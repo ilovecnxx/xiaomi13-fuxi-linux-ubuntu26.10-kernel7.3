@@ -33,6 +33,13 @@ class TestBridge(unittest.TestCase):
         r = self.call("app.get_boot_state")
         self.assertTrue(r["ok"])
         self.assertIn("profiles", r["result"])
+        self.assertFalse(r["result"]["capabilities"]["interactive_approvals"])
+
+    def test_approval_response_is_explicitly_unsupported(self):
+        for decision in ("approve", "deny"):
+            r = self.call("approval_respond", {"request_id": "pending", "decision": decision})
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["error"]["code"], "unsupported")
 
     def test_bad_protocol(self):
         r = self.call("app.get_boot_state", pv=99)

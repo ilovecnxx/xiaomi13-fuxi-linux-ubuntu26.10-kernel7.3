@@ -83,7 +83,11 @@ class Bridge:
         profiles = [pr.summary(self.app.config.secrets) for pr in self.app.config.list_profiles()]
         bindings = {a: self.app.config.get_binding(a) for a in ("codex", "claude", "dsh")}
         return {"protocol_version": M.PROTOCOL_VERSION, "profiles": profiles,
-                "bindings": bindings, "app_version": "0.1.0"}
+                "bindings": bindings, "app_version": "0.1.0",
+                "capabilities": {"interactive_approvals": False}}
+
+    def m_approval_respond(self, p: dict) -> dict:
+        raise BridgeError("unsupported", "Interactive approvals are not supported by the current drivers")
 
     def m_session_list(self, p: dict) -> dict:
         limit = int(p.get("limit", 100)); offset = int(p.get("offset", 0))

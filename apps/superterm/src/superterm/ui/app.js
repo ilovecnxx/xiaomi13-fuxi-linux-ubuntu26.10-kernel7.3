@@ -169,11 +169,7 @@
     head.appendChild(el("span", "tool-name", "需要确认: " + (d.description || d.action || "")));
     card.appendChild(head);
     const body = el("div", "tool-body");
-    const row = el("div", "row");
-    const yes = el("button", "pill-btn", "允许"); const no = el("button", "pill-btn ghost", "拒绝");
-    yes.onclick = () => call("approval_respond", { session_id: state.sessionId, request_id: d.request_id, decision: "approve" }).then(() => card.remove());
-    no.onclick = () => call("approval_respond", { session_id: state.sessionId, request_id: d.request_id, decision: "deny" }).then(() => card.remove());
-    row.appendChild(yes); row.appendChild(no); body.appendChild(row);
+    body.appendChild(el("p", "error", "当前驱动无法提交交互式审批。此请求未获处理。"));
     card.appendChild(body);
     $("#messages").appendChild(card);
     scrollBottom();

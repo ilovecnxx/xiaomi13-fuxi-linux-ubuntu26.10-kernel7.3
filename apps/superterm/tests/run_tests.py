@@ -31,13 +31,16 @@ except Exception as _e:  # noqa: BLE001
     print("Set TMPDIR to a writable path, then re-run:  TMPDIR=/tmp python3 tests/run_tests.py")
     raise SystemExit(3)
 
-suite = unittest.TestSuite()
-dirs = which or ["unit", "integration"]
-for name in dirs:
-    d = os.path.join(HERE, name)
-    if os.path.isdir(d):
-        suite.addTests(unittest.TestLoader().discover(start_dir=d))
+# Set before importing tests: config backups must never touch the user's state.
+with tempfile.TemporaryDirectory(prefix="superterm-test-state-") as state_home:
+    os.environ["XDG_STATE_HOME"] = state_home
+    suite = unittest.TestSuite()
+    dirs = which or ["unit", "integration"]
+    for name in dirs:
+        d = os.path.join(HERE, name)
+        if os.path.isdir(d):
+            suite.addTests(unittest.TestLoader().discover(start_dir=d))
 
-verbosity = 2 if "-v" in sys.argv or "--verbose" in sys.argv else 1
-result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
+    verbosity = 2 if "-v" in sys.argv or "--verbose" in sys.argv else 1
+    result = unittest.TextTestRunner(verbosity=verbosity).run(suite)
 sys.exit(0 if result.wasSuccessful() else 1)

@@ -105,7 +105,7 @@ Phosh/Wayland
 ## 测试与验收
 
 ```bash
-TMPDIR=/tmp python3 tests/run_tests.py   # 70 项（65 unit + 5 integration），无需 PYTHONPATH
+TMPDIR=/tmp python3 tests/run_tests.py   # 无需 PYTHONPATH；自动隔离 XDG_STATE_HOME，以运行输出为准
 bash tests/device/acceptance.sh fuxi  # 手机上：17 项检查（含泄漏扫描/不变量/finalize 持久性审计）
 ```
 
@@ -126,7 +126,9 @@ bash tests/device/acceptance.sh fuxi  # 手机上：17 项检查（含泄漏扫�
 - 视觉截图：Phosh 息屏锁定后远程 `grim` 只能拿到黑屏；功能以 DOM E2E 文本证据验收。可点桌面
   「SuperTerm」图标现场查看。
 - dsh 适配器为 one-shot 文本包装，无结构化 resume；续聊靠拼接待有界历史。
-- 权限：默认 `--dangerously-skip-permissions`（bypass）；approval 卡片 UI 已就绪，等待 CLI 事件驱动。
+- 权限：默认 `--dangerously-skip-permissions`（bypass）；当前驱动不支持交互式审批。
+  启动能力明确返回 `interactive_approvals=false`，审批事件显示未处理，响应接口返回 `unsupported`。
+  审批传输、决策持久化和恢复协议仍未实现，不能把卡片显示当作审批功能验收。
 - 手机在长时间 GUI 自动化下偶发重启（内存/热），重启后 `/tmp` 清空但 `/opt` 与 `~/.local` 安装保留。
 
 ## 目录

@@ -1,8 +1,10 @@
 """Exercise signed publication and failure recovery using real tiny debs."""
 
 import importlib.util
+import errno
 import os
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
 import unittest
@@ -61,6 +63,17 @@ class AptPublishTest(unittest.TestCase):
         self.assertNotIn("./test.deb", (self.target / "Packages").read_text())
 
     def test_real_signature_and_tamper_detection(self):
+        # gpg-agent requires a Unix socket even for an ephemeral test key.
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.bind(str(self.root / "agent-probe"))
+        except OSError as exc:
+            restricted = os.environ.get("FUXI_TEST_ALLOW_NO_SOCKETS") == "1"
+            ci = os.environ.get("CI", "").lower() not in ("", "0", "false")
+            if restricted and not ci and exc.errno in (errno.EPERM, errno.EACCES):
+                self.skipTest(f"explicit restricted mode: gpg-agent Unix socket denied: {exc}")
+            self.fail(f"gpg-agent requires a working Unix socket: {exc}; "
+                      "use fuxi-ci.sh host-restricted only for local partial validation")
         home = self.root / "gnupg"
         home.mkdir(mode=0o700)
         previous = os.environ.get("GNUPGHOME")
@@ -68,9 +81,10 @@ class AptPublishTest(unittest.TestCase):
         self.addCleanup(lambda: os.environ.pop("GNUPGHOME", None) if previous is None
                         else os.environ.__setitem__("GNUPGHOME", previous))
         try:
-            subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
-                            "--quick-generate-key", "Fuxi Test <test@localhost>", "ed25519", "sign", "1d"],
-                           check=True, capture_output=True)
+            result = subprocess.run(["gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                                     "--quick-generate-key", "Fuxi Test <test@localhost>", "ed25519", "sign", "1d"],
+                                    capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
             publisher.publish(self.source, self.target, key="test@localhost")
             self.assertNotIn("Trusted:", (self.target / "fuxi.sources").read_text())
             release = self.target / "Release"
