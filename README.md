@@ -1,13 +1,15 @@
 # Xiaomi 13 `fuxi` 主线 Linux 移植
 
 在小米 13（SM8550）上跑**主线内核 + 完整 Ubuntu 用户空间**，做成一台可以日常使用的 Linux 手机。
-不使用 Android vendor kernel、Halium 或 Android HAL；Android 与 Linux 双系统共存，普通开机进 Android，
+不使用 Android vendor kernel、Halium 或 Android HAL；Android 与 Linux 双系统共存，正常启动目标为 Android，
 首次部署引导层到 `recovery_b`，以后重启到 recovery 进入 Linux。
 
 当前版本：**v0.6.0**（内核 `7.4.0-rc1`，主线 U-Boot + extlinux 引导，内核以 deb 包升级，Ubuntu 26.10）。
 
-开发基线：`7.4.0-rc1-fuxi-std2` 已上机验收，固定源码、配置和补丁配方见 `kernel/`。
-相机任务继续：隔离候选 `cam6hfclk` 已验证 HF 门控覆盖 ICC 投票，RAW 及四轮半尺寸→全尺寸 CPU 采集通过；第五轮全尺寸触发 libcamera 数组断言。本轮无 RPMh 超时，但 MM0 聚合状态与旧故障不同，尚不能宣称修复。已正常回到运行/默认 deb9、回退 deb8，当前保留 Linux；此次 Android→Linux 切换再次留下 `boot-recovery`，未再次清除。见 [`TASKS.md`](TASKS.md)、[`HF 时钟实验`](docs/相机HF时钟实验-20261112.md) 和 [`MM0 诊断`](docs/相机MM0诊断-20261112.md)。
+标准源码基线：`7.4.0-rc1-fuxi-std2`，固定源码、配置和补丁配方见 `kernel/`。
+最近实机记录（2026-11-12）：运行/默认 deb9、回退 deb8，保留 Linux；BCB 残留 `boot-recovery`，普通重启不保证进入 Android。本轮（11-14）无法连机，不能把历史记录当作实时状态。
+相机隔离候选 `cam6hfclk` 的 RAW 及四轮半尺寸→全尺寸 CPU 采集通过，第五轮触发 libcamera 数组断言；MM0/RPMh 根因仍未修复。首帧初始化候选已单独归档，尚未完成补丁后实机验收。
+当前任务与剩余门槛见 [`TASKS.md`](TASKS.md)，本轮验证与环境限制见 [`工程收尾`](docs/工程收尾-20261114.md)；相机证据见 [`HF 时钟实验`](docs/相机HF时钟实验-20261112.md) 和 [`MM0 诊断`](docs/相机MM0诊断-20261112.md)。
 标准化收尾记录见 [`验收记录`](docs/标准化收尾验收-20261107.md)，Release 下载仍以各版本说明为准。
 构建环境、持续集成、内核更新与签名发布规则见 [`维护与发布`](docs/内核持续维护与发布.md)。
 新增维护工具的验收不等同于相机、通话、快充完成；对外发布还需真实作者签字和许可证审核。
@@ -18,9 +20,9 @@ CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](d
 
 | 能力 | 状态 |
 |---|---|
-| 启动、UFS 根文件系统、双系统切换 | ✅ 实机稳定（Linux 在 `/dev/sda33`）；`recovery_b` = 主线 U-Boot，内核 deb 独立升级，启动失败 2 次自动回退 |
+| 启动、UFS 根文件系统、双系统切换 | Linux 启动和内核 deb 独立升级已实测，启动失败 2 次自动回退；BCB 残留影响返回 Android，见[启动说明](docs/双系统启动说明.md) |
 | 显示、触摸、Phosh 桌面 | ✅ 原生 MSM DSI、120 Hz、Adreno 740 GPU 渲染，用户现场确认 |
-| Denial 桌面（mobile shell） | ✅ 0.6.2 官方 arm64 预编译包已安装运行，开机默认（2026-11-07）；`fuxi-session phosh` 回退 |
+| Denial 桌面（mobile shell） | 0.6.2 官方 arm64 包曾安装运行；最近明确的桌面记录为 Phosh，本轮未核验当前默认桌面 |
 | WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
 | 传感器 | 部分支持：加速度、光线、距离、磁场、指南针、陀螺仪及重力已有读数；重力限时启停及中断关闭通过，轴方向、运动响应等仍未验收，不能等同全部传感器支持 |
 | NFC | 未接通：std2 未启用 `CONFIG_NFC`，没有可用 NFC 设备；读卡、卡模拟和支付均未验收 |
@@ -58,7 +60,8 @@ CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](d
 2. 分区表里有一个 `linux` 分区，且正好是 `/dev/sda33`（**原厂没有这个分区**，作者另行改过 GPT，改错有变砖风险）；
 3. `sda33` 里已装好 arm64 Ubuntu rootfs（Release 不提供）。
 
-镜像只写 `recovery_b`，不动 Android 系统分区；起不来时长按电源 20 秒回 Android。
+镜像只写 `recovery_b`，不动 Android 系统分区；起不来时长按电源退出失败启动。
+若 BCB 留有 `boot-recovery`，强制重启也不保证进入 Android，恢复条件见启动说明。
 完整前提、步骤和已知问题见 Release 说明与 [`docs/双系统启动说明.md`](docs/双系统启动说明.md)。
 
 > **开发者预览，不是一键安装包。** 主要用途是复现作者的构建与实验结果。
@@ -87,6 +90,7 @@ scripts/fuxi-build-deb.sh <唯一名字>
 scripts/fuxi-ssh.sh                       # USB SSH，手机 10.42.0.2；FUXI_HOST=<无线 IP> 走 WiFi
 scripts/fuxi-health.sh                    # 只读验收
 scripts/fuxi-health.sh --require-wifi --require-sensors
+bash scripts/fuxi-device-baseline.sh      # 只读核对安装器/服务版本差异；不代表整机健康或启动验收
 scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
 scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
 scripts/fuxi-runtime-audit.sh             # 只读 KVM/TUN API 与启动级别检查；不创建 VM、网卡或修改路由
