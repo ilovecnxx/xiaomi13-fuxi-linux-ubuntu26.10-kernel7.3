@@ -1,5 +1,5 @@
 {
-  "status": "experimental-host-tested-not-device-tested",
+  "status": "experimental-single-raw-capture-device-tested",
   "base_manifest": "../rpmh-lifetime/manifest.json",
   "base_manifest_sha256": "a5bd5c69654296aacec2dc8ceb9ea3d2566b2a60d81e9b49beb3898b2d44af19",
   "base_commit": "de9363f69d693c46fbeff60fdbc242057d218d93",
@@ -42,7 +42,30 @@
     "ov13b10_dtb_sha256": "691e1aa7c01829453363b6751e5b31807ec36f10f3be606f3fbdd2ae5d882792",
     "package_payload_matches_build": true,
     "package_build_environment": "host",
-    "device_tested": false,
+    "device_tested": true,
+    "device_validation": {
+      "date": "2026-11-15",
+      "timezone": "Asia/Tokyo",
+      "kernel": "7.4.0-rc1-fuxi-cam7cpas",
+      "scope": "one-raw-stream-without-restart-or-rpmh-fault-injection",
+      "sensor": "ov13b10",
+      "format": "2104x1560-SGRBG10_CSI2P",
+      "frames": 5,
+      "bytesused_per_frame": 4118400,
+      "capture_exit_code": 0,
+      "camera_version": "0x00070800",
+      "cpas_version": "0x10000000",
+      "snapshot_phases": ["reset-done", "before-halt", "before-clock-off"],
+      "qchannel_control_all_samples": "0x00000001",
+      "qchannel_status_all_samples": "0x00000000",
+      "rpmh_timeout_observed": false,
+      "qchannel_handshake_validated": false,
+      "mm0_fixed": false,
+      "restored_kernel": "7.4.0-rc1-fuxi-deb9",
+      "fallback_kernel": "7.4.0-rc1-fuxi-deb8",
+      "boot_counters_zero": true,
+      "restored_health_failures": 0
+    },
     "camera_accepted": false,
     "report": "../../../../docs/相机CPAS状态采样-20261114.md"
   }

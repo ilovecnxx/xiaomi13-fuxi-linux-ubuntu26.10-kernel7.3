@@ -56,7 +56,11 @@ establish hardware accessibility or capture stability.
 
 The host build completed as `cam7cpas`, with package/config/DTB hashes recorded
 in the manifest. The extracted kernel image and capture DTB match the build
-outputs byte for byte. This package has not been installed or device-tested.
+outputs byte for byte. On 2026-11-15 (Asia/Tokyo), this package booted on the
+device and completed one five-frame OV13B10 RAW capture. The device was then
+restored to deb9 with deb8 as fallback and passed wireless/sensor health checks.
+This does not validate repeated STREAMON, RPMh timeout recovery, or a Q-channel
+handshake. See the report for register readings and their limitations.
 From the repository root, use a fresh package name if `cam7cpas` already exists:
 
 ```bash
@@ -75,3 +79,18 @@ Keep the candidate outside the standard recipe and APT allowlist. Do not
 repeat the known second-STREAMON deadlock merely to collect these logs.
 Evidence, public source references, and hardware test scope are recorded in
 the [report](../../../../docs/相机CPAS状态采样-20261114.md).
+
+## Device Result
+
+The camera and CPAS versions were `0x00070800` and `0x10000000`, matching
+Titan 780 / CPAS 1.0.0. At all three successful-power-path sample points,
+control was `1` and both status reads were `0`. This is not proof of a completed
+stop handshake: the diagnostic never requests stop, and the vendor sequence
+temporarily enables the ICP clock for this hardware revision. The next
+experiment must establish clocked status behavior before interpreting these
+bits as an acknowledgement or implementing a shared-client stop sequence.
+
+The stream delivered sequences 0 through 4, each with 4,118,400 bytes used,
+and exited with status 0. A later read-only snapshot showed CAMSS suspended,
+TITAN_TOP off, and HF/CAMNOC/CPAS AHB clock enable counts zero. No second stream
+was attempted. No images were saved or visually assessed.
