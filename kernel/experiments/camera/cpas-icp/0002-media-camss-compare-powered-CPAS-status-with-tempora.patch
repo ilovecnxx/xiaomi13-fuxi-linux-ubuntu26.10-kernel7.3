@@ -1,0 +1,114 @@
+From 306902c294b35654ad2018dea9dc9faad0572b95 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 01:33:53 +0800
+Subject: [PATCH 2/3] media: camss: compare powered CPAS status with temporary
+ ICP clock
+
+Serialize diagnostic windows across VFEs. Gate clock changes on the
+measured Titan 780 V100 revision and active control value. Poll QACCEPTN
+for at most a 10 ms diagnostic budget and release the acquired clock
+reference on success or timeout. Do not change clock rates or write
+Q-channel requests. Missing optional resources preserve existing behavior;
+propagate probe deferral and record enable failures.
+---
+ drivers/media/platform/qcom/camss/camss.c | 37 +++++++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.h |  3 ++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 38d60d055..e64ce01fe 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -9,6 +9,7 @@
+  */
+ #include <linux/clk.h>
+ #include <linux/interconnect.h>
++#include <linux/iopoll.h>
+ #include <linux/media-bus-format.h>
+ #include <linux/media.h>
+ #include <linux/module.h>
+@@ -5418,10 +5419,14 @@ void camss_cpas_snapshot(struct camss *camss, unsigned int vfe_id,
+ {
+ 	void __iomem *base = camss->cpas_top_base;
+ 	u32 camera, cpas, control, before, after;
++	u32 clocked, settled, released, final_control;
++	unsigned long rate;
++	int ret;
+ 
+ 	if (!base)
+ 		return;
+ 
++	mutex_lock(&camss->cpas_diag_lock);
+ 	camera = readl(base + CPAS_CAMERA_VERSION);
+ 	cpas = readl(base + CPAS_VERSION);
+ 	before = readl(base + CPAS_QCHANNEL_STATUS);
+@@ -5430,6 +5435,33 @@ void camss_cpas_snapshot(struct camss *camss, unsigned int vfe_id,
+ 	dev_info(camss->dev,
+ 		 "CPAS phase=%s vfe=%u camera=%08x cpas=%08x qctrl=%08x qstatus=%08x->%08x\n",
+ 		 phase, vfe_id, camera, cpas, control, before, after);
++
++	/* Titan 780 needs ICP clocking for Q-channel observation. No request writes. */
++	if (!camss->cpas_icp_clk || camera != 0x00070800 ||
++	    cpas != 0x10000000 || control != 1)
++		goto unlock;
++
++	ret = clk_prepare_enable(camss->cpas_icp_clk);
++	if (ret) {
++		dev_warn(camss->dev, "CPAS-ICP phase=%s vfe=%u enable failed: %d\n",
++			 phase, vfe_id, ret);
++		goto unlock;
++	}
++
++	rate = clk_get_rate(camss->cpas_icp_clk);
++	clocked = readl(base + CPAS_QCHANNEL_STATUS);
++	/* Diagnostic budget only; a timeout does not request or acknowledge stop. */
++	ret = readl_poll_timeout(base + CPAS_QCHANNEL_STATUS, settled,
++				 settled & BIT(0), 100, 10000);
++	final_control = readl(base + CPAS_QCHANNEL_CTRL);
++	clk_disable_unprepare(camss->cpas_icp_clk);
++	released = readl(base + CPAS_QCHANNEL_STATUS);
++	dev_info(camss->dev,
++		 "CPAS-ICP phase=%s vfe=%u rate=%lu qctrl=%08x->%08x status=%08x->%08x->%08x->%08x poll=%d\n",
++		 phase, vfe_id, rate, control, final_control, after, clocked,
++		 settled, released, ret);
++unlock:
++	mutex_unlock(&camss->cpas_diag_lock);
+ }
+ 
+ /*
+@@ -5464,6 +5496,11 @@ static int camss_probe(struct platform_device *pdev)
+ 			camss->cpas_top_base = devm_ioremap_resource(dev, cpas);
+ 			if (IS_ERR(camss->cpas_top_base))
+ 				return PTR_ERR(camss->cpas_top_base);
++			mutex_init(&camss->cpas_diag_lock);
++			camss->cpas_icp_clk = devm_clk_get_optional(dev, "icp");
++			if (IS_ERR(camss->cpas_icp_clk))
++				return dev_err_probe(dev, PTR_ERR(camss->cpas_icp_clk),
++						     "failed to get CPAS ICP clock\n");
+ 		}
+ 	}
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index a408b61af..849e542aa 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -11,6 +11,7 @@
+ #define QC_MSM_CAMSS_H
+ 
+ #include <linux/device.h>
++#include <linux/mutex.h>
+ #include <linux/types.h>
+ #include <media/v4l2-async.h>
+ #include <media/v4l2-device.h>
+@@ -135,6 +136,8 @@ struct camss {
+ 	void __iomem *csid_wrapper_base;
+ 	void __iomem *top_base;
+ 	void __iomem *cpas_top_base;
++	struct clk *cpas_icp_clk;
++	struct mutex cpas_diag_lock;
+ 	atomic_t ref_count;
+ 	int genpd_num;
+ 	struct device *genpd;
+-- 
+2.55.0
+

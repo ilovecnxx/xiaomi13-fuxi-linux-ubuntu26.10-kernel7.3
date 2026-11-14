@@ -1,0 +1,77 @@
+{
+  "status": "experimental-single-raw-capture-device-tested",
+  "base_manifest": "../cpas-diag/manifest.json",
+  "base_manifest_sha256": "c3a1a733a6a92eb9f4bff675788eacefa40a5f32d378ae3ee951f47a0e59f02a",
+  "base_commit": "69c709d250e7a6f9c0ddb8dfb6ab96b5838db1b1",
+  "base_tree": "e4439f14fa6004e92ca40429e900f7e4c25d7966",
+  "result_tree": "9f78c9163e7fce86fb1ba627a9b0380899da1156",
+  "source_date_epoch": 1794677633,
+  "patches": [
+    {
+      "file": "0001-dt-bindings-media-qcom-sm8550-camss-allow-optional-I.patch",
+      "sha256": "f3fa84dfadcc6db7bb347edaee19d0ef8a63391d771222573b99f45b7bee3690"
+    },
+    {
+      "file": "0002-media-camss-compare-powered-CPAS-status-with-tempora.patch",
+      "sha256": "ae8f8d39d72c9c8872a501689b473734eabddc374a1abfeb4bbd3846c3414d4d"
+    },
+    {
+      "file": "0003-arm64-dts-qcom-sm8550-provide-ICP-clock-for-CPAS-dia.patch",
+      "sha256": "969c6cce20c1778a85389afaede82d2aa7fe3f35ae3b501ddc51bb1f0fa433c3"
+    }
+  ],
+  "validation": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 15.3.0-4ubuntu1) 15.3.0",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "make_targets": [
+      "drivers/media/platform/qcom/camss/",
+      "qcom/sm8550-xiaomi-fuxi-ov13b10.dtb"
+    ],
+    "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "LOCALVERSION=-fuxi-cam8icp", "W=1", "-j4"],
+    "arm64_w1_passed": true,
+    "w1_warnings": ["Unchanged DSI node: avoid_unnecessary_addr_size"],
+    "binding_schema": "media/qcom,sm8550-camss.yaml",
+    "binding_check_passed": true,
+    "camss_node_dtb_validate_passed": true,
+    "full_board_schema_validated": false,
+    "patch_reconstruction_tree_verified": true,
+    "host_script_tests_passed": 366,
+    "full_phone_kernel_built": true,
+    "package": "linux-image-7.4.0-rc1-fuxi-cam8icp_7.4.0-rc1-cam8icp_arm64.deb",
+    "package_sha256": "4a8fea7aae5f855695ebe1e9e338730f6f16d13093a3439be8d2ee37ddc4fc34",
+    "ov13b10_dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "package_payload_matches_build": true,
+    "package_build_environment": "host",
+    "device_tested": true,
+    "device_validation": {
+      "date": "2026-11-15",
+      "timezone": "UTC+08:00",
+      "kernel": "7.4.0-rc1-fuxi-cam8icp",
+      "scope": "one-raw-stream-without-restart-or-rpmh-fault-injection",
+      "sensor": "ov13b10",
+      "format": "2104x1560-SGRBG10_CSI2P",
+      "frames": 5,
+      "bytesused_per_frame": 4118400,
+      "capture_exit_code": 0,
+      "camera_version": "0x00070800",
+      "cpas_version": "0x10000000",
+      "icp_rate_hz": 19200000,
+      "qchannel_control_all_samples": "0x00000001",
+      "status_sample_order": ["before-enable", "clocked", "settled", "released"],
+      "snapshots": [
+        {"phase": "reset-done", "status": [0, 1, 1, 1], "poll": 0},
+        {"phase": "before-halt", "status": [1, 1, 1, 1], "poll": 0},
+        {"phase": "before-clock-off", "status": [1, 1, 1, 1], "poll": 0}
+      ],
+      "rpmh_timeout_observed": false,
+      "qchannel_stop_handshake_validated": false,
+      "mm0_fixed": false,
+      "restored_kernel": "7.4.0-rc1-fuxi-deb9",
+      "fallback_kernel": "7.4.0-rc1-fuxi-deb8",
+      "boot_counters_zero": true,
+      "restored_health_failures": 0
+    },
+    "camera_accepted": false,
+    "report": "../../../../docs/相机CPAS-ICP诊断-20261115.md"
+  }
+}
