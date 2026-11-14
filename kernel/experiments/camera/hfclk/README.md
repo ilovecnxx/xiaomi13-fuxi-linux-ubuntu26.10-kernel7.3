@@ -4,6 +4,12 @@ This isolated candidate extends cam5diag with one SM8550 resource-table change:
 add `gcc_axi_hf` to the existing CAMSS PM clock list. It is a timing hypothesis,
 not a verified fix, and must not enter the standard recipe or APT allowlist.
 
+Follow-up on 2026-11-14 reproduced an MM0 timeout during the second start of the
+same Camera object. The manifest's validation values describe the initial test
+window below, not this later result. HF coverage alone is insufficient. See the
+[restart report](../../../../docs/相机重启实验-20261114.md) and the subsequent
+[batch-lifetime candidate](../rpmh-lifetime/README.md).
+
 The full package and CAMSS W=1 build passed, along with 342 host tests. Device
 testing completed RAW and four half/full CPU pairs without an RPMh timeout.
 The fifth full-size run aborted on a libcamera array assertion; its kernel
