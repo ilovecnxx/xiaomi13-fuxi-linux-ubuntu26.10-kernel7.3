@@ -42,9 +42,10 @@ cp -a "$B/packaging/fuxi-device/DEBIAN" "$P/DEBIAN"
 HX="$B/work/kbuild/hexagonrpc/hexagonrpcd-fuxi"
 [ -x "$HX" ] || { echo "缺 $HX，先跑 scripts/fuxi-build-hexagonrpc.sh" >&2; exit 1; }
 install -m755 "$HX" "$P/usr/libexec/fuxi/hexagonrpcd-fuxi"
-mkdir -p "$P/usr/share/doc/fuxi-device/hexagonrpc"
-cp "$B/build/sources/hexagonrpc/COPYING" "$P/usr/share/doc/fuxi-device/hexagonrpc/"
-cp "$B/work/kbuild/hexagonrpc/source.json" "$P/usr/share/doc/fuxi-device/hexagonrpc/"
+# The phone filters /usr/share/doc/*; retain dependency provenance after install.
+mkdir -p "$P/usr/share/fuxi-device/hexagonrpc"
+cp "$B/build/sources/hexagonrpc/COPYING" "$P/usr/share/fuxi-device/hexagonrpc/"
+cp "$B/work/kbuild/hexagonrpc/source.json" "$P/usr/share/fuxi-device/hexagonrpc/"
 # 迁移清单内嵌进 preinst/postinst
 for s in preinst postinst; do
 	python3 - "$P/DEBIAN/$s" "$B/packaging/fuxi-device/migrate.list" <<'EOF'
