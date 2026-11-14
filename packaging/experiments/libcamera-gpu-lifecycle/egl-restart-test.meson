@@ -1,0 +1,7 @@
+# Append to test/meson.build in an isolated libcamera source tree, and copy
+# egl-restart-test.cpp into test/. Requires -Dtest=true and the simple pipeline.
+executable('fuxi-egl-restart', 'egl-restart-test.cpp',
+           dependencies : [libcamera_private, dependency('egl'),
+                           dependency('glesv2'), cc.find_library('dl')],
+           implicit_include_directories : false,
+           include_directories : test_includes_internal)

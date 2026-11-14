@@ -15,6 +15,10 @@
     {
       "file": "0002-release-egl-images-and-return-failed-buffers.patch",
       "sha256": "4c51cdba0a3485eb76fa723ff6e63894b130412503a486478b9ea86555976074"
+    },
+    {
+      "file": "0003-clean-up-egl-context-on-stop-and-start-failure.patch",
+      "sha256": "7ca6dcab9ac0b7d2d61579fc27bde7f1e27a1b93cf7ac11b637adb0a4d9a4de5"
     }
   ],
   "system_install": false

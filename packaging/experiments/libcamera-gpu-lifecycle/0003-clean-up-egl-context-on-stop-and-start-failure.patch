@@ -1,0 +1,213 @@
+diff --git a/include/libcamera/internal/egl.h b/include/libcamera/internal/egl.h
+index 6d8fdc7..b7b85a1 100644
+--- a/include/libcamera/internal/egl.h
++++ b/include/libcamera/internal/egl.h
+@@ -101,6 +101,7 @@ public:
+ 	~eGL();
+ 
+ 	int initEGLContext();
++	void releaseEGLContext();
+ 
+ 	int createInputDMABufTexture2D(eGLImage &eglImage, int fd);
+ 	int createOutputDMABufTexture2D(eGLImage &eglImage, int fd);
+@@ -108,7 +109,7 @@ public:
+ 	void createTexture2D(eGLImage &eglImage, GLint format, uint32_t width, uint32_t height, void *data);
+ 
+ 	void pushEnv(std::vector<std::string> &shaderEnv, const char *str);
+-	void makeCurrent();
++	int makeCurrent();
+ 
+ 	int compileVertexShader(GLuint &shaderId, const unsigned char *shaderData,
+ 				unsigned int shaderDataLen,
+diff --git a/src/libcamera/egl.cpp b/src/libcamera/egl.cpp
+index 745c540..e460b79 100644
+--- a/src/libcamera/egl.cpp
++++ b/src/libcamera/egl.cpp
+@@ -78,11 +78,30 @@ eGL::eGL()
+  */
+ eGL::~eGL()
+ {
++	releaseEGLContext();
++}
++
++/**
++ * \brief Release the context and surface owned by this helper
++ *
++ * Call on the rendering thread after deleting its GL objects. The display may
++ * be shared with other users of EGL, so it must not be terminated here.
++ */
++void eGL::releaseEGLContext()
++{
++	if (display_ == EGL_NO_DISPLAY)
++		return;
++
++	if (context_ != EGL_NO_CONTEXT && eglGetCurrentContext() == context_)
++		eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++
+ 	if (context_ != EGL_NO_CONTEXT)
+-		eglDestroyContext(display_, context_);
++		eglDestroyContext(display_, std::exchange(context_, EGL_NO_CONTEXT));
+ 
+ 	if (surface_ != EGL_NO_SURFACE)
+-		eglDestroySurface(display_, surface_);
++		eglDestroySurface(display_, std::exchange(surface_, EGL_NO_SURFACE));
++
++	display_ = EGL_NO_DISPLAY;
+ }
+ 
+ /**
+@@ -287,6 +306,9 @@ int eGL::initEGLContext()
+ 	EGLint numConfigs;
+ 	EGLConfig config;
+ 
++	if (context_ != EGL_NO_CONTEXT)
++		return -EBUSY;
++
+ 	if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+ 		LOG(eGL, Error) << "API bind fail";
+ 		goto fail;
+@@ -334,7 +356,7 @@ int eGL::initEGLContext()
+ 		goto fail;
+ 	}
+ 
+-	if (eglChooseConfig(display_, configAttribs, &config, 1, &numConfigs) != EGL_TRUE) {
++	if (eglChooseConfig(display_, configAttribs, &config, 1, &numConfigs) != EGL_TRUE || !numConfigs) {
+ 		LOG(eGL, Error) << "eglChooseConfig fail";
+ 		goto fail;
+ 	}
+@@ -347,13 +369,14 @@ int eGL::initEGLContext()
+ 
+ 	tid_ = Thread::currentId();
+ 
+-	makeCurrent();
++	if (makeCurrent())
++		goto fail;
+ 
+ 	LOG(eGL, Info) << "EGL: GL_VERSION: " << glGetString(GL_VERSION);
+ 
+ 	return 0;
+ fail:
+-
++	releaseEGLContext();
+ 	return -ENODEV;
+ }
+ 
+@@ -363,14 +386,19 @@ fail:
+  * Binds the EGL context to the current thread, allowing OpenGL ES
+  * operations to be performed. Must be called from the thread that
+  * will perform rendering operations.
++ *
++ * \return 0 on success, or -ENODEV on failure
+  */
+-void eGL::makeCurrent()
++int eGL::makeCurrent()
+ {
+ 	ASSERT(tid_ == Thread::currentId());
+ 
+ 	if (eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, context_) != EGL_TRUE) {
+ 		LOG(eGL, Error) << "eglMakeCurrent fail";
++		return -ENODEV;
+ 	}
++
++	return 0;
+ }
+ 
+ /**
+@@ -502,6 +530,10 @@ int eGL::compileShader(int shaderType, GLuint &shaderId, const unsigned char *sh
+ 		GLint sizeLog = 0;
+ 
+ 		glGetShaderiv(shaderId, GL_INFO_LOG_LENGTH, &sizeLog);
++		if (sizeLog <= 1) {
++			LOG(eGL, Error) << "Shader compilation failed without an info log";
++			return -EINVAL;
++		}
+ 		auto infoLog = std::make_unique<GLchar[]>(sizeLog);
+ 
+ 		glGetShaderInfoLog(shaderId, sizeLog, &sizeLog, infoLog.get());
+@@ -563,7 +595,7 @@ int eGL::linkProgram(GLuint &programId, GLuint vertexshaderId, GLuint fragmentsh
+ 		return ret;
+ 	}
+ 
+-	utils::scope_exit programGuard([&] { glDeleteProgram(programId); });
++	utils::scope_exit programGuard([&] { glDeleteProgram(std::exchange(programId, 0)); });
+ 
+ 	glAttachShader(programId, vertexshaderId);
+ 	if ((err = glGetError()) != GL_NO_ERROR) {
+@@ -592,6 +624,10 @@ int eGL::linkProgram(GLuint &programId, GLuint vertexshaderId, GLuint fragmentsh
+ 		GLint sizeLog = 0;
+ 
+ 		glGetProgramiv(programId, GL_INFO_LOG_LENGTH, &sizeLog);
++		if (sizeLog <= 1) {
++			LOG(eGL, Error) << "Program linking failed without an info log";
++			return ret;
++		}
+ 		auto infoLog = std::make_unique<GLchar[]>(sizeLog);
+ 
+ 		glGetProgramInfoLog(programId, sizeLog, &sizeLog, infoLog.get());
+diff --git a/src/libcamera/software_isp/debayer_egl.cpp b/src/libcamera/software_isp/debayer_egl.cpp
+index 37e2ae2..193aa73 100644
+--- a/src/libcamera/software_isp/debayer_egl.cpp
++++ b/src/libcamera/software_isp/debayer_egl.cpp
+@@ -245,17 +245,23 @@ int DebayerEGL::initBayerShaders(PixelFormat inputFormat, PixelFormat outputForm
+ 		break;
+ 	};
+ 
++	utils::scope_exit vShaderGuard([&] {
++		if (vertexShaderId_)
++			glDeleteShader(std::exchange(vertexShaderId_, 0));
++	});
+ 	if (egl_.compileVertexShader(vertexShaderId_, vertexShaderData, vertexShaderDataLen, shaderEnv)) {
+ 		LOG(Debayer, Error) << "Compile vertex shader fail";
+ 		return -ENODEV;
+ 	}
+-	utils::scope_exit vShaderGuard([&] { glDeleteShader(vertexShaderId_); });
+ 
++	utils::scope_exit fShaderGuard([&] {
++		if (fragmentShaderId_)
++			glDeleteShader(std::exchange(fragmentShaderId_, 0));
++	});
+ 	if (egl_.compileFragmentShader(fragmentShaderId_, fragmentShaderData, fragmentShaderDataLen, shaderEnv)) {
+ 		LOG(Debayer, Error) << "Compile fragment shader fail";
+ 		return -ENODEV;
+ 	}
+-	utils::scope_exit fShaderGuard([&] { glDeleteShader(fragmentShaderId_); });
+ 
+ 	if (egl_.linkProgram(programId_, vertexShaderId_, fragmentShaderId_)) {
+ 		LOG(Debayer, Error) << "Linking program fail";
+@@ -509,7 +515,8 @@ void DebayerEGL::setShaderVariableValues(DebayerParams &params)
+ int DebayerEGL::debayerGPU(MappedFrameBuffer &in, int out_fd, DebayerParams &params)
+ {
+ 	/* eGL context switch */
+-	egl_.makeCurrent();
++	if (egl_.makeCurrent())
++		return -ENODEV;
+ 
+ 	/* Create a standard texture input */
+ 	egl_.createTexture2D(*eglImageBayerIn_, glFormat_, inputConfig_.stride / bytesPerPixel_, height_, in.planes()[0].data());
+@@ -592,6 +599,7 @@ int DebayerEGL::start()
+ 
+ 	if (egl_.initEGLContext())
+ 		return -ENODEV;
++	utils::scope_exit startGuard([&] { stop(); });
+ 
+ 	glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &maxTextureImageUnits);
+ 
+@@ -606,6 +614,7 @@ int DebayerEGL::start()
+ 	if (initBayerShaders(inputPixelFormat_, outputPixelFormat_))
+ 		return -EINVAL;
+ 
++	startGuard.release();
+ 	return 0;
+ }
+ 
+@@ -615,7 +624,9 @@ void DebayerEGL::stop()
+ 	eglImageBayerIn_.reset();
+ 
+ 	if (programId_)
+-		glDeleteProgram(programId_);
++		glDeleteProgram(std::exchange(programId_, 0));
++
++	egl_.releaseEGLContext();
+ }
+ 
+ SizeRange DebayerEGL::sizes(PixelFormat inputFormat, const Size &inputSize)
