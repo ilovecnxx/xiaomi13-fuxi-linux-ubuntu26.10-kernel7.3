@@ -1,0 +1,323 @@
+From a80a9cc80ef7ac7577e74b54d28a119fea8de4d8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 22:12:59 +0800
+Subject: [PATCH 1/2] dt-bindings: media: describe calibrated SM8550 C-PHY
+ endpoints
+
+---
+ .../bindings/media/qcom,sm8550-camss.yaml     | 239 +++++++-----------
+ 1 file changed, 87 insertions(+), 152 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/media/qcom,sm8550-camss.yaml b/Documentation/devicetree/bindings/media/qcom,sm8550-camss.yaml
+index 391931b59..ab72305b9 100644
+--- a/Documentation/devicetree/bindings/media/qcom,sm8550-camss.yaml
++++ b/Documentation/devicetree/bindings/media/qcom,sm8550-camss.yaml
+@@ -12,6 +12,72 @@ maintainers:
+ description:
+   The CAMSS IP is a CSI decoder and ISP present on Qualcomm platforms.
+ 
++$defs:
++  csi-endpoint:
++    $ref: video-interfaces.yaml#
++    unevaluatedProperties: false
++
++    properties:
++      clock-lanes:
++        maxItems: 1
++
++      data-lanes:
++        minItems: 1
++        maxItems: 4
++
++      bus-type:
++        enum: [1, 4]
++
++      qcom,cphy-settle-count:
++        $ref: /schemas/types.yaml#/definitions/uint32
++        minimum: 1
++        maximum: 65535
++        description:
++          Calibrated PHY 2.1.2 C-PHY settle counter with a 400 MHz timer.
++          This is a hardware counter, not a duration in nanoseconds. It is
++          valid only for the single frequency in link-frequencies. The
++          receiver rejects a transmitter using a different link frequency.
++
++    required:
++      - data-lanes
++
++    allOf:
++      - if:
++          properties:
++            bus-type:
++              const: 1
++          required:
++            - bus-type
++        then:
++          properties:
++            clock-lanes: false
++            clock-noncontinuous: false
++            lane-polarities: false
++            data-lanes:
++              minItems: 1
++              maxItems: 3
++              items:
++                maximum: 2
++            line-orders:
++              minItems: 1
++              maxItems: 3
++              items:
++                const: 0
++            link-frequencies:
++              minItems: 1
++              maxItems: 1
++              items:
++                minimum: 1
++                maximum: 2992500000
++          required:
++            - qcom,cphy-settle-count
++            - link-frequencies
++        else:
++          properties:
++            qcom,cphy-settle-count: false
++          required:
++            - clock-lanes
++
+ properties:
+   compatible:
+     const: qcom,sm8550-camss
+@@ -161,25 +227,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@1:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -189,25 +237,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@2:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -217,25 +247,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@3:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -245,25 +257,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@4:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -273,25 +267,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@5:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -301,25 +277,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@6:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -329,25 +287,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+       port@7:
+         $ref: /schemas/graph.yaml#/$defs/port-base
+@@ -357,25 +297,7 @@ properties:
+ 
+         properties:
+           endpoint:
+-            $ref: video-interfaces.yaml#
+-            unevaluatedProperties: false
+-
+-            properties:
+-              clock-lanes:
+-                maxItems: 1
+-
+-              data-lanes:
+-                minItems: 1
+-                maxItems: 4
+-
+-              bus-type:
+-                enum:
+-                  - 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+-                  - 4 # MEDIA_BUS_TYPE_CSI2_DPHY
+-
+-            required:
+-              - clock-lanes
+-              - data-lanes
++            $ref: "#/$defs/csi-endpoint"
+ 
+ required:
+   - compatible
+@@ -598,6 +520,19 @@ examples:
+                         remote-endpoint = <&sensor_ep>;
+                     };
+                 };
++
++                port@2 {
++                    reg = <2>;
++
++                    endpoint {
++                        bus-type = <1>;
++                        data-lanes = <0 1 2>;
++                        line-orders = <0 0 0>;
++                        link-frequencies = /bits/ 64 <1500000000>;
++                        qcom,cphy-settle-count = <30>;
++                        remote-endpoint = <&cphy_sensor_ep>;
++                    };
++                };
+             };
+         };
+     };

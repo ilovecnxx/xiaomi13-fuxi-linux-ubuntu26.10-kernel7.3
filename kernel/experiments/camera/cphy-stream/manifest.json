@@ -1,0 +1,46 @@
+{
+  "status": "experimental-host-tested-cphy-stream",
+  "base_manifest": "../cphy-clock/manifest.json",
+  "base_manifest_sha256": "ad7a15d12c9a5cdc2145b6e01c5c08f1eb6367ba37dc4f8fe683e922902ceeae",
+  "base_commit": "3038e196d0839a19ba05f9f354115ef297d0bad4",
+  "base_tree": "8e55bd9348e4c6c9adf60cb5603044ebf6d80e8a",
+  "source_commit": "e2fbde80b361479aec65e7e254910f6b18d41dbf",
+  "result_tree": "f2d07d0d36ce1b78090d54ddb53cedf154724573",
+  "source_date_epoch": 1794752020,
+  "patches": [
+    {
+      "file": "0001-dt-bindings-media-describe-calibrated-SM8550-C-PHY-e.patch",
+      "sha256": "245ae2ac001184a36cec39f8e11963b57c3a44944252f3f293563a9ff00fe972"
+    },
+    {
+      "file": "0002-media-camss-connect-SM8550-C-PHY-endpoints-and-strea.patch",
+      "sha256": "003b2567aec65a8b65a4c24f5e8cc635043cb97c20d1c06819727074c4a06fb2"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 125,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kunit_added": 41,
+    "kasan": true,
+    "debug_mutexes": true,
+    "dt_binding_check_passed": true,
+    "dt_schema": "media/qcom,sm8550-camss.yaml",
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 1,
+    "checkpatch_warning_review": "New test files covered by the CAMSS directory entry in MAINTAINERS",
+    "checkpatch_options": "--no-tree --no-signoff",
+    "patch_reconstruction_tree_verified": true,
+    "manifest_ancestry_verified": 15,
+    "ancestry_patch_hashes_verified": 26,
+    "device_tested": false,
+    "cphy_endpoint_enabled": true,
+    "phy_stream_integration": true,
+    "imx800_driver_added": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/主摄C-PHY端点与启停-20261115.md"
+  }
+}

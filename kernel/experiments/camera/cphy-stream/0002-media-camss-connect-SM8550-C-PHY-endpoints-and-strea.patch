@@ -1,0 +1,1080 @@
+From e2fbde80b361479aec65e7e254910f6b18d41dbf Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 22:13:40 +0800
+Subject: [PATCH 2/2] media: camss: connect SM8550 C-PHY endpoints and stream
+ lifecycle
+
+Bind an explicit link frequency to a calibrated settle counter and validate raw trio properties before the generic endpoint parser. Route legacy C-PHY streaming through the PHY 2.1.2 backend and clean up receivers when a later pipeline start fails.
+
+Cover endpoint rejection, repeated C-PHY and D-PHY register programming, and real V4L2 graph startup cleanup. V4L2 intentionally logs and suppresses stop errors, so cleanup success is not hardware halt proof.
+---
+ drivers/media/platform/qcom/camss/Kconfig     |   1 +
+ .../qcom/camss/camss-csiphy-3ph-2-1-2.c       |   2 -
+ .../qcom/camss/camss-csiphy-clock-test.c      | 130 ++++++++++
+ .../media/platform/qcom/camss/camss-csiphy.c  |  39 ++-
+ .../media/platform/qcom/camss/camss-csiphy.h  |   2 +
+ .../platform/qcom/camss/camss-endpoint-test.c | 222 ++++++++++++++++++
+ .../qcom/camss/camss-video-stream-test.c      | 215 +++++++++++++++++
+ .../media/platform/qcom/camss/camss-video.c   | 107 ++++++---
+ drivers/media/platform/qcom/camss/camss.c     | 100 +++++++-
+ 9 files changed, 761 insertions(+), 57 deletions(-)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-endpoint-test.c
+ create mode 100644 drivers/media/platform/qcom/camss/camss-video-stream-test.c
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index 78f64cbc8..c8810d934 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -40,4 +40,5 @@ config VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST
+ 	  rate boundaries and stop/reconfigure using memory-backed registers.
+ 	  Check that rejected configurations leave the registers unchanged.
+ 	  Exercise sensor link frequency controls and RX/timer clock selection.
++	  Validate C-PHY firmware endpoints, stream dispatch and pipeline cleanup.
+ 	  These tests do not validate electrical timing or sensor modes.
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+index 97204a083..9fdbb741e 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+@@ -142,8 +142,6 @@ static void cphy_mask_irqs(void __iomem *base)
+  * @data_rate: vendor PHY bandwidth in bits/s per trio, not V4L2 link frequency
+  * @settle_count: already resolved 16-bit hardware counter, not nanoseconds
+  *
+- * This backend is not yet connected to endpoint parsing or stream-on. Sensor
+- * timing conversion and RX clock voting must be verified before integration.
+  * Validate all inputs before any MMIO, including values that would truncate.
+  * Caller serializes configuration and stop. No combo mode or polarity swap.
+  *
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c b/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
+index a8801a616..8eee763e3 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
+@@ -28,6 +28,8 @@ struct cphy_clock_test_ctx {
+ 	s64 menu[2];
+ 	u64 mbus_freq;
+ 	int mbus_error;
++	struct csiphy_lane lanes[3];
++	u32 regs[0x2000 / sizeof(u32)];
+ };
+ 
+ static unsigned long cphy_clock_recalc(struct clk_hw *hw, unsigned long parent)
+@@ -97,6 +99,7 @@ static void cphy_clock_cleanup(void *data)
+ 	media_device_unregister_entity(&ctx->csiphy.subdev.entity);
+ 	media_device_cleanup(&ctx->mdev);
+ 	v4l2_ctrl_handler_free(&ctx->controls);
++	root_device_unregister(ctx->camss.dev);
+ }
+ 
+ static int cphy_clock_init(struct kunit *test)
+@@ -110,6 +113,9 @@ static int cphy_clock_init(struct kunit *test)
+ 	if (!ctx)
+ 		return -ENOMEM;
+ 	test->priv = ctx;
++	ctx->camss.dev = root_device_register("camss-cphy-clock-test");
++	if (IS_ERR(ctx->camss.dev))
++		return PTR_ERR(ctx->camss.dev);
+ 	ctx->resources.version = CAMSS_8550;
+ 	ctx->camss.res = &ctx->resources;
+ 	ctx->csiphy.camss = &ctx->camss;
+@@ -126,10 +132,20 @@ static int cphy_clock_init(struct kunit *test)
+ 	ctx->clocks[1].nfreqs = 1;
+ 	ctx->menu[0] = 1449597917;
+ 	ctx->menu[1] = 2992500000LL;
++	ctx->csi2.cphy_link_freq = ctx->menu[0];
++	ctx->csi2.cphy_settle_count = 30;
++	ctx->csi2.lane_cfg.num_data = ARRAY_SIZE(ctx->lanes);
++	ctx->csi2.lane_cfg.data = ctx->lanes;
++	for (i = 0; i < ARRAY_SIZE(ctx->lanes); i++)
++		ctx->lanes[i].pos = i;
++	ctx->csiphy.base = (void __iomem *)ctx->regs;
+ 	v4l2_ctrl_handler_init(&ctx->controls, 2);
+ 	media_device_init(&ctx->mdev);
+ 	v4l2_subdev_init(&ctx->sensor, &cphy_clock_sensor_ops);
+ 	v4l2_subdev_init(&ctx->csiphy.subdev, &csiphy_v4l2_ops);
++	v4l2_set_subdevdata(&ctx->csiphy.subdev, &ctx->csiphy);
++	ctx->csiphy.subdev.dev = ctx->camss.dev;
++	ctx->csiphy.subdev.entity.function = MEDIA_ENT_F_VID_IF_BRIDGE;
+ 	ctx->sensor.entity.function = MEDIA_ENT_F_CAM_SENSOR;
+ 	ctx->sensor.ctrl_handler = &ctx->controls;
+ 	ctx->sensor_pad.flags = MEDIA_PAD_FL_SOURCE;
+@@ -230,6 +246,7 @@ static void cphy_clock_rates_test(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[1].clk), 400000000UL);
+ 	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 400000000U);
+ 	KUNIT_ASSERT_EQ(test, v4l2_ctrl_s_ctrl(ctrl, 1), 0);
++	ctx->csi2.cphy_link_freq = ctx->menu[1];
+ 	KUNIT_ASSERT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), 0);
+ 	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[0].clk), 480000000UL);
+ 	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[1].clk), 400000000UL);
+@@ -261,6 +278,7 @@ static void cphy_clock_invalid_test(struct kunit *test)
+ 		expected = -ENOENT;
+ 	} else if (!strcmp(name, "excess-frequency")) {
+ 		ctx->mbus_freq = S64_MAX;
++		ctx->csi2.cphy_link_freq = S64_MAX;
+ 	} else if (!strcmp(name, "rx-too-slow")) {
+ 		ctx->mock[0].rounded = 200000000;
+ 	} else if (!strcmp(name, "timer-rounded")) {
+@@ -288,6 +306,7 @@ static void cphy_clock_invalid_test(struct kunit *test)
+ 		expected = -EINVAL;
+ 	} else if (!strcmp(name, "no-vote")) {
+ 		ctx->mbus_freq = ctx->menu[1];
++		ctx->csi2.cphy_link_freq = ctx->menu[1];
+ 		ctx->clocks[0].nfreqs = 1;
+ 	}
+ 	KUNIT_EXPECT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), expected);
+@@ -327,12 +346,123 @@ static void cphy_clock_provider_failure_test(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 400000000U);
+ }
+ 
++static void cphy_stream_lifecycle_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	unsigned int i;
++
++	cphy_clock_add_link(test);
++	KUNIT_ASSERT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), 0);
++	for (i = 0; i < 2; i++) {
++		KUNIT_ASSERT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 1), 0);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1000 / 4], 0x0eU);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0x2aU);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 1U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x20c / 4], 30U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x60c / 4], 30U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0xa0c / 4], 30U);
++		KUNIT_ASSERT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 0), 0);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1000 / 4], 1U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 0U);
++	}
++}
++
++static const char * const cphy_stream_bad_cases[] = {
++	"frequency-changed", "source-error", "missing-frequency", "wrong-timer",
++	"zero-settle", "large-settle", "clock-mux", "duplicate-trio", "wrong-soc",
++};
++
++KUNIT_ARRAY_PARAM(cphy_stream_bad, cphy_stream_bad_cases, cphy_clock_bad_desc);
++
++static void cphy_stream_invalid_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	const char *name = *(const char * const *)test->param_value;
++	u32 *before;
++	int expected = -EINVAL;
++
++	before = kunit_kmalloc(test, sizeof(ctx->regs), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, before);
++	memset(ctx->regs, 0xa5, sizeof(ctx->regs));
++	memcpy(before, ctx->regs, sizeof(ctx->regs));
++	ctx->mbus_freq = ctx->menu[0];
++	ctx->csiphy.timer_clk_rate = 400000000;
++	if (!strcmp(name, "frequency-changed")) {
++		ctx->mbus_freq = ctx->menu[1];
++		KUNIT_EXPECT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), -EINVAL);
++		KUNIT_EXPECT_EQ(test, ctx->mock[0].writes, 0U);
++		KUNIT_EXPECT_EQ(test, ctx->mock[1].writes, 0U);
++	} else if (!strcmp(name, "source-error")) {
++		ctx->mbus_error = -EIO;
++		expected = -EIO;
++	} else if (!strcmp(name, "missing-frequency")) {
++		ctx->mbus_freq = 0;
++		expected = -ENOENT;
++	} else if (!strcmp(name, "wrong-timer")) {
++		ctx->csiphy.timer_clk_rate = 200000000;
++	} else if (!strcmp(name, "zero-settle")) {
++		ctx->csi2.cphy_settle_count = 0;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "large-settle")) {
++		ctx->csi2.cphy_settle_count = 65536;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "clock-mux")) {
++		ctx->csiphy.base_clk_mux = ctx->csiphy.base;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "duplicate-trio")) {
++		ctx->lanes[2].pos = 1;
++	} else if (!strcmp(name, "wrong-soc")) {
++		ctx->resources.version = CAMSS_7280;
++		expected = -EOPNOTSUPP;
++		KUNIT_EXPECT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 0),
++				-EOPNOTSUPP);
++	}
++	KUNIT_EXPECT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 1), expected);
++	KUNIT_EXPECT_MEMEQ(test, ctx->regs, before, sizeof(ctx->regs));
++}
++
++static void dphy_stream_regression_test(struct kunit *test)
++{
++	static const struct csiphy_subdev_resources resources = {
++		.hw_ops = &csiphy_ops_3ph_1_0,
++		.formats = &csiphy_formats_sdm845,
++	};
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	struct v4l2_ctrl *ctrl;
++	unsigned int round;
++
++	ctx->csiphy.res = &resources;
++	ctx->csiphy.timer_clk_rate = 400000000;
++	ctx->csiphy.fmt[MSM_CSIPHY_PAD_SINK].code = MEDIA_BUS_FMT_SBGGR10_1X10;
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_DPHY;
++	ctx->csi2.lane_cfg.num_data = 2;
++	ctx->csi2.lane_cfg.clk.pos = 4;
++	/* D-PHY still accepts the existing pixel-rate fallback. */
++	ctrl = v4l2_ctrl_new_std(&ctx->controls, NULL, V4L2_CID_PIXEL_RATE,
++				0, 2000000000, 1, 200000000);
++	KUNIT_ASSERT_NOT_NULL(test, ctrl);
++	KUNIT_ASSERT_EQ(test, resources.hw_ops->init(&ctx->csiphy), 0);
++	for (round = 0; round < 2; round++) {
++		KUNIT_ASSERT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 1), 0);
++		/* Clock and data lanes 0/1, with the C-PHY mode bit clear. */
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0x85U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 1U);
++		KUNIT_ASSERT_EQ(test, csiphy_set_stream_legacy(&ctx->csiphy.subdev, 0), 0);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0U);
++		KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 0U);
++	}
++}
++
+ static struct kunit_case cphy_clock_cases[] = {
+ 	KUNIT_CASE(cphy_clock_link_sources_test),
+ 	KUNIT_CASE(cphy_clock_rates_test),
+ 	KUNIT_CASE_PARAM(cphy_clock_invalid_test, cphy_clock_bad_gen_params),
+ 	KUNIT_CASE(cphy_clock_conversion_test),
+ 	KUNIT_CASE(cphy_clock_provider_failure_test),
++	KUNIT_CASE(cphy_stream_lifecycle_test),
++	KUNIT_CASE_PARAM(cphy_stream_invalid_test, cphy_stream_bad_gen_params),
++	KUNIT_CASE(dphy_stream_regression_test),
+ 	{}
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.c b/drivers/media/platform/qcom/camss/camss-csiphy.c
+index 37d17c25d..60e116ae5 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.c
+@@ -158,6 +158,8 @@ static int csiphy_set_clock_rates_cphy(struct csiphy_device *csiphy)
+ 				      V4L2_MBUS_CSI2_CPHY);
+ 	if (link_freq < 0)
+ 		return link_freq;
++	if (link_freq != csiphy->cfg.csi2->cphy_link_freq)
++		return -EINVAL;
+ 	data_rate = csiphy_2_1_2_cphy_data_rate(link_freq);
+ 	if (data_rate < 0)
+ 		return data_rate;
+@@ -332,12 +334,34 @@ static int csiphy_stream_on_legacy(struct csiphy_device *csiphy)
+ {
+ 	struct csiphy_config *cfg = &csiphy->cfg;
+ 	s64 link_freq;
+-	u8 lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
+-	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
+-				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
++	u8 lane_mask;
+ 	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+-	u8 val;
++	u8 bpp, val;
++
++	if (cfg->csi2->bus_type == V4L2_MBUS_CSI2_CPHY) {
++		s64 data_rate;
++
++		/* SM8550 routes through CSID; its legacy PHY has no clock mux. */
++		if (csiphy->base_clk_mux)
++			return -EOPNOTSUPP;
++		if (csiphy->timer_clk_rate != 400000000)
++			return -EINVAL;
++		link_freq = camss_get_link_freq(&csiphy->subdev.entity, 0, 0,
++					      V4L2_MBUS_CSI2_CPHY);
++		if (link_freq < 0)
++			return link_freq;
++		if (link_freq != cfg->csi2->cphy_link_freq)
++			return -EINVAL;
++		data_rate = csiphy_2_1_2_cphy_data_rate(link_freq);
++		if (data_rate < 0)
++			return data_rate;
++		return csiphy_2_1_2_cphy_configure(csiphy, data_rate,
++						 cfg->csi2->cphy_settle_count);
++	}
+ 
++	lane_mask = csiphy->res->hw_ops->get_lane_mask(&cfg->csi2->lane_cfg);
++	bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
++			     csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+ 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
+ 				      csiphy->cfg.csi2->bus_type);
+ 
+@@ -373,9 +397,12 @@ static int csiphy_stream_on_legacy(struct csiphy_device *csiphy)
+  *
+  * Helper function to disable streaming on CSIPHY module
+  */
+-static void csiphy_stream_off_legacy(struct csiphy_device *csiphy)
++static int csiphy_stream_off_legacy(struct csiphy_device *csiphy)
+ {
++	if (csiphy->cfg.csi2->bus_type == V4L2_MBUS_CSI2_CPHY)
++		return csiphy_2_1_2_cphy_disable(csiphy);
+ 	csiphy->res->hw_ops->lanes_disable(csiphy, &csiphy->cfg);
++	return 0;
+ }
+ 
+ /*
+@@ -462,7 +489,7 @@ static int csiphy_set_stream_legacy(struct v4l2_subdev *sd, int enable)
+ 	if (enable)
+ 		ret = csiphy_stream_on_legacy(csiphy);
+ 	else
+-		csiphy_stream_off_legacy(csiphy);
++		ret = csiphy_stream_off_legacy(csiphy);
+ 
+ 	return ret;
+ }
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.h b/drivers/media/platform/qcom/camss/camss-csiphy.h
+index a83f741ff..06a97a6df 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.h
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.h
+@@ -46,6 +46,8 @@ struct csiphy_lanes_cfg {
+ struct csiphy_csi2_cfg {
+ 	enum v4l2_mbus_type bus_type;
+ 	struct csiphy_lanes_cfg lane_cfg;
++	u64 cphy_link_freq;
++	u32 cphy_settle_count;
+ };
+ 
+ struct csiphy_config {
+diff --git a/drivers/media/platform/qcom/camss/camss-endpoint-test.c b/drivers/media/platform/qcom/camss/camss-endpoint-test.c
+new file mode 100644
+index 000000000..7b05693f3
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-endpoint-test.c
+@@ -0,0 +1,222 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Use real software-node properties and the V4L2 endpoint parser. */
++#include <kunit/test.h>
++
++static const struct camss_resources endpoint_resources = {
++	.version = CAMSS_8550,
++	.csiphy_num = 8,
++};
++
++static const struct camss_resources endpoint_other_resources = {
++	.version = CAMSS_7280,
++	.csiphy_num = 5,
++};
++
++static void endpoint_device_cleanup(void *data)
++{
++	root_device_unregister(data);
++}
++
++static int endpoint_test_init(struct kunit *test)
++{
++	struct camss *camss;
++	int ret;
++
++	camss = kunit_kzalloc(test, sizeof(*camss), GFP_KERNEL);
++	if (!camss)
++		return -ENOMEM;
++	camss->dev = root_device_register("camss-endpoint-test");
++	if (IS_ERR(camss->dev))
++		return PTR_ERR(camss->dev);
++	ret = kunit_add_action_or_reset(test, endpoint_device_cleanup, camss->dev);
++	if (ret)
++		return ret;
++	camss->res = &endpoint_resources;
++	camss->legacy_phy = true;
++	test->priv = camss;
++	return 0;
++}
++
++static int endpoint_parse(struct kunit *test, const struct property_entry *props,
++			  const char *port_name, struct camss_async_subdev *csd)
++{
++	struct software_node port = { .name = port_name };
++	struct software_node ep = { .name = "endpoint", .parent = &port,
++				    .properties = props };
++	const struct software_node *group[] = { &port, &ep, NULL };
++	int ret;
++
++	ret = software_node_register_node_group(group);
++	if (ret)
++		return ret;
++	ret = camss_parse_endpoint_node(test->priv, software_node_fwnode(&ep), csd);
++	software_node_unregister_node_group(group);
++	return ret;
++}
++
++static void endpoint_cphy_valid_test(struct kunit *test)
++{
++	u32 lanes[] = { 2, 0, 1 };
++	u32 orders[] = { 0, 0, 0 };
++	struct property_entry props[] = {
++		PROPERTY_ENTRY_U32("bus-type", V4L2_FWNODE_BUS_TYPE_CSI2_CPHY),
++		PROPERTY_ENTRY_U32_ARRAY("data-lanes", lanes),
++		PROPERTY_ENTRY_U32_ARRAY("line-orders", orders),
++		PROPERTY_ENTRY_U32("qcom,cphy-settle-count", 30),
++		PROPERTY_ENTRY_U64("link-frequencies", 1449597917),
++		{}
++	};
++	struct camss_async_subdev csd = {};
++	unsigned int i;
++
++	KUNIT_ASSERT_EQ(test, endpoint_parse(test, props, "port@2", &csd), 0);
++	KUNIT_EXPECT_EQ(test, csd.interface.csiphy_id, 2);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.bus_type, V4L2_MBUS_CSI2_CPHY);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.cphy_link_freq, 1449597917ULL);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.cphy_settle_count, 30U);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.num_data, 3);
++	for (i = 0; i < ARRAY_SIZE(lanes); i++) {
++		KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.data[i].pos, lanes[i]);
++		KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.data[i].pol, 0);
++	}
++	/* The optional line order defaults to ABC; one remapped trio is valid. */
++	props[1] = (struct property_entry)PROPERTY_ENTRY_U32("data-lanes", 2);
++	props[2] = (struct property_entry)PROPERTY_ENTRY_BOOL("unused");
++	KUNIT_ASSERT_EQ(test, endpoint_parse(test, props, "port@0", &csd), 0);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.num_data, 1);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.data[0].pos, 2);
++}
++
++static const char * const endpoint_bad_cases[] = {
++	"duplicate-trio", "trio-out-of-range", "huge-trio", "too-many-trios",
++	"missing-trios", "clock-lane", "polarities", "noncontinuous-clock",
++	"line-order", "line-order-count", "missing-settle", "zero-settle",
++	"large-settle", "missing-frequency", "multiple-frequencies", "zero-frequency",
++	"large-frequency", "wrong-soc", "generic-phy", "invalid-port", "dphy-settle",
++};
++
++static void endpoint_bad_desc(const char * const *name, char *desc)
++{
++	strscpy(desc, *name, KUNIT_PARAM_DESC_SIZE);
++}
++
++KUNIT_ARRAY_PARAM(endpoint_bad, endpoint_bad_cases, endpoint_bad_desc);
++
++static void endpoint_invalid_test(struct kunit *test)
++{
++	struct camss *camss = test->priv;
++	const char *name = *(const char * const *)test->param_value;
++	u32 lanes[] = { 0, 1, 2, 3 };
++	u32 orders[] = { 0, 0, 0 };
++	u64 rates[] = { 1449597917, 1500000000 };
++	struct property_entry props[] = {
++		PROPERTY_ENTRY_U32("bus-type", V4L2_FWNODE_BUS_TYPE_CSI2_CPHY),
++		PROPERTY_ENTRY_U32_ARRAY_LEN("data-lanes", lanes, 3),
++		PROPERTY_ENTRY_U32("qcom,cphy-settle-count", 30),
++		PROPERTY_ENTRY_U64("link-frequencies", 1449597917),
++		PROPERTY_ENTRY_U32_ARRAY("line-orders", orders),
++		PROPERTY_ENTRY_BOOL("unused"),
++		{}
++	};
++	struct camss_async_subdev csd, before;
++	const char *port = "port@2";
++	int expected = -EINVAL;
++
++	memset(&csd, 0xa5, sizeof(csd));
++	memcpy(&before, &csd, sizeof(csd));
++	if (!strcmp(name, "duplicate-trio")) {
++		lanes[2] = 1;
++	} else if (!strcmp(name, "trio-out-of-range")) {
++		lanes[2] = 3;
++	} else if (!strcmp(name, "huge-trio")) {
++		lanes[0] = U32_MAX;
++	} else if (!strcmp(name, "too-many-trios")) {
++		props[1] = (struct property_entry)PROPERTY_ENTRY_U32_ARRAY("data-lanes", lanes);
++	} else if (!strcmp(name, "missing-trios")) {
++		props[1].name = "absent-trios";
++	} else if (!strcmp(name, "clock-lane")) {
++		props[5] = (struct property_entry)PROPERTY_ENTRY_U32("clock-lanes", 4);
++	} else if (!strcmp(name, "polarities")) {
++		props[5] = (struct property_entry)PROPERTY_ENTRY_U32("lane-polarities", 0);
++	} else if (!strcmp(name, "noncontinuous-clock")) {
++		props[5] = (struct property_entry)PROPERTY_ENTRY_BOOL("clock-noncontinuous");
++	} else if (!strcmp(name, "line-order")) {
++		orders[2] = 1;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "line-order-count")) {
++		props[4] = (struct property_entry)PROPERTY_ENTRY_U32("line-orders", 0);
++	} else if (!strcmp(name, "missing-settle")) {
++		props[2].name = "absent-settle";
++	} else if (!strcmp(name, "zero-settle")) {
++		props[2] = (struct property_entry)PROPERTY_ENTRY_U32("qcom,cphy-settle-count", 0);
++		expected = -ERANGE;
++	} else if (!strcmp(name, "large-settle")) {
++		props[2] = (struct property_entry)
++			PROPERTY_ENTRY_U32("qcom,cphy-settle-count", 65536);
++		expected = -ERANGE;
++	} else if (!strcmp(name, "missing-frequency")) {
++		props[3].name = "absent-frequency";
++	} else if (!strcmp(name, "multiple-frequencies")) {
++		props[3] = (struct property_entry)
++			PROPERTY_ENTRY_U64_ARRAY("link-frequencies", rates);
++	} else if (!strcmp(name, "zero-frequency")) {
++		props[3] = (struct property_entry)PROPERTY_ENTRY_U64("link-frequencies", 0);
++		expected = -ERANGE;
++	} else if (!strcmp(name, "large-frequency")) {
++		props[3] = (struct property_entry)PROPERTY_ENTRY_U64("link-frequencies", U64_MAX);
++		expected = -ERANGE;
++	} else if (!strcmp(name, "wrong-soc")) {
++		camss->res = &endpoint_other_resources;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "generic-phy")) {
++		camss->legacy_phy = false;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "invalid-port")) {
++		port = "port@8";
++	} else if (!strcmp(name, "dphy-settle")) {
++		props[0] = (struct property_entry)PROPERTY_ENTRY_U32("bus-type", 4);
++	}
++	KUNIT_EXPECT_EQ(test, endpoint_parse(test, props, port, &csd), expected);
++	KUNIT_EXPECT_MEMEQ(test, &csd, &before, sizeof(csd));
++}
++
++static void endpoint_dphy_test(struct kunit *test)
++{
++	struct camss *camss = test->priv;
++	u32 lanes[] = { 0, 1, 2, 3 };
++	struct property_entry props[] = {
++		PROPERTY_ENTRY_U32("bus-type", V4L2_FWNODE_BUS_TYPE_CSI2_DPHY),
++		PROPERTY_ENTRY_U32_ARRAY("data-lanes", lanes),
++		PROPERTY_ENTRY_U32("clock-lanes", 4),
++		{}
++	};
++	struct camss_async_subdev csd = {};
++	unsigned int i;
++
++	KUNIT_ASSERT_EQ(test, endpoint_parse(test, props, "port@1", &csd), 0);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.bus_type, V4L2_MBUS_CSI2_DPHY);
++	KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.clk.pos, 4);
++	for (i = 0; i < ARRAY_SIZE(lanes); i++)
++		KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.data[i].pos, i);
++	camss->legacy_phy = false;
++	for (i = 0; i < ARRAY_SIZE(lanes); i++)
++		lanes[i]++;
++	props[2] = (struct property_entry)PROPERTY_ENTRY_U32("clock-lanes", 0);
++	KUNIT_ASSERT_EQ(test, endpoint_parse(test, props, "port@1", &csd), 0);
++	for (i = 0; i < ARRAY_SIZE(lanes); i++)
++		KUNIT_EXPECT_EQ(test, csd.interface.csi2.lane_cfg.data[i].pos, i);
++}
++
++static struct kunit_case endpoint_test_cases[] = {
++	KUNIT_CASE(endpoint_cphy_valid_test),
++	KUNIT_CASE_PARAM(endpoint_invalid_test, endpoint_bad_gen_params),
++	KUNIT_CASE(endpoint_dphy_test),
++	{}
++};
++
++static struct kunit_suite endpoint_test_suite = {
++	.name = "camss-endpoint",
++	.init = endpoint_test_init,
++	.test_cases = endpoint_test_cases,
++};
++kunit_test_suite(endpoint_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-video-stream-test.c b/drivers/media/platform/qcom/camss/camss-video-stream-test.c
+new file mode 100644
+index 000000000..8949dcab9
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-video-stream-test.c
+@@ -0,0 +1,215 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Exercise CAMSS stream ordering and cleanup through a real media graph. */
++#include <kunit/test.h>
++
++struct video_stream_test_ctx;
++
++struct video_stream_test_subdev {
++	struct v4l2_subdev sd;
++	struct media_pad pads[2];
++	struct video_stream_test_ctx *ctx;
++	unsigned int id;
++	int start_error;
++	int stop_error;
++};
++
++struct video_stream_test_ctx {
++	struct camss camss;
++	struct camss_video video;
++	struct media_device mdev;
++	struct media_pad pad;
++	struct video_stream_test_subdev subdev[3];
++	unsigned int calls[16];
++	unsigned int num_calls;
++};
++
++static int video_stream_test_call(struct v4l2_subdev *sd, int enable)
++{
++	struct video_stream_test_subdev *subdev =
++		container_of(sd, struct video_stream_test_subdev, sd);
++	struct video_stream_test_ctx *ctx = subdev->ctx;
++
++	if (ctx->num_calls >= ARRAY_SIZE(ctx->calls))
++		return -EOVERFLOW;
++	ctx->calls[ctx->num_calls++] = subdev->id + (enable ? 1 : 11);
++	return enable ? subdev->start_error : subdev->stop_error;
++}
++
++static const struct v4l2_subdev_video_ops video_stream_test_video_ops = {
++	.s_stream = video_stream_test_call,
++};
++
++static const struct v4l2_subdev_ops video_stream_test_ops = {
++	.video = &video_stream_test_video_ops,
++};
++
++static const struct v4l2_subdev_video_ops video_stream_test_no_stream_ops;
++static const struct v4l2_subdev_ops video_stream_test_optional_ops = {
++	.video = &video_stream_test_no_stream_ops,
++};
++
++static void video_stream_test_cleanup(void *data)
++{
++	struct video_stream_test_ctx *ctx = data;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(ctx->subdev); i++)
++		media_device_unregister_entity(&ctx->subdev[i].sd.entity);
++	media_device_unregister_entity(&ctx->video.vdev.entity);
++	media_device_cleanup(&ctx->mdev);
++	root_device_unregister(ctx->camss.dev);
++}
++
++static int video_stream_test_init(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx;
++	struct media_entity *sink;
++	unsigned int i;
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++	ctx->camss.dev = root_device_register("camss-video-stream-test");
++	if (IS_ERR(ctx->camss.dev))
++		return PTR_ERR(ctx->camss.dev);
++	ctx->video.camss = &ctx->camss;
++	ctx->video.vdev.entity.name = "test-video";
++	ctx->video.vdev.entity.function = MEDIA_ENT_F_IO_V4L;
++	media_device_init(&ctx->mdev);
++	ret = kunit_add_action_or_reset(test, video_stream_test_cleanup, ctx);
++	if (ret)
++		return ret;
++	ctx->pad.flags = MEDIA_PAD_FL_SINK;
++	sink = &ctx->video.vdev.entity;
++	ret = media_entity_pads_init(sink, 1, &ctx->pad);
++	if (ret)
++		return ret;
++	ret = media_device_register_entity(&ctx->mdev, sink);
++	if (ret)
++		return ret;
++	for (i = 0; i < ARRAY_SIZE(ctx->subdev); i++) {
++		struct video_stream_test_subdev *subdev = &ctx->subdev[i];
++		unsigned int source_pad = i == ARRAY_SIZE(ctx->subdev) - 1 ? 0 : 1;
++
++		subdev->ctx = ctx;
++		subdev->id = i;
++		v4l2_subdev_init(&subdev->sd, &video_stream_test_ops);
++		subdev->sd.dev = ctx->camss.dev;
++		snprintf(subdev->sd.name, sizeof(subdev->sd.name), "test-subdev-%u", i);
++		subdev->sd.entity.function = source_pad ? MEDIA_ENT_F_VID_IF_BRIDGE :
++							MEDIA_ENT_F_CAM_SENSOR;
++		subdev->pads[0].flags = MEDIA_PAD_FL_SINK;
++		subdev->pads[source_pad].flags = MEDIA_PAD_FL_SOURCE;
++		ret = media_entity_pads_init(&subdev->sd.entity, source_pad + 1, subdev->pads);
++		if (ret)
++			return ret;
++		ret = media_device_register_entity(&ctx->mdev, &subdev->sd.entity);
++		if (ret)
++			return ret;
++		ret = media_create_pad_link(&subdev->sd.entity, source_pad, sink, 0,
++					    MEDIA_LNK_FL_ENABLED);
++		if (ret)
++			return ret;
++		sink = &subdev->sd.entity;
++	}
++	return 0;
++}
++
++static void video_stream_success_test(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx = test->priv;
++	const unsigned int expected[] = { 1, 2, 3, 11, 12, 13 };
++	unsigned int round;
++
++	for (round = 0; round < 2; round++) {
++		ctx->num_calls = 0;
++		KUNIT_ASSERT_EQ(test, video_start_subdevices(&ctx->video), 0);
++		KUNIT_ASSERT_EQ(test, video_stop_subdevices(&ctx->video, NULL), 0);
++		KUNIT_ASSERT_EQ(test, ctx->num_calls, ARRAY_SIZE(expected));
++		KUNIT_EXPECT_MEMEQ(test, ctx->calls, expected, sizeof(expected));
++	}
++}
++
++static const unsigned int video_stream_fail_indices[] = { 0, 1, 2 };
++KUNIT_ARRAY_PARAM(video_stream_fail, video_stream_fail_indices, NULL);
++
++static void video_stream_start_failure_test(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx = test->priv;
++	unsigned int failed = *(const unsigned int *)test->param_value;
++	unsigned int i;
++
++	ctx->subdev[failed].start_error = -EIO;
++	KUNIT_EXPECT_EQ(test, video_start_subdevices(&ctx->video), -EIO);
++	KUNIT_ASSERT_EQ(test, ctx->num_calls, 2 * failed + 1);
++	for (i = 0; i <= failed; i++)
++		KUNIT_EXPECT_EQ(test, ctx->calls[i], i + 1);
++	for (i = 0; i < failed; i++)
++		KUNIT_EXPECT_EQ(test, ctx->calls[failed + 1 + i], i + 11);
++	for (i = 0; i < ARRAY_SIZE(ctx->subdev); i++)
++		KUNIT_EXPECT_FALSE(test, ctx->subdev[i].sd.s_stream_enabled);
++	ctx->subdev[failed].start_error = 0;
++	ctx->num_calls = 0;
++	KUNIT_ASSERT_EQ(test, video_start_subdevices(&ctx->video), 0);
++	KUNIT_EXPECT_EQ(test, video_stop_subdevices(&ctx->video, NULL), 0);
++	KUNIT_EXPECT_EQ(test, ctx->num_calls, 6);
++}
++
++static void video_stream_cleanup_failure_test(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx = test->priv;
++	const unsigned int expected[] = { 1, 2, 3, 11, 12 };
++
++	ctx->subdev[2].start_error = -ENOLINK;
++	ctx->subdev[0].stop_error = -ETIMEDOUT;
++	KUNIT_EXPECT_EQ(test, video_start_subdevices(&ctx->video), -ENOLINK);
++	KUNIT_ASSERT_EQ(test, ctx->num_calls, ARRAY_SIZE(expected));
++	KUNIT_EXPECT_MEMEQ(test, ctx->calls, expected, sizeof(expected));
++}
++
++static void video_stream_stop_failure_test(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx = test->priv;
++	const unsigned int expected[] = { 1, 2, 3, 11, 12, 13 };
++	unsigned int i;
++
++	KUNIT_ASSERT_EQ(test, video_start_subdevices(&ctx->video), 0);
++	ctx->subdev[0].stop_error = -ETIMEDOUT;
++	ctx->subdev[1].stop_error = -EIO;
++	/* V4L2 logs driver stop errors and clears state, but returns success. */
++	KUNIT_EXPECT_EQ(test, video_stop_subdevices(&ctx->video, NULL), 0);
++	KUNIT_ASSERT_EQ(test, ctx->num_calls, ARRAY_SIZE(expected));
++	KUNIT_EXPECT_MEMEQ(test, ctx->calls, expected, sizeof(expected));
++	for (i = 0; i < ARRAY_SIZE(ctx->subdev); i++)
++		KUNIT_EXPECT_FALSE(test, ctx->subdev[i].sd.s_stream_enabled);
++}
++
++static void video_stream_optional_callback_test(struct kunit *test)
++{
++	struct video_stream_test_ctx *ctx = test->priv;
++	const unsigned int expected[] = { 1, 3, 11, 13 };
++
++	ctx->subdev[1].sd.ops = &video_stream_test_optional_ops;
++	KUNIT_ASSERT_EQ(test, video_start_subdevices(&ctx->video), 0);
++	KUNIT_EXPECT_EQ(test, video_stop_subdevices(&ctx->video, NULL), 0);
++	KUNIT_ASSERT_EQ(test, ctx->num_calls, ARRAY_SIZE(expected));
++	KUNIT_EXPECT_MEMEQ(test, ctx->calls, expected, sizeof(expected));
++}
++
++static struct kunit_case video_stream_test_cases[] = {
++	KUNIT_CASE(video_stream_success_test),
++	KUNIT_CASE_PARAM(video_stream_start_failure_test, video_stream_fail_gen_params),
++	KUNIT_CASE(video_stream_cleanup_failure_test),
++	KUNIT_CASE(video_stream_stop_failure_test),
++	KUNIT_CASE(video_stream_optional_callback_test),
++	{}
++};
++
++static struct kunit_suite video_stream_test_suite = {
++	.name = "camss-video-stream",
++	.init = video_stream_test_init,
++	.test_cases = video_stream_test_cases,
++};
++kunit_test_suite(video_stream_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-video.c b/drivers/media/platform/qcom/camss/camss-video.c
+index 0852eb6f1..b729c9390 100644
+--- a/drivers/media/platform/qcom/camss/camss-video.c
++++ b/drivers/media/platform/qcom/camss/camss-video.c
+@@ -249,26 +249,42 @@ static int video_prepare_streaming(struct vb2_queue *q)
+ 	return ret;
+ }
+ 
+-static int video_start_streaming(struct vb2_queue *q, unsigned int count)
++/* Stop every previously started subdevice, even if one stop reports an error. */
++static int video_stop_subdevices(struct camss_video *video,
++				 struct media_entity *stop_before)
+ {
+-	struct camss_video *video = vb2_get_drv_priv(q);
+-	struct video_device *vdev = &video->vdev;
+-	struct media_entity *entity;
+-	struct media_pad *pad;
+-	struct v4l2_subdev *subdev;
+-	int ret;
++	struct media_entity *entity = &video->vdev.entity;
++	int first_error = 0;
+ 
+-	ret = video_device_pipeline_alloc_start(vdev);
+-	if (ret < 0) {
+-		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
+-		goto flush_buffers;
++	while (1) {
++		struct media_pad *pad = &entity->pads[0];
++		struct v4l2_subdev *subdev;
++		int ret;
++
++		if (!(pad->flags & MEDIA_PAD_FL_SINK))
++			break;
++		pad = media_pad_remote_pad_first(pad);
++		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
++			break;
++		entity = pad->entity;
++		if (entity == stop_before)
++			break;
++		subdev = media_entity_to_v4l2_subdev(entity);
++		/* V4L2 logs driver stop errors itself; success does not prove DMA idle. */
++		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
++		if (ret < 0 && ret != -ENOIOCTLCMD && !first_error)
++			first_error = ret;
+ 	}
++	return first_error;
++}
+ 
+-	ret = video_check_format(video);
+-	if (ret < 0)
+-		goto error;
++static int video_start_subdevices(struct camss_video *video)
++{
++	struct media_entity *entity = &video->vdev.entity;
++	struct media_pad *pad;
++	struct v4l2_subdev *subdev;
++	int ret;
+ 
+-	entity = &vdev->entity;
+ 	while (1) {
+ 		pad = &entity->pads[0];
+ 		if (!(pad->flags & MEDIA_PAD_FL_SINK))
+@@ -282,11 +298,38 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
+ 		subdev = media_entity_to_v4l2_subdev(entity);
+ 
+ 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
+-		if (ret < 0 && ret != -ENOIOCTLCMD)
+-			goto error;
++		if (ret < 0 && ret != -ENOIOCTLCMD) {
++			int err = video_stop_subdevices(video, entity);
++
++			if (err)
++				dev_err(video->camss->dev,
++					"Pipeline start cleanup failed: %d\n", err);
++			return ret;
++		}
+ 	}
+ 
+ 	return 0;
++}
++
++static int video_start_streaming(struct vb2_queue *q, unsigned int count)
++{
++	struct camss_video *video = vb2_get_drv_priv(q);
++	struct video_device *vdev = &video->vdev;
++	int ret;
++
++	ret = video_device_pipeline_alloc_start(vdev);
++	if (ret < 0) {
++		dev_err(video->camss->dev, "Failed to start media pipeline: %d\n", ret);
++		goto flush_buffers;
++	}
++
++	ret = video_check_format(video);
++	if (ret < 0)
++		goto error;
++	ret = video_start_subdevices(video);
++	if (ret < 0)
++		goto error;
++	return 0;
+ 
+ error:
+ 	video_device_pipeline_stop(vdev);
+@@ -301,30 +344,12 @@ static void video_stop_streaming(struct vb2_queue *q)
+ {
+ 	struct camss_video *video = vb2_get_drv_priv(q);
+ 	struct video_device *vdev = &video->vdev;
+-	struct media_entity *entity;
+-	struct media_pad *pad;
+-	struct v4l2_subdev *subdev;
+ 	int ret;
+ 
+-	entity = &vdev->entity;
+-	while (1) {
+-		pad = &entity->pads[0];
+-		if (!(pad->flags & MEDIA_PAD_FL_SINK))
+-			break;
+-
+-		pad = media_pad_remote_pad_first(pad);
+-		if (!pad || !is_media_entity_v4l2_subdev(pad->entity))
+-			break;
+-
+-		entity = pad->entity;
+-		subdev = media_entity_to_v4l2_subdev(entity);
+-
+-		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
+-
+-		if (ret) {
+-			dev_err(video->camss->dev, "Video pipeline stop failed: %d\n", ret);
+-			return;
+-		}
++	ret = video_stop_subdevices(video, NULL);
++	if (ret) {
++		dev_err(video->camss->dev, "Video pipeline stop failed: %d\n", ret);
++		return;
+ 	}
+ 
+ 	video_device_pipeline_stop(vdev);
+@@ -767,3 +792,7 @@ void msm_video_unregister(struct camss_video *video)
+ 	vb2_video_unregister_device(&video->vdev);
+ 	atomic_dec(&video->camss->ref_count);
+ }
++
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST)
++#include "camss-video-stream-test.c"
++#endif
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index db281bc3c..8eae39655 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -4680,33 +4680,110 @@ static const struct parent_dev_ops vfe_parent_dev_ops = {
+ 	.get_base_address = vfe_parent_dev_ops_get_base_address
+ };
+ 
++/* Validate the raw C-PHY mapping before V4L2 can replace duplicates. */
++static int camss_parse_cphy_endpoint(struct device *dev, struct fwnode_handle *ep,
++				     struct csiphy_csi2_cfg *csi2)
++{
++	u32 lanes[MSM_CSIPHY_MAX_CPHY_TRIOS], orders[MSM_CSIPHY_MAX_CPHY_TRIOS];
++	u32 used = 0;
++	int count, i, ret;
++
++	if (fwnode_property_present(ep, "clock-lanes") ||
++	    fwnode_property_present(ep, "lane-polarities") ||
++	    fwnode_property_present(ep, "clock-noncontinuous"))
++		return -EINVAL;
++	count = fwnode_property_count_u32(ep, "data-lanes");
++	if (count < 1 || count > MSM_CSIPHY_MAX_CPHY_TRIOS)
++		return -EINVAL;
++	ret = fwnode_property_read_u32_array(ep, "data-lanes", lanes, count);
++	if (ret)
++		return ret;
++	for (i = 0; i < count; i++) {
++		if (lanes[i] >= MSM_CSIPHY_MAX_CPHY_TRIOS || (used & BIT(lanes[i])))
++			return -EINVAL;
++		used |= BIT(lanes[i]);
++	}
++	if (fwnode_property_present(ep, "line-orders")) {
++		if (fwnode_property_count_u32(ep, "line-orders") != count)
++			return -EINVAL;
++		ret = fwnode_property_read_u32_array(ep, "line-orders", orders, count);
++		if (ret)
++			return ret;
++		for (i = 0; i < count; i++)
++			if (orders[i])
++				return -EOPNOTSUPP;
++	}
++	/* A calibrated count is valid only at this one link rate and 400 MHz timer. */
++	if (fwnode_property_count_u64(ep, "link-frequencies") != 1 ||
++	    fwnode_property_count_u32(ep, "qcom,cphy-settle-count") != 1)
++		return -EINVAL;
++	ret = fwnode_property_read_u64(ep, "link-frequencies", &csi2->cphy_link_freq);
++	if (ret)
++		return ret;
++	if (csiphy_2_1_2_cphy_data_rate(csi2->cphy_link_freq) < 0)
++		return -ERANGE;
++	ret = fwnode_property_read_u32(ep, "qcom,cphy-settle-count",
++				       &csi2->cphy_settle_count);
++	if (ret)
++		return ret;
++	if (!csi2->cphy_settle_count || csi2->cphy_settle_count > U16_MAX)
++		return -ERANGE;
++	csi2->lane_cfg.data = devm_kcalloc(dev, count, sizeof(*csi2->lane_cfg.data),
++					 GFP_KERNEL);
++	if (!csi2->lane_cfg.data)
++		return -ENOMEM;
++	csi2->lane_cfg.num_data = count;
++	csi2->bus_type = V4L2_MBUS_CSI2_CPHY;
++	for (i = 0; i < count; i++)
++		csi2->lane_cfg.data[i].pos = lanes[i];
++	return 0;
++}
++
+ /*
+  * camss_parse_endpoint_node - Parse port endpoint node
+- * @dev: CAMSS device
++ * @camss: CAMSS device
+  * @ep: Device endpoint to be parsed
+  * @csd: Parsed data from port endpoint node
+  *
+  * Return 0 on success or a negative error code on failure
+  */
+-static int camss_parse_endpoint_node(struct device *dev,
++static int camss_parse_endpoint_node(struct camss *camss,
+ 				     struct fwnode_handle *ep,
+-				     struct camss_async_subdev *csd,
+-				     u8 lane_base)
++				     struct camss_async_subdev *csd)
+ {
++	struct device *dev = camss->dev;
++	struct csiphy_csi2_cfg cphy = {};
+ 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
+ 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
+ 	struct v4l2_fwnode_endpoint vep = { { 0 } };
++	u8 lane_base = camss->legacy_phy ? 0 : 1;
++	u32 bus_type = 0;
+ 	unsigned int i;
+ 	int ret;
+ 
++	fwnode_property_read_u32(ep, "bus-type", &bus_type);
++	if (bus_type == V4L2_FWNODE_BUS_TYPE_CSI2_CPHY) {
++		if (camss->res->version != CAMSS_8550 || !camss->legacy_phy)
++			return -EOPNOTSUPP;
++		ret = camss_parse_cphy_endpoint(dev, ep, &cphy);
++		if (ret)
++			return ret;
++	} else if (fwnode_property_present(ep, "qcom,cphy-settle-count")) {
++		return -EINVAL;
++	}
++
+ 	ret = v4l2_fwnode_endpoint_parse(ep, &vep);
+ 	if (ret)
+ 		return ret;
+ 
+-	/*
+-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
+-	 * D-PHY is supported in the driver.
+-	 */
++	if (vep.bus_type == V4L2_MBUS_CSI2_CPHY) {
++		if (vep.base.port >= camss->res->csiphy_num)
++			return -EINVAL;
++		csd->interface.csiphy_id = vep.base.port;
++		csd->interface.csi2 = cphy;
++		return 0;
++	}
++
+ 	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
+ 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
+ 		return -EINVAL;
+@@ -4751,7 +4828,6 @@ static int camss_parse_ports(struct camss *camss)
+ {
+ 	struct device *dev = camss->dev;
+ 	struct fwnode_handle *fwnode = dev_fwnode(dev);
+-	u8 lane_base = camss->legacy_phy ? 0 : 1;
+ 	int ret;
+ 
+ 	fwnode_graph_for_each_endpoint_scoped(fwnode, ep) {
+@@ -4793,7 +4869,7 @@ static int camss_parse_ports(struct camss *camss)
+ 		if (IS_ERR(csd))
+ 			return PTR_ERR(csd);
+ 
+-		ret = camss_parse_endpoint_node(dev, ep, csd, lane_base);
++		ret = camss_parse_endpoint_node(camss, ep, csd);
+ 		if (ret < 0)
+ 			return ret;
+ 	}
+@@ -6106,6 +6182,10 @@ module_platform_driver(qcom_camss_driver);
+ #include "camss-cpas-pm-test.c"
+ #endif
+ 
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST)
++#include "camss-endpoint-test.c"
++#endif
++
+ MODULE_DESCRIPTION("Qualcomm Camera Subsystem driver");
+ MODULE_AUTHOR("Todor Tomov <todor.tomov@linaro.org>");
+ MODULE_LICENSE("GPL v2");
