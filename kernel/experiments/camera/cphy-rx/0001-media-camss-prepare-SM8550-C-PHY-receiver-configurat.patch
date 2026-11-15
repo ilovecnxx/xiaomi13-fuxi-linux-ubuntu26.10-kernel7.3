@@ -1,0 +1,387 @@
+From e4daeb8a8ed782e7184196551855658b85221e27 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 21:14:32 +0800
+Subject: [PATCH] media: camss: prepare SM8550 C-PHY receiver configuration
+
+Carry the CSI-2 bus type through the receiver link and validate C-PHY
+trios before updating CSID state. Set CSID780 PHY type bit 24 for C-PHY
+sensor input and clear the type on D-PHY or TPG transitions.
+
+Keep C-PHY endpoints rejected until the PHY and sensor stages are ready.
+Exercise link setup and RX register programming with KUnit.
+---
+ .../qcom/camss/camss-csid-gen3-test.c         |  47 ++++++
+ .../platform/qcom/camss/camss-csid-gen3.c     |   4 +
+ .../platform/qcom/camss/camss-csid-test.c     | 146 ++++++++++++++++++
+ .../media/platform/qcom/camss/camss-csid.c    |  25 ++-
+ .../media/platform/qcom/camss/camss-csid.h    |   1 +
+ .../media/platform/qcom/camss/camss-csiphy.h  |   2 +
+ drivers/media/platform/qcom/camss/camss.c     |   1 +
+ 7 files changed, 224 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c b/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
+index fb13eb5ad..6504669c5 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
+@@ -9,6 +9,10 @@ struct csid_gen3_test_ctx {
+ 	struct csid_device csid;
+ };
+ 
++static const struct camss_resources csid_gen3_test_resources = {
++	.version = CAMSS_8550,
++};
++
+ static int csid_gen3_test_init(struct kunit *test)
+ {
+ 	struct csid_gen3_test_ctx *ctx;
+@@ -21,6 +25,7 @@ static int csid_gen3_test_init(struct kunit *test)
+ 	if (IS_ERR(dev))
+ 		return PTR_ERR(dev);
+ 	ctx->camss.dev = dev;
++	ctx->camss.res = &csid_gen3_test_resources;
+ 	ctx->csid.camss = &ctx->camss;
+ 	ctx->csid.base = (void __iomem *)kunit_kzalloc(test, 0x1000, GFP_KERNEL);
+ 	if (!ctx->csid.base)
+@@ -85,10 +90,52 @@ static void csid_gen3_missing_ack_test(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, csid_stop_stream(&ctx->csid), -EIO);
+ }
+ 
++static void csid_gen3_cphy_rx_test(struct kunit *test)
++{
++	struct csid_gen3_test_ctx *ctx = test->priv;
++	struct csid_phy_config *phy = &ctx->csid.phy;
++
++	phy->bus_type = V4L2_MBUS_CSI2_CPHY;
++	phy->lane_cnt = 3;
++	phy->lane_assign = 0x210;
++	phy->csiphy_id = 1;
++	__csid_configure_rx(&ctx->csid, phy, 4);
++	/* CSID780: type[24], PHY[23:20], mapping[19:4], count[1:0]. */
++	KUNIT_EXPECT_EQ(test, readl(ctx->csid.base + CSID_CSI2_RX_CFG0), 0x01202102U);
++	KUNIT_EXPECT_EQ(test, readl(ctx->csid.base + CSID_CSI2_RX_CFG1), 5U);
++
++	/* A later D-PHY link must clear the previous C-PHY mode. */
++	phy->bus_type = V4L2_MBUS_CSI2_DPHY;
++	phy->lane_cnt = 4;
++	phy->lane_assign = 0x3210;
++	__csid_configure_rx(&ctx->csid, phy, 0);
++	KUNIT_EXPECT_EQ(test, readl(ctx->csid.base + CSID_CSI2_RX_CFG0), 0x00232103U);
++	KUNIT_EXPECT_EQ(test, readl(ctx->csid.base + CSID_CSI2_RX_CFG1), 1U);
++}
++
++static void csid_gen3_tpg_rx_test(struct kunit *test)
++{
++	struct csid_gen3_test_ctx *ctx = test->priv;
++	struct tpg_device tpg = {};
++	struct csid_phy_config *phy = &ctx->csid.phy;
++
++	tpg.testgen.mode = TPG_PAYLOAD_MODE_COLOR_BARS;
++	ctx->camss.tpg = &tpg;
++	ctx->csid.tpg_linked = true;
++	phy->bus_type = V4L2_MBUS_CSI2_CPHY;
++	phy->lane_cnt = 4;
++	phy->lane_assign = 0x3210;
++	__csid_configure_rx(&ctx->csid, phy, 0);
++	KUNIT_EXPECT_EQ(test, readl(ctx->csid.base + CSID_CSI2_RX_CFG0), 0x18032103U);
++	ctx->camss.tpg = NULL;
++}
++
+ static struct kunit_case csid_gen3_test_cases[] = {
+ 	KUNIT_CASE(csid_gen3_start_reset_test),
+ 	KUNIT_CASE(csid_gen3_stop_reset_test),
+ 	KUNIT_CASE(csid_gen3_missing_ack_test),
++	KUNIT_CASE(csid_gen3_cphy_rx_test),
++	KUNIT_CASE(csid_gen3_tpg_rx_test),
+ 	{}
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-gen3.c b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+index 42fa4e8a7..84164ed78 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen3.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+@@ -66,6 +66,7 @@
+ #define		CSI2_RX_CFG0_VC_MODE		3
+ #define		CSI2_RX_CFG0_DL0_INPUT_SEL	4
+ #define		CSI2_RX_CFG0_PHY_NUM_SEL	20
++#define		CSI2_RX_CFG0_PHY_TYPE_CPHY	BIT(24)
+ #define		CSI2_RX_CFG0_TPG_MUX_EN		BIT(27)
+ #define		CSI2_RX_CFG0_TPG_MUX_SEL	GENMASK(29, 28)
+ 
+@@ -122,6 +123,9 @@ static void __csid_configure_rx(struct csid_device *csid,
+ 		val |= FIELD_PREP(CSI2_RX_CFG0_TPG_MUX_SEL, phy->csiphy_id + 1);
+ 		val |= CSI2_RX_CFG0_TPG_MUX_EN;
+ 	} else {
++		if (camss->res->version == CAMSS_8550 &&
++		    phy->bus_type == V4L2_MBUS_CSI2_CPHY)
++			val |= CSI2_RX_CFG0_PHY_TYPE_CPHY;
+ 		val |= (phy->csiphy_id + CSI2_RX_CFG0_PHY_SEL_BASE_IDX)
+ 			<< CSI2_RX_CFG0_PHY_NUM_SEL;
+ 	}
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-test.c b/drivers/media/platform/qcom/camss/camss-csid-test.c
+index ea7d885d7..1cb7296fe 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-test.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-test.c
+@@ -6,6 +6,12 @@
+ struct csid_power_test_ctx {
+ 	struct camss camss;
+ 	struct csid_device csid;
++	struct camss_resources resources;
++	struct csiphy_device csiphy;
++	struct csiphy_csi2_cfg csi2;
++	struct csiphy_lane lanes[4];
++	struct media_pad sink;
++	struct media_pad source;
+ 	unsigned int gets;
+ 	unsigned int puts;
+ 	unsigned int resumes;
+@@ -100,6 +106,8 @@ static int csid_power_test_init(struct kunit *test)
+ 		return PTR_ERR(dev);
+ 	dev_set_drvdata(dev, ctx);
+ 	ctx->camss.dev = dev;
++	ctx->resources.version = CAMSS_8550;
++	ctx->camss.res = &ctx->resources;
+ 	ctx->csid.camss = &ctx->camss;
+ 	ctx->csid.res = &csid_test_resources;
+ 	v4l2_set_subdevdata(&ctx->csid.subdev, &ctx->csid);
+@@ -176,12 +184,150 @@ static void csid_stream_stop_failure_test(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, ctx->stops, 0U);
+ }
+ 
++static int csid_test_init_link(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	int ret;
++
++	v4l2_subdev_init(&ctx->csid.subdev, &csid_v4l2_ops);
++	v4l2_set_subdevdata(&ctx->csid.subdev, &ctx->csid);
++	v4l2_subdev_init(&ctx->csiphy.subdev, &csid_v4l2_ops);
++	v4l2_set_subdevdata(&ctx->csiphy.subdev, &ctx->csiphy);
++	/* No media_device registration: initialize the empty graph explicitly. */
++	INIT_LIST_HEAD(&ctx->csid.subdev.entity.links);
++	INIT_LIST_HEAD(&ctx->csiphy.subdev.entity.links);
++	ctx->csiphy.subdev.grp_id = CSIPHY_GRP_ID;
++	ctx->sink.flags = MEDIA_PAD_FL_SINK;
++	ctx->source.flags = MEDIA_PAD_FL_SOURCE;
++	ret = media_entity_pads_init(&ctx->csid.subdev.entity, 1, &ctx->sink);
++	if (ret)
++		return ret;
++	ret = media_entity_pads_init(&ctx->csiphy.subdev.entity, 1, &ctx->source);
++	if (ret)
++		return ret;
++	ctx->csiphy.id = 1;
++	ctx->csiphy.cfg.csi2 = &ctx->csi2;
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_CPHY;
++	ctx->csi2.lane_cfg.data = ctx->lanes;
++	ctx->csi2.lane_cfg.num_data = 3;
++	ctx->lanes[0].pos = 2;
++	ctx->lanes[1].pos = 0;
++	ctx->lanes[2].pos = 1;
++	ctx->lanes[3].pos = 3;
++	return 0;
++}
++
++static int csid_test_enable_link(struct csid_power_test_ctx *ctx)
++{
++	return csid_link_setup(&ctx->csid.subdev.entity, &ctx->sink,
++			       &ctx->source, MEDIA_LNK_FL_ENABLED);
++}
++
++static void csid_cphy_link_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++
++	KUNIT_ASSERT_EQ(test, csid_test_init_link(test), 0);
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.bus_type, V4L2_MBUS_CSI2_CPHY);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_cnt, 3);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_assign, 0x102U);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.csiphy_id, 1);
++	KUNIT_EXPECT_FALSE(test, ctx->csid.tpg_linked);
++
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_DPHY;
++	ctx->csi2.lane_cfg.num_data = 4;
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.bus_type, V4L2_MBUS_CSI2_DPHY);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_cnt, 4);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_assign, 0x3102U);
++}
++
++static void csid_cphy_invalid_count_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	struct csid_phy_config previous;
++	static const int counts[] = { 0, -1, 4 };
++	unsigned int i;
++
++	KUNIT_ASSERT_EQ(test, csid_test_init_link(test), 0);
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	previous = ctx->csid.phy;
++	for (i = 0; i < ARRAY_SIZE(counts); i++) {
++		ctx->csi2.lane_cfg.num_data = counts[i];
++		KUNIT_EXPECT_EQ(test, csid_test_enable_link(ctx), -EINVAL);
++		KUNIT_EXPECT_MEMEQ(test, &ctx->csid.phy, &previous, sizeof(previous));
++	}
++	ctx->csi2.lane_cfg.num_data = 3;
++	ctx->csi2.lane_cfg.data = NULL;
++	KUNIT_EXPECT_EQ(test, csid_test_enable_link(ctx), -EINVAL);
++	KUNIT_EXPECT_MEMEQ(test, &ctx->csid.phy, &previous, sizeof(previous));
++}
++
++static void csid_cphy_invalid_mapping_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	struct csid_phy_config previous;
++	static const u8 positions[] = { 0, 1, 3, 255 };
++	unsigned int i;
++
++	KUNIT_ASSERT_EQ(test, csid_test_init_link(test), 0);
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	previous = ctx->csid.phy;
++	for (i = 0; i < ARRAY_SIZE(positions); i++) {
++		ctx->lanes[0].pos = positions[i];
++		KUNIT_EXPECT_EQ(test, csid_test_enable_link(ctx), -EINVAL);
++		KUNIT_EXPECT_MEMEQ(test, &ctx->csid.phy, &previous, sizeof(previous));
++	}
++}
++
++static void csid_cphy_unsupported_soc_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	struct csid_phy_config previous;
++
++	KUNIT_ASSERT_EQ(test, csid_test_init_link(test), 0);
++	previous = ctx->csid.phy;
++	ctx->resources.version = CAMSS_8250;
++	KUNIT_EXPECT_EQ(test, csid_test_enable_link(ctx), -EOPNOTSUPP);
++	KUNIT_EXPECT_MEMEQ(test, &ctx->csid.phy, &previous, sizeof(previous));
++}
++
++static void csid_cphy_to_tpg_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	static const struct tpg_subdev_resources res = { .lane_cnt = 4 };
++	struct tpg_device *tpg;
++
++	KUNIT_ASSERT_EQ(test, csid_test_init_link(test), 0);
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	tpg = kunit_kzalloc(test, sizeof(*tpg), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, tpg);
++	tpg->id = 2;
++	tpg->res = &res;
++	v4l2_subdev_init(&tpg->subdev, &csid_v4l2_ops);
++	v4l2_set_subdevdata(&tpg->subdev, tpg);
++	tpg->subdev.grp_id = TPG_GRP_ID;
++	ctx->source.entity = &tpg->subdev.entity;
++	KUNIT_ASSERT_EQ(test, csid_test_enable_link(ctx), 0);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.bus_type, V4L2_MBUS_CSI2_DPHY);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_cnt, 4);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.lane_assign, 0x3210U);
++	KUNIT_EXPECT_EQ(test, ctx->csid.phy.csiphy_id, 2);
++	KUNIT_EXPECT_TRUE(test, ctx->csid.tpg_linked);
++}
++
+ static struct kunit_case csid_power_test_cases[] = {
+ 	KUNIT_CASE(csid_parent_failure_test),
+ 	KUNIT_CASE(csid_disabled_pm_test),
+ 	KUNIT_CASE(csid_resume_failure_test),
+ 	KUNIT_CASE(csid_stream_stop_restart_test),
+ 	KUNIT_CASE(csid_stream_stop_failure_test),
++	KUNIT_CASE(csid_cphy_link_test),
++	KUNIT_CASE(csid_cphy_invalid_count_test),
++	KUNIT_CASE(csid_cphy_invalid_mapping_test),
++	KUNIT_CASE(csid_cphy_unsupported_soc_test),
++	KUNIT_CASE(csid_cphy_to_tpg_test),
+ 	{}
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index 194cdbc3b..b16306eda 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -1277,6 +1277,7 @@ static int csid_link_setup(struct media_entity *entity,
+ 		if (sd->grp_id == TPG_GRP_ID) {
+ 			tpg = v4l2_get_subdevdata(sd);
+ 
++			csid->phy.bus_type = V4L2_MBUS_CSI2_DPHY;
+ 			csid->phy.lane_cnt = tpg->res->lane_cnt;
+ 			csid->phy.csiphy_id = tpg->id;
+ 			csid->phy.lane_assign = csid_get_lane_assign(NULL, csid->phy.lane_cnt);
+@@ -1289,9 +1290,29 @@ static int csid_link_setup(struct media_entity *entity,
+ 			if (!csiphy->cfg.csi2)
+ 				return -EPERM;
+ 
+-			csid->phy.csiphy_id = csiphy->id;
+-
+ 			lane_cfg = &csiphy->cfg.csi2->lane_cfg;
++			if (csiphy->cfg.csi2->bus_type == V4L2_MBUS_CSI2_CPHY) {
++				unsigned int used = 0;
++				int i;
++
++				if (csid->camss->res->version != CAMSS_8550)
++					return -EOPNOTSUPP;
++				if (!lane_cfg->data || lane_cfg->num_data < 1 ||
++				    lane_cfg->num_data > MSM_CSIPHY_MAX_CPHY_TRIOS)
++					return -EINVAL;
++
++				for (i = 0; i < lane_cfg->num_data; i++) {
++					u8 pos = lane_cfg->data[i].pos;
++
++					if (pos >= MSM_CSIPHY_MAX_CPHY_TRIOS ||
++					    (used & BIT(pos)))
++						return -EINVAL;
++					used |= BIT(pos);
++				}
++			}
++
++			csid->phy.bus_type = csiphy->cfg.csi2->bus_type;
++			csid->phy.csiphy_id = csiphy->id;
+ 			csid->phy.lane_cnt = lane_cfg->num_data;
+ 			csid->phy.lane_assign = csid_get_lane_assign(lane_cfg, lane_cfg->num_data);
+ 			csid->tpg_linked = false;
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.h b/drivers/media/platform/qcom/camss/camss-csid.h
+index 25583a6b7..25b0c8aeb 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.h
++++ b/drivers/media/platform/qcom/camss/camss-csid.h
+@@ -65,6 +65,7 @@ struct csid_testgen_config {
+ };
+ 
+ struct csid_phy_config {
++	enum v4l2_mbus_type bus_type;
+ 	u8 csiphy_id;
+ 	u8 lane_cnt;
+ 	u32 lane_assign;
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.h b/drivers/media/platform/qcom/camss/camss-csiphy.h
+index 8c3319f2c..12d973add 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.h
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.h
+@@ -22,6 +22,7 @@
+ #define MSM_CSIPHY_PAD_SRC 1
+ #define MSM_CSIPHY_PADS_NUM 2
+ #define MSM_CSIPHY_MAX_DATA_LANE 4
++#define MSM_CSIPHY_MAX_CPHY_TRIOS 3
+ 
+ #define CSIPHY_GRP_ID 1
+ 
+@@ -43,6 +44,7 @@ struct csiphy_lanes_cfg {
+ };
+ 
+ struct csiphy_csi2_cfg {
++	enum v4l2_mbus_type bus_type;
+ 	struct csiphy_lanes_cfg lane_cfg;
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index baeb4b7dc..5f602d358 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -4706,6 +4706,7 @@ static int camss_parse_endpoint_node(struct device *dev,
+ 	}
+ 
+ 	csd->interface.csiphy_id = vep.base.port;
++	csd->interface.csi2.bus_type = vep.bus_type;
+ 
+ 	mipi_csi2 = &vep.bus.mipi_csi2;
+ 	lncfg->clk.pos = mipi_csi2->clock_lane;
+-- 
+2.55.0
+

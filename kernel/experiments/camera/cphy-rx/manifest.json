@@ -1,0 +1,36 @@
+{
+  "status": "experimental-host-tested-receiver-preparation",
+  "base_manifest": "../cpas-order/manifest.json",
+  "base_manifest_sha256": "97008dbda4188c7cfc0b03a321089c1e4d9d990757da7f25d2dffb0dc2ebe408",
+  "base_commit": "cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72",
+  "base_tree": "edfabc4cd0cf8c50b5578e85db8487b9080e17e8",
+  "source_commit": "e4daeb8a8ed782e7184196551855658b85221e27",
+  "result_tree": "93df2c73e084c2a85c94ab80892b875ca50543d6",
+  "source_date_epoch": 1794748526,
+  "patches": [
+    {
+      "file": "0001-media-camss-prepare-SM8550-C-PHY-receiver-configurat.patch",
+      "sha256": "34156c0897787567c5d9f3cb9edc228127be908193e211170401f7ee3c6cca39"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 45,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kunit_added": 7,
+    "kasan": true,
+    "debug_mutexes": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 0,
+    "checkpatch_options": "--no-tree --no-signoff",
+    "patch_reconstruction_tree_verified": true,
+    "device_tested": false,
+    "cphy_endpoint_enabled": false,
+    "imx800_driver_added": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/主摄C-PHY接收配置-20261115.md"
+  }
+}
