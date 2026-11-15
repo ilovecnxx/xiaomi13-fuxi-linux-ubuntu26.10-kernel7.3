@@ -1,0 +1,51 @@
+{
+  "status": "experimental-host-tested-imx800-power-identity",
+  "base_manifest": "../cphy-stream/manifest.json",
+  "base_manifest_sha256": "f84d348ea43f5956aa30ff4d26abd69dd928db5585dea6476dbc53de9435570e",
+  "base_commit": "e2fbde80b361479aec65e7e254910f6b18d41dbf",
+  "base_tree": "f2d07d0d36ce1b78090d54ddb53cedf154724573",
+  "source_commit": "9fc0f4316bc398ca0be035a4d0d71b71f6138701",
+  "result_tree": "9b6f88a7dedad3f122a48f4e827f97b0d0f2623e",
+  "source_date_epoch": 1794754552,
+  "patches": [
+    {
+      "file": "0001-dt-bindings-media-describe-fuxi-IMX800-identity-stag.patch",
+      "sha256": "7a5f464b3856bcc052522e217e6821342d9bb2b88ba9c2b102a2337e8c6b91ab"
+    },
+    {
+      "file": "0002-media-i2c-add-fuxi-IMX800-power-and-identity-foundat.patch",
+      "sha256": "2da3a3c4f93eb33ca498036ade3b181526b19ade86adc5d8fe33745e28201b85"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": [
+      "drivers/media/i2c/fuxi-imx800.o",
+      "qcom/sm8550-xiaomi-fuxi-imx800-id.dtb"
+    ],
+    "kunit_passed": 148,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kunit_added": 23,
+    "kunit_config": "kunit.config",
+    "kasan": true,
+    "debug_mutexes": true,
+    "dt_binding_check_passed": true,
+    "dtb_schema_check_passed": true,
+    "dt_schema": "media/i2c/xiaomi,fuxi-imx800.yaml",
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 2,
+    "checkpatch_warning_review": "One new-file MAINTAINERS reminder per patch; this board-specific stage remains an experiment without upstream maintainership established",
+    "checkpatch_options": "--no-tree --no-signoff",
+    "patch_reconstruction_tree_verified": true,
+    "manifest_ancestry_verified": 16,
+    "ancestry_patch_hashes_verified": 28,
+    "device_tested": false,
+    "sensor_register_writes": false,
+    "v4l2_capture_interface": false,
+    "imx800_power_identity_driver_added": true,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/主摄上电与身份-20261115.md"
+  }
+}

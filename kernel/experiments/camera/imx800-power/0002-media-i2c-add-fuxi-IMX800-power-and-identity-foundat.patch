@@ -1,0 +1,645 @@
+From 9fc0f4316bc398ca0be035a4d0d71b71f6138701 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 22:55:52 +0800
+Subject: [PATCH 2/2] media: i2c: add fuxi IMX800 power and identity foundation
+
+Implement the fuxi module's ordered power sequence and masked identity
+check without sensor register writes or CAMSS access. Track each acquired
+resource so failed startup can unwind and failed shutdown can retain its
+reference for cleanup retry without a second enable.
+
+Add an identity-only DT variant with the other camera clients disabled.
+Exercise the shared sequencer with per-step failures and repeated cycles
+in KUnit. These tests do not establish device power or capture acceptance.
+
+---
+ arch/arm64/boot/dts/qcom/Makefile             |   1 +
+ .../dts/qcom/sm8550-xiaomi-fuxi-imx800-id.dts |  49 ++++
+ drivers/media/i2c/Kconfig                     |  20 ++
+ drivers/media/i2c/Makefile                    |   2 +
+ drivers/media/i2c/fuxi-imx800-power.h         | 105 +++++++++
+ drivers/media/i2c/fuxi-imx800-test.c          | 169 ++++++++++++++
+ drivers/media/i2c/fuxi-imx800.c               | 214 ++++++++++++++++++
+ 7 files changed, 560 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-imx800-id.dts
+ create mode 100644 drivers/media/i2c/fuxi-imx800-power.h
+ create mode 100644 drivers/media/i2c/fuxi-imx800-test.c
+ create mode 100644 drivers/media/i2c/fuxi-imx800.c
+
+diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
+index 60248a929..921d78f1f 100644
+--- a/arch/arm64/boot/dts/qcom/Makefile
++++ b/arch/arm64/boot/dts/qcom/Makefile
+@@ -439,6 +439,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-hdk.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-mtp.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-camera.dtb
++dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-imx800-id.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-ov13b10.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-xiaomi-fuxi-sleep.dtb
+ dtb-$(CONFIG_ARCH_QCOM)	+= sm8550-qrd.dtb
+diff --git a/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-imx800-id.dts b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-imx800-id.dts
+new file mode 100644
+index 000000000..c43c438b2
+--- /dev/null
++++ b/arch/arm64/boot/dts/qcom/sm8550-xiaomi-fuxi-imx800-id.dts
+@@ -0,0 +1,49 @@
++// SPDX-License-Identifier: BSD-3-Clause
++/* Main-camera identity only: no CAMSS or other camera power clients. */
++
++#include "sm8550-xiaomi-fuxi-camera.dts"
++
++&cam0_power {
++	status = "disabled";
++};
++
++&cam1_power {
++	status = "disabled";
++};
++
++&cam2_power {
++	status = "disabled";
++};
++
++&cam3_power {
++	status = "disabled";
++};
++
++&cci1 {
++	status = "disabled";
++};
++
++&camss {
++	status = "disabled";
++};
++
++&cci0_i2c1 {
++	camera-sensor@10 {
++		compatible = "xiaomi,fuxi-imx800";
++		reg = <0x10>;
++		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
++		clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
++		assigned-clock-rates = <19200000>;
++		reset-gpios = <&tlmm 118 GPIO_ACTIVE_LOW>;
++		pinctrl-0 = <&cam_mclk2_default>;
++		pinctrl-names = "default";
++		bob2-supply = <&vreg_bob2>;
++		vaf-supply = <&vreg_l4m_2p8>;
++		custom2-supply = <&vreg_l7m_2p9>;
++		vana-supply = <&cam_wide_avdd1>;
++		custom1-supply = <&cam_wide_avdd2>;
++		vdig-supply = <&vreg_l2m_1p056>;
++		vio-supply = <&vreg_l2c_1p8>;
++	};
++};
+diff --git a/drivers/media/i2c/Kconfig b/drivers/media/i2c/Kconfig
+index 11c302525..d331b322d 100644
+--- a/drivers/media/i2c/Kconfig
++++ b/drivers/media/i2c/Kconfig
+@@ -332,6 +332,26 @@ config VIDEO_IMX678
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called imx678.
+ 
++config VIDEO_FUXI_IMX800
++	tristate "Xiaomi fuxi IMX800 power and identity bring-up"
++	depends on GPIOLIB && PM
++	select REGMAP_I2C
++	help
++	  Experimental fuxi board power sequence and strict IMX800 identity
++	  check. The sensor is powered off after probing. This stage does not
++	  provide a V4L2 capture interface or write sensor registers.
++	  To build as a module, choose M; the module is called fuxi-imx800.
++
++config VIDEO_FUXI_IMX800_KUNIT_TEST
++	tristate "KUnit tests for fuxi IMX800 power sequence" if !KUNIT_ALL_TESTS
++	depends on KUNIT
++	default KUNIT_ALL_TESTS
++	help
++	  Test ordered power-up, reverse cleanup, retained references after
++	  disable failures and the vendor-masked sensor identity check.
++	  No camera hardware is required. These tests do not establish actual
++	  regulator, clock, reset or I2C behavior on the device.
++
+ config VIDEO_MAX9271_LIB
+ 	tristate
+ 
+diff --git a/drivers/media/i2c/Makefile b/drivers/media/i2c/Makefile
+index 59e31af45..177c10777 100644
+--- a/drivers/media/i2c/Makefile
++++ b/drivers/media/i2c/Makefile
+@@ -65,6 +65,8 @@ obj-$(CONFIG_VIDEO_IMX415) += imx415.o
+ obj-$(CONFIG_VIDEO_IMX471) += imx471.o
+ obj-$(CONFIG_VIDEO_IMX576) += imx576.o
+ obj-$(CONFIG_VIDEO_IMX678) += imx678.o
++obj-$(CONFIG_VIDEO_FUXI_IMX800) += fuxi-imx800.o
++obj-$(CONFIG_VIDEO_FUXI_IMX800_KUNIT_TEST) += fuxi-imx800-test.o
+ obj-$(CONFIG_VIDEO_IR_I2C) += ir-kbd-i2c.o
+ obj-$(CONFIG_VIDEO_ISL7998X) += isl7998x.o
+ obj-$(CONFIG_VIDEO_IT6625) += it6625.o
+diff --git a/drivers/media/i2c/fuxi-imx800-power.h b/drivers/media/i2c/fuxi-imx800-power.h
+new file mode 100644
+index 000000000..90927166e
+--- /dev/null
++++ b/drivers/media/i2c/fuxi-imx800-power.h
+@@ -0,0 +1,105 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef FUXI_IMX800_POWER_H
++#define FUXI_IMX800_POWER_H
++
++#include <linux/bits.h>
++#include <linux/errno.h>
++#include <linux/types.h>
++
++/* Ordered fuxi module power sequence; MCLK is deliberately between rails. */
++enum fuxi_imx800_step {
++	IMX800_BOB2_VOLTAGE,
++	IMX800_BOB2,
++	IMX800_VAF,
++	IMX800_CUSTOM2,
++	IMX800_MCLK,
++	IMX800_VANA,
++	IMX800_CUSTOM1,
++	IMX800_VDIG,
++	IMX800_VIO,
++	IMX800_RESET_RELEASE,
++	IMX800_NUM_STEPS,
++};
++
++#define IMX800_POWERED GENMASK(IMX800_NUM_STEPS - 1, 0)
++
++struct fuxi_imx800_power {
++	unsigned long active;
++	int cleanup_error;
++	void *context;
++	int (*set)(void *context, enum fuxi_imx800_step step, bool enable);
++	void (*wait_ms)(void *context, unsigned int ms);
++};
++
++static inline bool fuxi_imx800_id_matches(u16 id)
++{
++	/* Vendor probe compares (id & 0xff00) >> 8 with 8. */
++	return (id & 0xff00) == 0x0800;
++}
++
++static inline int fuxi_imx800_power_off(struct fuxi_imx800_power *power)
++{
++	static const unsigned int delay_ms[IMX800_NUM_STEPS] = {
++		[IMX800_BOB2] = 1,
++		[IMX800_VAF] = 10,
++		[IMX800_CUSTOM2] = 5,
++	};
++	int first_error = 0;
++	int step, ret;
++
++	for (step = IMX800_NUM_STEPS - 1; step >= 0; step--) {
++		if (!(power->active & BIT(step)))
++			continue;
++		/* Retain the voltage request while any power reference survives. */
++		if (step == IMX800_BOB2_VOLTAGE &&
++		    power->active != BIT(IMX800_BOB2_VOLTAGE))
++			continue;
++
++		ret = power->set(power->context, step, false);
++		if (ret) {
++			if (!first_error)
++				first_error = ret;
++		} else {
++			power->active &= ~BIT(step);
++		}
++		if (delay_ms[step])
++			power->wait_ms(power->context, delay_ms[step]);
++	}
++
++	power->cleanup_error = first_error;
++	return first_error;
++}
++
++static inline int fuxi_imx800_power_on(struct fuxi_imx800_power *power)
++{
++	static const unsigned int delay_ms[IMX800_NUM_STEPS] = {
++		[IMX800_BOB2] = 2,
++		[IMX800_VAF] = 10,
++		[IMX800_CUSTOM2] = 5,
++		[IMX800_MCLK] = 2,
++		[IMX800_RESET_RELEASE] = 20,
++	};
++	int step, ret;
++
++	if (power->active == IMX800_POWERED)
++		return 0;
++	/* A failed disable retains its reference; never enable it a second time. */
++	if (power->active)
++		return -EBUSY;
++
++	power->cleanup_error = 0;
++	for (step = 0; step < IMX800_NUM_STEPS; step++) {
++		ret = power->set(power->context, step, true);
++		if (ret) {
++			fuxi_imx800_power_off(power);
++			return ret;
++		}
++		power->active |= BIT(step);
++		if (delay_ms[step])
++			power->wait_ms(power->context, delay_ms[step]);
++	}
++
++	return 0;
++}
++
++#endif
+diff --git a/drivers/media/i2c/fuxi-imx800-test.c b/drivers/media/i2c/fuxi-imx800-test.c
+new file mode 100644
+index 000000000..95c0d7665
+--- /dev/null
++++ b/drivers/media/i2c/fuxi-imx800-test.c
+@@ -0,0 +1,169 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include <kunit/test.h>
++#include <linux/module.h>
++
++#include "fuxi-imx800-power.h"
++
++struct imx800_test_context {
++	int events[128];
++	unsigned int count;
++	int fail_enable;
++	unsigned long fail_disable;
++	unsigned long enabled;
++	struct kunit *test;
++};
++
++static int imx800_test_set(void *data, enum fuxi_imx800_step step, bool enable)
++{
++	struct imx800_test_context *ctx = data;
++
++	ctx->events[ctx->count++] = enable ? step + 1 : -(step + 1);
++	if (enable) {
++		KUNIT_EXPECT_FALSE(ctx->test, ctx->enabled & BIT(step));
++		if (ctx->fail_enable == step)
++			return -EIO;
++		ctx->enabled |= BIT(step);
++	} else {
++		KUNIT_EXPECT_TRUE(ctx->test, ctx->enabled & BIT(step));
++		if (ctx->fail_disable & BIT(step))
++			return -ETIMEDOUT;
++		ctx->enabled &= ~BIT(step);
++	}
++	return 0;
++}
++
++static void imx800_test_wait(void *data, unsigned int ms)
++{
++	struct imx800_test_context *ctx = data;
++
++	ctx->events[ctx->count++] = 100 + ms;
++}
++
++static struct fuxi_imx800_power imx800_test_power(struct imx800_test_context *ctx,
++						struct kunit *test)
++{
++	ctx->fail_enable = -1;
++	ctx->test = test;
++	return (struct fuxi_imx800_power) {
++		.context = ctx,
++		.set = imx800_test_set,
++		.wait_ms = imx800_test_wait,
++	};
++}
++
++static void imx800_order_and_reopen_test(struct kunit *test)
++{
++	static const int expected[] = {
++		1, 2, 102, 3, 110, 4, 105, 5, 102, 6, 7, 8, 9, 10, 120,
++		-10, -9, -8, -7, -6, -5, -4, 105, -3, 110, -2, 101, -1,
++	};
++	struct imx800_test_context ctx = { };
++	struct fuxi_imx800_power power = imx800_test_power(&ctx, test);
++	int round, i;
++
++	for (round = 0; round < 20; round++) {
++		ctx.count = 0;
++		KUNIT_ASSERT_EQ(test, fuxi_imx800_power_on(&power), 0);
++		KUNIT_EXPECT_EQ(test, power.active, IMX800_POWERED);
++		KUNIT_EXPECT_EQ(test, fuxi_imx800_power_on(&power), 0);
++		KUNIT_ASSERT_EQ(test, fuxi_imx800_power_off(&power), 0);
++		KUNIT_EXPECT_EQ(test, power.active, 0UL);
++		KUNIT_EXPECT_EQ(test, ctx.enabled, 0UL);
++		KUNIT_ASSERT_EQ(test, ctx.count, ARRAY_SIZE(expected));
++		for (i = 0; i < ARRAY_SIZE(expected); i++)
++			KUNIT_EXPECT_EQ(test, ctx.events[i], expected[i]);
++		KUNIT_EXPECT_EQ(test, fuxi_imx800_power_off(&power), 0);
++		KUNIT_EXPECT_EQ(test, ctx.count, ARRAY_SIZE(expected));
++	}
++}
++
++static void imx800_enable_failure_test(struct kunit *test)
++{
++	struct imx800_test_context ctx = { };
++	struct fuxi_imx800_power power = imx800_test_power(&ctx, test);
++	int failed_step = *(int *)test->param_value;
++	int i;
++
++	ctx.fail_enable = failed_step;
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_on(&power), -EIO);
++	KUNIT_EXPECT_EQ(test, power.active, 0UL);
++	KUNIT_EXPECT_EQ(test, ctx.enabled, 0UL);
++	KUNIT_EXPECT_EQ(test, power.cleanup_error, 0);
++	for (i = 0; i < ctx.count; i++)
++		if (ctx.events[i] > 0 && ctx.events[i] < 100)
++			KUNIT_EXPECT_LE(test, ctx.events[i], failed_step + 1);
++	ctx.fail_enable = -1;
++	KUNIT_ASSERT_EQ(test, fuxi_imx800_power_on(&power), 0);
++	KUNIT_ASSERT_EQ(test, fuxi_imx800_power_off(&power), 0);
++}
++
++static void imx800_disable_failure_test(struct kunit *test)
++{
++	struct imx800_test_context ctx = { };
++	struct fuxi_imx800_power power = imx800_test_power(&ctx, test);
++	int failed_step = *(int *)test->param_value;
++	unsigned long retained = BIT(failed_step) | BIT(IMX800_BOB2_VOLTAGE);
++	unsigned int count;
++
++	KUNIT_ASSERT_EQ(test, fuxi_imx800_power_on(&power), 0);
++	ctx.fail_disable = BIT(failed_step);
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_off(&power), -ETIMEDOUT);
++	KUNIT_EXPECT_EQ(test, power.active, retained);
++	KUNIT_EXPECT_EQ(test, ctx.enabled, retained);
++	count = ctx.count;
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_on(&power), -EBUSY);
++	KUNIT_EXPECT_EQ(test, ctx.count, count);
++	ctx.fail_disable = 0;
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_off(&power), 0);
++	KUNIT_EXPECT_EQ(test, power.active, 0UL);
++	KUNIT_EXPECT_EQ(test, ctx.enabled, 0UL);
++	KUNIT_ASSERT_EQ(test, fuxi_imx800_power_on(&power), 0);
++	KUNIT_ASSERT_EQ(test, fuxi_imx800_power_off(&power), 0);
++}
++
++static void imx800_cleanup_failure_preserves_start_error_test(struct kunit *test)
++{
++	struct imx800_test_context ctx = { };
++	struct fuxi_imx800_power power = imx800_test_power(&ctx, test);
++
++	ctx.fail_enable = IMX800_MCLK;
++	ctx.fail_disable = BIT(IMX800_VAF) | BIT(IMX800_CUSTOM2);
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_on(&power), -EIO);
++	KUNIT_EXPECT_EQ(test, power.cleanup_error, -ETIMEDOUT);
++	KUNIT_EXPECT_EQ(test, power.active, ctx.fail_disable | BIT(IMX800_BOB2_VOLTAGE));
++	KUNIT_EXPECT_EQ(test, ctx.enabled, power.active);
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_on(&power), -EBUSY);
++	ctx.fail_disable = 0;
++	KUNIT_EXPECT_EQ(test, fuxi_imx800_power_off(&power), 0);
++	KUNIT_EXPECT_EQ(test, power.active, 0UL);
++}
++
++static void imx800_id_mask_test(struct kunit *test)
++{
++	KUNIT_EXPECT_TRUE(test, fuxi_imx800_id_matches(0x0800));
++	KUNIT_EXPECT_TRUE(test, fuxi_imx800_id_matches(0x08ff));
++	KUNIT_EXPECT_FALSE(test, fuxi_imx800_id_matches(0x0008));
++	KUNIT_EXPECT_FALSE(test, fuxi_imx800_id_matches(0x0000));
++	KUNIT_EXPECT_FALSE(test, fuxi_imx800_id_matches(0xffff));
++	KUNIT_EXPECT_FALSE(test, fuxi_imx800_id_matches(0x0900));
++}
++
++static const int imx800_steps[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
++KUNIT_ARRAY_PARAM(imx800_step, imx800_steps, NULL);
++
++static struct kunit_case imx800_cases[] = {
++	KUNIT_CASE(imx800_order_and_reopen_test),
++	KUNIT_CASE_PARAM(imx800_enable_failure_test, imx800_step_gen_params),
++	KUNIT_CASE_PARAM(imx800_disable_failure_test, imx800_step_gen_params),
++	KUNIT_CASE(imx800_cleanup_failure_preserves_start_error_test),
++	KUNIT_CASE(imx800_id_mask_test),
++	{ }
++};
++
++static struct kunit_suite imx800_suite = {
++	.name = "fuxi-imx800-power",
++	.test_cases = imx800_cases,
++};
++kunit_test_suite(imx800_suite);
++
++MODULE_LICENSE("GPL");
+diff --git a/drivers/media/i2c/fuxi-imx800.c b/drivers/media/i2c/fuxi-imx800.c
+new file mode 100644
+index 000000000..401d119ca
+--- /dev/null
++++ b/drivers/media/i2c/fuxi-imx800.c
+@@ -0,0 +1,214 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Fuxi IMX800 power/identity stage. No streaming or sensor register writes. */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/limits.h>
++#include <linux/module.h>
++#include <linux/pm_runtime.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++
++#include "fuxi-imx800-power.h"
++
++#define IMX800_XCLK_HZ 19200000
++#define IMX800_CHIP_ID_REG 0x0016
++
++enum fuxi_imx800_supply {
++	IMX800_SUPPLY_BOB2,
++	IMX800_SUPPLY_VAF,
++	IMX800_SUPPLY_CUSTOM2,
++	IMX800_SUPPLY_VANA,
++	IMX800_SUPPLY_CUSTOM1,
++	IMX800_SUPPLY_VDIG,
++	IMX800_SUPPLY_VIO,
++	IMX800_NUM_SUPPLIES,
++};
++
++static const char * const fuxi_imx800_supply_names[] = {
++	"bob2", "vaf", "custom2", "vana", "custom1", "vdig", "vio",
++};
++
++struct fuxi_imx800 {
++	struct device *dev;
++	struct regmap *regmap;
++	struct clk *xclk;
++	struct gpio_desc *reset;
++	struct regulator_bulk_data supplies[IMX800_NUM_SUPPLIES];
++	struct fuxi_imx800_power power;
++};
++
++static int fuxi_imx800_set_power(void *context, enum fuxi_imx800_step step,
++				 bool enable)
++{
++	static const unsigned int supply_index[IMX800_NUM_STEPS] = {
++		[IMX800_BOB2] = IMX800_SUPPLY_BOB2,
++		[IMX800_VAF] = IMX800_SUPPLY_VAF,
++		[IMX800_CUSTOM2] = IMX800_SUPPLY_CUSTOM2,
++		[IMX800_VANA] = IMX800_SUPPLY_VANA,
++		[IMX800_CUSTOM1] = IMX800_SUPPLY_CUSTOM1,
++		[IMX800_VDIG] = IMX800_SUPPLY_VDIG,
++		[IMX800_VIO] = IMX800_SUPPLY_VIO,
++	};
++	struct fuxi_imx800 *sensor = context;
++	struct regulator *supply;
++
++	if (step == IMX800_BOB2_VOLTAGE) {
++		supply = sensor->supplies[IMX800_SUPPLY_BOB2].consumer;
++		return regulator_set_voltage(supply, enable ? 3104000 : 0,
++					     enable ? 3104000 : INT_MAX);
++	}
++	if (step == IMX800_RESET_RELEASE) {
++		gpiod_set_value_cansleep(sensor->reset, !enable);
++		return 0;
++	}
++	if (step == IMX800_MCLK) {
++		if (enable)
++			return clk_prepare_enable(sensor->xclk);
++		clk_disable_unprepare(sensor->xclk);
++		return 0;
++	}
++
++	supply = sensor->supplies[supply_index[step]].consumer;
++	return enable ? regulator_enable(supply) : regulator_disable(supply);
++}
++
++static void fuxi_imx800_wait_ms(void *context, unsigned int ms)
++{
++	fsleep(ms * 1000);
++}
++
++static void fuxi_imx800_cleanup(void *context)
++{
++	struct fuxi_imx800 *sensor = context;
++	int ret;
++
++	ret = fuxi_imx800_power_off(&sensor->power);
++	if (ret)
++		dev_err(sensor->dev, "power cleanup failed: %d, retained steps %#lx\n",
++			ret, sensor->power.active);
++}
++
++static int fuxi_imx800_runtime_resume(struct device *dev)
++{
++	struct fuxi_imx800 *sensor = dev_get_drvdata(dev);
++	int ret;
++
++	ret = fuxi_imx800_power_on(&sensor->power);
++	if (ret)
++		dev_err(dev, "power sequence failed: %d (cleanup %d)\n",
++			ret, sensor->power.cleanup_error);
++	return ret;
++}
++
++static int fuxi_imx800_runtime_suspend(struct device *dev)
++{
++	struct fuxi_imx800 *sensor = dev_get_drvdata(dev);
++	int ret;
++
++	ret = fuxi_imx800_power_off(&sensor->power);
++	if (ret)
++		dev_err(dev, "power-off failed: %d, retained steps %#lx\n",
++			ret, sensor->power.active);
++	return ret;
++}
++
++static int fuxi_imx800_probe(struct i2c_client *client)
++{
++	static const struct regmap_config regmap_config = {
++		.reg_bits = 16,
++		.val_bits = 8,
++		.max_register = 0xffff,
++	};
++	struct device *dev = &client->dev;
++	struct fuxi_imx800 *sensor;
++	u8 id_bytes[2];
++	u16 id = 0;
++	int i, ret, off_ret;
++
++	sensor = devm_kzalloc(dev, sizeof(*sensor), GFP_KERNEL);
++	if (!sensor)
++		return -ENOMEM;
++	sensor->dev = dev;
++	i2c_set_clientdata(client, sensor);
++	sensor->power.context = sensor;
++	sensor->power.set = fuxi_imx800_set_power;
++	sensor->power.wait_ms = fuxi_imx800_wait_ms;
++
++	sensor->regmap = devm_regmap_init_i2c(client, &regmap_config);
++	if (IS_ERR(sensor->regmap))
++		return dev_err_probe(dev, PTR_ERR(sensor->regmap), "regmap init failed\n");
++	sensor->xclk = devm_clk_get(dev, NULL);
++	if (IS_ERR(sensor->xclk))
++		return dev_err_probe(dev, PTR_ERR(sensor->xclk), "input clock missing\n");
++	if (clk_get_rate(sensor->xclk) != IMX800_XCLK_HZ)
++		return dev_err_probe(dev, -EINVAL, "requires 19.2 MHz input clock\n");
++
++	/* Active-low reset stays asserted until the final power step. */
++	sensor->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(sensor->reset))
++		return dev_err_probe(dev, PTR_ERR(sensor->reset), "reset GPIO missing\n");
++	for (i = 0; i < IMX800_NUM_SUPPLIES; i++)
++		sensor->supplies[i].supply = fuxi_imx800_supply_names[i];
++	ret = devm_regulator_bulk_get(dev, IMX800_NUM_SUPPLIES, sensor->supplies);
++	if (ret)
++		return dev_err_probe(dev, ret, "power supplies missing\n");
++	ret = devm_add_action_or_reset(dev, fuxi_imx800_cleanup, sensor);
++	if (ret)
++		return ret;
++
++	ret = pm_runtime_set_suspended(dev);
++	if (ret)
++		return ret;
++	ret = devm_pm_runtime_enable(dev);
++	if (ret)
++		return ret;
++	ret = pm_runtime_resume_and_get(dev);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "runtime power-up failed\n");
++
++	ret = regmap_bulk_read(sensor->regmap, IMX800_CHIP_ID_REG,
++			       id_bytes, sizeof(id_bytes));
++	if (ret)
++		dev_err_probe(dev, ret, "chip ID read failed\n");
++	if (!ret) {
++		id = (id_bytes[0] << 8) | id_bytes[1];
++		if (!fuxi_imx800_id_matches(id))
++			ret = dev_err_probe(dev, -ENODEV, "unexpected chip ID %#04x\n", id);
++	}
++
++	/* No capture interface yet: leave the module powered off even on success. */
++	off_ret = pm_runtime_put_sync_suspend(dev);
++	if (ret)
++		return ret;
++	if (off_ret < 0)
++		return off_ret;
++
++	dev_info(dev, "IMX800 ID %#04x matched; powered off, capture unavailable\n", id);
++	return 0;
++}
++
++static const struct of_device_id fuxi_imx800_of_match[] = {
++	{ .compatible = "xiaomi,fuxi-imx800" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, fuxi_imx800_of_match);
++
++static DEFINE_RUNTIME_DEV_PM_OPS(fuxi_imx800_pm_ops,
++			       fuxi_imx800_runtime_suspend,
++			       fuxi_imx800_runtime_resume, NULL);
++
++static struct i2c_driver fuxi_imx800_driver = {
++	.driver = {
++		.name = "fuxi-imx800",
++		.of_match_table = fuxi_imx800_of_match,
++		.pm = pm_ptr(&fuxi_imx800_pm_ops),
++	},
++	.probe = fuxi_imx800_probe,
++};
++module_i2c_driver(fuxi_imx800_driver);
++
++MODULE_DESCRIPTION("Xiaomi fuxi IMX800 power and identity bring-up");
++MODULE_LICENSE("GPL");
