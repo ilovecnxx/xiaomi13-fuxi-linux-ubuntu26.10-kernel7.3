@@ -24,11 +24,13 @@ Phosh active、当前启动没有 RPMh/文件系统错误；未再采集。没�
 - 旧版保留为故障恢复入口。只有出现明确的启动失败、功能回归或用户要求时才回退，并记录触发原因及恢复目标。
 - 分别记录源码验证、实机验证范围和实际运行状态；主机编译/测试通过不能写成实机通过，单次 RAW 通过不能写成 MM0 或整机功能完成。
 
-当前相机源码续开发基准是 `cphy-rx`（源码提交 `e4daeb8a8ed782e7184196551855658b85221e27`），
-从 `cpas-order` 向前补齐主摄接收端类型/trio 校验和 CSID780 配置；45 项 KUnit、
-ARM64 W=1、checkpatch 及补丁重放通过，端点仍拒绝 C-PHY，尚未部署。
-本机原厂 DTB 已确认主摄连接 CSIPHY2、PHY 2.1.2、MCLK 19.2 MHz；完整 PHY 和
-IMX800 驱动仍待实现。手机运行/默认 cam12order、恢复入口 deb9。
+当前相机源码续开发基准是 `cphy-phy`（源码提交 `cd664341a4bf475c5e9a52665ba254b039c0cb13`），
+从 `cphy-rx` 向前补齐 PHY 2.1.2 寄存器后端，保留接收端类型/trio 校验和 CSID780 配置；
+68 项 KUnit、ARM64 W=1 通过，checkpatch 0 错误、1 条已核实覆盖的 MAINTAINERS 提醒。
+28 档速率和初始化表已核对公开固定来源；端点及 stream-on 尚未连接后端，尚未部署。
+本机原厂 DTB 已确认主摄连接 CSIPHY2、PHY 2.1.2、MCLK 19.2 MHz；模式速率/settle、
+RX 时钟、完整 PHY 集成和 IMX800 驱动仍待完成，见[PHY 后端记录](docs/主摄C-PHY寄存器后端-20261115.md)。
+手机运行/默认 cam12order、恢复入口 deb9。
 单次 RGB 60 帧的 CPAS 停机握手成功，后续只读确认休眠/共享时钟归零；
 但同进程两轮测试只完成首轮，第二轮 CPAS start 成功后 MM0 仍超时，影响 UFS/CPU/GPU。
 ICC 错误被吞掉的问题仍在。故障后已确认新启动恢复，Linux/SSH 可用、Phosh active、

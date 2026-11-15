@@ -1,0 +1,39 @@
+{
+  "status": "experimental-host-tested-phy-backend",
+  "base_manifest": "../cphy-rx/manifest.json",
+  "base_manifest_sha256": "283414f40196efe383d86e503e0c7a56ceec0fc3d5128ea2a34237c3d972637f",
+  "base_commit": "e4daeb8a8ed782e7184196551855658b85221e27",
+  "base_tree": "93df2c73e084c2a85c94ab80892b875ca50543d6",
+  "source_commit": "cd664341a4bf475c5e9a52665ba254b039c0cb13",
+  "result_tree": "28b699c0da1dac932c7857ee2329f1df7f30f199",
+  "source_date_epoch": 1794749499,
+  "patches": [
+    {
+      "file": "0001-media-camss-add-tested-SM8550-C-PHY-programming-back.patch",
+      "sha256": "81652eab0d0812589037cec51c066ef07721509015139e81a98a484faa20019f"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 68,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kunit_added": 23,
+    "kasan": true,
+    "debug_mutexes": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 1,
+    "checkpatch_warning_review": "New files already covered by the CAMSS directory entry in MAINTAINERS",
+    "checkpatch_options": "--no-tree --no-signoff",
+    "patch_reconstruction_tree_verified": true,
+    "manifest_ancestry_verified": 13,
+    "device_tested": false,
+    "cphy_endpoint_enabled": false,
+    "phy_stream_integration": false,
+    "imx800_driver_added": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/主摄C-PHY寄存器后端-20261115.md"
+  }
+}

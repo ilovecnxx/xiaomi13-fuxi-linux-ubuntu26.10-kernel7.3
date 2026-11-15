@@ -1,0 +1,580 @@
+From cd664341a4bf475c5e9a52665ba254b039c0cb13 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 21:30:56 +0800
+Subject: [PATCH] media: camss: add tested SM8550 C-PHY programming backend
+
+Keep endpoint and stream integration gated pending verified IMX800 rate,
+settle and RX clock semantics. Preserve vendor PHY 2.1.2 programming
+order with explicit validation and 64-bit rate bins.
+
+ARM64 CAMSS W=1 and 68 QEMU KASAN KUnit cases pass; no device deployment.
+---
+ drivers/media/platform/qcom/camss/Kconfig     |  10 +
+ drivers/media/platform/qcom/camss/Makefile    |   1 +
+ .../qcom/camss/camss-csiphy-3ph-2-1-2-test.c  | 252 ++++++++++++++++++
+ .../qcom/camss/camss-csiphy-3ph-2-1-2.c       | 250 +++++++++++++++++
+ .../media/platform/qcom/camss/camss-csiphy.h  |   4 +
+ 5 files changed, 517 insertions(+)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2-test.c
+ create mode 100644 drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index 3077ab691..5c346cb76 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -30,3 +30,13 @@ config VIDEO_QCOM_CAMSS_CSID_KUNIT_TEST
+ 	  Use a counted parent and a test device with the real runtime PM core.
+ 	  Check failed parent acquisition, disabled PM, and failed resume.
+ 	  These tests do not access camera hardware or prove hardware recovery.
++
++config VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST
++	bool "KUnit tests for CAMSS C-PHY programming" if !KUNIT_ALL_TESTS
++	depends on KUNIT=y && VIDEO_QCOM_CAMSS=y
++	default KUNIT_ALL_TESTS
++	help
++	  Exercise SM8550 PHY 2.1.2 C-PHY register programming, input validation,
++	  rate boundaries and stop/reconfigure using memory-backed registers.
++	  Check that rejected configurations leave the registers unchanged.
++	  These tests do not validate electrical timing or sensor modes.
+diff --git a/drivers/media/platform/qcom/camss/Makefile b/drivers/media/platform/qcom/camss/Makefile
+index 27898b3cc..b8091786a 100644
+--- a/drivers/media/platform/qcom/camss/Makefile
++++ b/drivers/media/platform/qcom/camss/Makefile
+@@ -13,6 +13,7 @@ qcom-camss-objs += \
+ 		camss-csiphy.o \
+ 		camss-csiphy-2ph-1-0.o \
+ 		camss-csiphy-3ph-1-0.o \
++		camss-csiphy-3ph-2-1-2.o \
+ 		camss-format.o \
+ 		camss-ispif.o \
+ 		camss-tpg.o \
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2-test.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2-test.c
+new file mode 100644
+index 000000000..abd676325
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2-test.c
+@@ -0,0 +1,252 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* RAM-backed register tests do not emulate C-PHY signaling or reset timing. */
++#include <kunit/test.h>
++
++struct cphy_test_ctx {
++	struct camss camss;
++	struct camss_resources resources;
++	struct csiphy_device csiphy;
++	struct csiphy_csi2_cfg csi2;
++	struct csiphy_lane lanes[3];
++	u32 regs[0x2000 / sizeof(u32)];
++};
++
++static int cphy_test_init(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx;
++	unsigned int i;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	ctx->resources.version = CAMSS_8550;
++	ctx->camss.res = &ctx->resources;
++	ctx->csiphy.camss = &ctx->camss;
++	ctx->csiphy.base = (void __iomem *)ctx->regs;
++	ctx->csiphy.cfg.csi2 = &ctx->csi2;
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_CPHY;
++	ctx->csi2.lane_cfg.data = ctx->lanes;
++	ctx->csi2.lane_cfg.num_data = 3;
++	for (i = 0; i < ARRAY_SIZE(ctx->lanes); i++)
++		ctx->lanes[i].pos = i;
++	test->priv = ctx;
++	return 0;
++}
++
++static void cphy_registers_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++	unsigned int i, trio;
++
++	memset(ctx->regs, 0xa5, sizeof(ctx->regs));
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 4788000000ULL, 0x1234), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1000 / 4], 0x0eU);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0x2aU);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 0x01U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x101c / 4], 0x7aU);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1084 / 4], 0U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x108c / 4], 0U);
++	for (i = 0; i < 11; i++)
++		KUNIT_EXPECT_EQ(test, ctx->regs[(0x102c + i * 4) / 4], 0U);
++	for (trio = 0; trio < 3; trio++) {
++		u32 *bank = &ctx->regs[trio * 0x400 / 4];
++
++		KUNIT_EXPECT_EQ(test, bank[0x268 / 4], 0xf1U);
++		KUNIT_EXPECT_EQ(test, bank[0x278 / 4], 0x20U);
++		KUNIT_EXPECT_EQ(test, bank[0x270 / 4], 0x00U);
++		KUNIT_EXPECT_EQ(test, bank[0x274 / 4], 0x03U);
++		KUNIT_EXPECT_EQ(test, bank[0x20c / 4], 0x34U);
++		KUNIT_EXPECT_EQ(test, bank[0x208 / 4], 0x12U);
++		KUNIT_EXPECT_EQ(test, bank[0x214 / 4], 0x00U);
++		KUNIT_EXPECT_EQ(test, bank[0x244 / 4], 0xb2U);
++		KUNIT_EXPECT_EQ(test, bank[0x2f0 / 4], 0xefU);
++		KUNIT_EXPECT_EQ(test, bank[0x310 / 4], 0x35U);
++		/* C-PHY must not program the D-PHY lane registers. */
++		KUNIT_EXPECT_EQ(test, bank[0x008 / 4], 0xa5a5a5a5U);
++	}
++}
++
++static void cphy_rate_boundaries_test(struct kunit *test)
++{
++	unsigned int i;
++	u64 lower = 1;
++
++	KUNIT_EXPECT_PTR_EQ(test, cphy_find_rate(0), NULL);
++	for (i = 0; i < ARRAY_SIZE(cphy_rates); i++) {
++		KUNIT_EXPECT_PTR_EQ(test, cphy_find_rate(lower), &cphy_rates[i]);
++		KUNIT_EXPECT_PTR_EQ(test, cphy_find_rate(cphy_rates[i].bandwidth),
++				    &cphy_rates[i]);
++		lower = cphy_rates[i].bandwidth + 1;
++	}
++	KUNIT_EXPECT_PTR_EQ(test, cphy_find_rate(lower), NULL);
++	KUNIT_EXPECT_PTR_EQ(test, cphy_find_rate(U64_MAX), NULL);
++}
++
++static void cphy_high_rate_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 5700000001ULL, 1), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x278 / 4], 0x17U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x270 / 4], 0x01U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x274 / 4], 0x00U);
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 13680000000ULL, U16_MAX), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x278 / 4], 0x00U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x208 / 4], 0xffU);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x20c / 4], 0xffU);
++}
++
++static void cphy_trio_selection_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++
++	ctx->csi2.lane_cfg.num_data = 1;
++	ctx->lanes[0].pos = 2;
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 228000000, 256), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0x20U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0xa08 / 4], 1U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0xa0c / 4], 0U);
++	ctx->csi2.lane_cfg.num_data = 2;
++	ctx->lanes[1].pos = 0;
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 228000001, 255), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0x22U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0xa08 / 4], 0U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0xa0c / 4], 255U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x214 / 4], 0x33U);
++}
++
++static const char * const cphy_invalid_cases[] = {
++	"zero-rate", "excess-rate", "zero-settle", "excess-settle",
++	"zero-trios", "excess-trios", "negative-trios", "duplicate-trio",
++	"invalid-trio", "polarity", "wrong-soc", "dphy", "combo",
++	"generic-phy", "missing-csi", "missing-lanes", "missing-base",
++};
++
++static void cphy_invalid_description(const char * const *name, char *desc)
++{
++	strscpy(desc, *name, KUNIT_PARAM_DESC_SIZE);
++}
++
++KUNIT_ARRAY_PARAM(cphy_invalid, cphy_invalid_cases, cphy_invalid_description);
++
++static void cphy_invalid_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++	const char *name = *(const char * const *)test->param_value;
++	u64 rate = 4788000000ULL;
++	u32 settle = 0x1234;
++	u32 *before;
++	int expected = -EINVAL;
++
++	before = kunit_kmalloc(test, sizeof(ctx->regs), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, before);
++	memset(ctx->regs, 0xa5, sizeof(ctx->regs));
++	memcpy(before, ctx->regs, sizeof(ctx->regs));
++	if (!strcmp(name, "zero-rate")) {
++		rate = 0;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "excess-rate")) {
++		rate = 13680000001ULL;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "zero-settle")) {
++		settle = 0;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "excess-settle")) {
++		settle = 65536;
++		expected = -ERANGE;
++	} else if (!strcmp(name, "zero-trios")) {
++		ctx->csi2.lane_cfg.num_data = 0;
++	} else if (!strcmp(name, "excess-trios")) {
++		ctx->csi2.lane_cfg.num_data = 4;
++	} else if (!strcmp(name, "negative-trios")) {
++		ctx->csi2.lane_cfg.num_data = -1;
++	} else if (!strcmp(name, "duplicate-trio")) {
++		ctx->lanes[2].pos = 1;
++	} else if (!strcmp(name, "invalid-trio")) {
++		ctx->lanes[0].pos = 3;
++	} else if (!strcmp(name, "polarity")) {
++		ctx->lanes[0].pol = 1;
++	} else if (!strcmp(name, "wrong-soc")) {
++		ctx->resources.version = CAMSS_7280;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "dphy")) {
++		ctx->csi2.bus_type = V4L2_MBUS_CSI2_DPHY;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "combo")) {
++		ctx->csiphy.cfg.combo_mode = 1;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "generic-phy")) {
++		ctx->csiphy.phy = ERR_PTR(-ENODEV);
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "missing-csi")) {
++		ctx->csiphy.cfg.csi2 = NULL;
++	} else if (!strcmp(name, "missing-lanes")) {
++		ctx->csi2.lane_cfg.data = NULL;
++	} else if (!strcmp(name, "missing-base")) {
++		ctx->csiphy.base = NULL;
++	} else {
++		KUNIT_FAIL(test, "Unknown test case");
++	}
++	KUNIT_EXPECT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, rate, settle), expected);
++	KUNIT_EXPECT_MEMEQ(test, ctx->regs, before, sizeof(ctx->regs));
++}
++
++static void cphy_stop_reconfigure_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++	u32 *before;
++
++	before = kunit_kmalloc(test, sizeof(ctx->regs), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, before);
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 4788000000ULL, 0x1234), 0);
++	memcpy(before, ctx->regs, sizeof(ctx->regs));
++	KUNIT_ASSERT_EQ(test, csiphy_2_1_2_cphy_disable(&ctx->csiphy), 0);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1000 / 4], 1U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1014 / 4], 0U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x1018 / 4], 0U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[0x101c / 4], 0U);
++	KUNIT_ASSERT_EQ(test, csiphy_2_1_2_cphy_disable(&ctx->csiphy), 0);
++	KUNIT_ASSERT_EQ(test,
++		csiphy_2_1_2_cphy_configure(&ctx->csiphy, 4788000000ULL, 0x1234), 0);
++	KUNIT_EXPECT_MEMEQ(test, ctx->regs, before, sizeof(ctx->regs));
++}
++
++static void cphy_stop_dphy_rejected_test(struct kunit *test)
++{
++	struct cphy_test_ctx *ctx = test->priv;
++	u32 *before;
++
++	before = kunit_kmalloc(test, sizeof(ctx->regs), GFP_KERNEL);
++	KUNIT_ASSERT_NOT_NULL(test, before);
++	memset(ctx->regs, 0xa5, sizeof(ctx->regs));
++	memcpy(before, ctx->regs, sizeof(ctx->regs));
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_DPHY;
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_disable(&ctx->csiphy), -EOPNOTSUPP);
++	KUNIT_EXPECT_MEMEQ(test, ctx->regs, before, sizeof(ctx->regs));
++}
++
++static struct kunit_case cphy_test_cases[] = {
++	KUNIT_CASE(cphy_registers_test),
++	KUNIT_CASE(cphy_rate_boundaries_test),
++	KUNIT_CASE(cphy_high_rate_test),
++	KUNIT_CASE(cphy_trio_selection_test),
++	KUNIT_CASE_PARAM(cphy_invalid_test, cphy_invalid_gen_params),
++	KUNIT_CASE(cphy_stop_reconfigure_test),
++	KUNIT_CASE(cphy_stop_dphy_rejected_test),
++	{}
++};
++
++static struct kunit_suite cphy_test_suite = {
++	.name = "camss-csiphy-2-1-2-cphy",
++	.init = cphy_test_init,
++	.test_cases = cphy_test_cases,
++};
++
++kunit_test_suite(cphy_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+new file mode 100644
+index 000000000..f5cac13d4
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+@@ -0,0 +1,250 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * SM8550 PHY 2.1.2 C-PHY register programming.
++ * Tables derived from Qualcomm's cam_csiphy_2_1_2_hwreg.h in MiCode
++ * camera-kernel commit 6c6099a85cb3154fc8a744c17b6b9f5fd361dea8.
++ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
++ */
++
++#include <linux/delay.h>
++#include <linux/io.h>
++
++#include "camss.h"
++#include "camss-csiphy.h"
++
++#define CPHY_RESET		0x1000
++#define CPHY_LANE_ENABLE		0x1014
++#define CPHY_POWER		0x1018
++#define CPHY_COMMON		0x101c
++#define CPHY_IRQ_MASK(n)		(0x102c + 4 * (n))
++#define CPHY_TRIO_STRIDE		0x400
++
++struct cphy_rate {
++	u64 bandwidth;
++	u8 cdr;
++	u8 reg_270;
++	u8 reg_274;
++	u8 reg_214;
++};
++
++/* Vendor bandwidth units: bits/s per trio, using its rounded 2.28 factor. */
++static const struct cphy_rate cphy_rates[] = {
++	{   228000000ULL, 0x58, 0x00, 0x03, 0x6b },
++	{   456000000ULL, 0x58, 0x00, 0x03, 0x33 },
++	{   684000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{   798000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{   912000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{  1140000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{  1368000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{  1596000000ULL, 0x58, 0x00, 0x03, 0x20 },
++	{  1824000000ULL, 0x58, 0x00, 0x03, 0x09 },
++	{  2052000000ULL, 0x58, 0x00, 0x03, 0x09 },
++	{  2280000000ULL, 0x58, 0x00, 0x03, 0x09 },
++	{  2736000000ULL, 0x45, 0x00, 0x03, 0x09 },
++	{  3420000000ULL, 0x45, 0x00, 0x03, 0x09 },
++	{  3876000000ULL, 0x2e, 0x00, 0x03, 0x09 },
++	{  4560000000ULL, 0x2e, 0x00, 0x03, 0x00 },
++	{  4788000000ULL, 0x20, 0x00, 0x03, 0x00 },
++	{  5358000000ULL, 0x20, 0x00, 0x03, 0x00 },
++	{  5700000000ULL, 0x20, 0x00, 0x03, 0x00 },
++	{  5928000000ULL, 0x17, 0x01, 0x00, 0x00 },
++	{  6384000000ULL, 0x17, 0x01, 0x00, 0x00 },
++	{  6840000000ULL, 0x17, 0x01, 0x00, 0x00 },
++	{  7524000000ULL, 0x10, 0x01, 0x00, 0x00 },
++	{  7980000000ULL, 0x10, 0x01, 0x00, 0x00 },
++	{  9120000000ULL, 0x0c, 0x01, 0x00, 0x00 },
++	{ 10260000000ULL, 0x06, 0x01, 0x00, 0x00 },
++	{ 11400000000ULL, 0x02, 0x01, 0x00, 0x00 },
++	{ 12540000000ULL, 0x00, 0x01, 0x00, 0x00 },
++	{ 13680000000ULL, 0x00, 0x01, 0x00, 0x00 },
++};
++
++struct cphy_reg {
++	u16 offset;
++	u8 value;
++};
++
++static const struct cphy_reg cphy_trio_regs[] = {
++	{ 0x204, 0x00 }, { 0x2e4, 0x00 }, { 0x2e8, 0x7f },
++	{ 0x2ec, 0x7f }, { 0x218, 0x3e }, { 0x21c, 0x41 },
++	{ 0x220, 0x41 }, { 0x224, 0x7f }, { 0x228, 0x00 },
++	{ 0x22c, 0x00 }, { 0x264, 0x01 }, { 0x244, 0xb2 },
++	{ 0x310, 0x35 }, { 0x2bc, 0xd0 }, { 0x254, 0x00 },
++	{ 0x240, 0x00 }, { 0x260, 0xa8 }, { 0x284, 0x00 },
++	{ 0x290, 0x02 },
++};
++
++static const struct cphy_rate *cphy_find_rate(u64 data_rate)
++{
++	unsigned int i;
++
++	if (!data_rate)
++		return NULL;
++
++	for (i = 0; i < ARRAY_SIZE(cphy_rates); i++)
++		if (data_rate <= cphy_rates[i].bandwidth)
++			return &cphy_rates[i];
++
++	return NULL;
++}
++
++static int cphy_validate_device(struct csiphy_device *csiphy)
++{
++	if (!csiphy || !csiphy->camss || !csiphy->camss->res || !csiphy->base ||
++	    !csiphy->cfg.csi2)
++		return -EINVAL;
++
++	if (csiphy->camss->res->version != CAMSS_8550 || csiphy->phy ||
++	    csiphy->cfg.combo_mode ||
++	    csiphy->cfg.csi2->bus_type != V4L2_MBUS_CSI2_CPHY)
++		return -EOPNOTSUPP;
++
++	return 0;
++}
++
++static int cphy_lane_mask(const struct csiphy_lanes_cfg *lanes)
++{
++	u8 mask = 0;
++	unsigned int i;
++
++	if (!lanes->data || lanes->num_data < 1 ||
++	    lanes->num_data > MSM_CSIPHY_MAX_CPHY_TRIOS)
++		return -EINVAL;
++
++	for (i = 0; i < lanes->num_data; i++) {
++		u8 bit;
++
++		if (lanes->data[i].pos >= MSM_CSIPHY_MAX_CPHY_TRIOS ||
++		    lanes->data[i].pol)
++			return -EINVAL;
++		bit = BIT(2 * lanes->data[i].pos + 1);
++		if (mask & bit)
++			return -EINVAL;
++		mask |= bit;
++	}
++
++	return mask;
++}
++
++static void cphy_mask_irqs(void __iomem *base)
++{
++	unsigned int i;
++
++	/* Match CAMSS's existing policy: PHY interrupts remain masked. */
++	for (i = 0; i < 11; i++)
++		writel(0, base + CPHY_IRQ_MASK(i));
++}
++
++/**
++ * csiphy_2_1_2_cphy_configure - Program a powered SM8550 C-PHY
++ * @csiphy: device with normalized trio positions, caller owns power and clocks
++ * @data_rate: vendor PHY bandwidth in bits/s per trio, not V4L2 link frequency
++ * @settle_count: already resolved 16-bit hardware counter, not nanoseconds
++ *
++ * This backend is not yet connected to endpoint parsing or stream-on. Sensor
++ * timing conversion and RX clock voting must be verified before integration.
++ * Validate all inputs before any MMIO, including values that would truncate.
++ * Caller serializes configuration and stop. No combo mode or polarity swap.
++ *
++ * Return: zero on success, negative errno on invalid/unsupported configuration.
++ */
++int csiphy_2_1_2_cphy_configure(struct csiphy_device *csiphy,
++			       u64 data_rate, u32 settle_count)
++{
++	const struct cphy_rate *rate;
++	void __iomem *base;
++	unsigned int i, trio;
++	int mask, ret;
++
++	ret = cphy_validate_device(csiphy);
++	if (ret)
++		return ret;
++	mask = cphy_lane_mask(&csiphy->cfg.csi2->lane_cfg);
++	if (mask < 0)
++		return mask;
++	rate = cphy_find_rate(data_rate);
++	if (!rate || !settle_count || settle_count > U16_MAX)
++		return -ERANGE;
++
++	base = csiphy->base;
++	cphy_mask_irqs(base);
++	writel(0x01, base + CPHY_RESET);
++	usleep_range(1, 6);
++	writel(mask, base + CPHY_LANE_ENABLE);
++	writel(0x00, base + 0x1084);
++	writel(0x00, base + 0x108c);
++	usleep_range(1, 6);
++	writel(0x7a, base + CPHY_COMMON);
++	writel(0x01, base + CPHY_POWER);
++
++	/* Program all trio banks, as in the vendor table; mask selects active ones. */
++	for (trio = 0; trio < MSM_CSIPHY_MAX_CPHY_TRIOS; trio++) {
++		void __iomem *bank = base + trio * CPHY_TRIO_STRIDE;
++
++		writel(0xf1, bank + 0x268);
++		writel(0x01, bank + 0x294);
++		writel(0x20, bank + 0x288);
++		writel(rate->cdr, bank + 0x278);
++		writel(0x3d, bank + 0x26c);
++		writel(0x30, bank + 0x28c);
++		writel(rate->reg_270, bank + 0x270);
++		writel(rate->reg_274, bank + 0x274);
++	}
++	usleep_range(10, 15);
++	for (trio = 0; trio < MSM_CSIPHY_MAX_CPHY_TRIOS; trio++) {
++		void __iomem *bank = base + trio * CPHY_TRIO_STRIDE;
++
++		writel(settle_count & 0xff, bank + 0x20c);
++		writel(settle_count >> 8, bank + 0x208);
++		writel(0x00, bank + 0x210);
++		writel(rate->reg_214, bank + 0x214);
++	}
++	for (trio = 0; trio < MSM_CSIPHY_MAX_CPHY_TRIOS; trio++) {
++		void __iomem *bank = base + trio * CPHY_TRIO_STRIDE;
++
++		writel(0x00, bank + 0x2f4);
++		writel(0x00, bank + 0x2f8);
++		writel(0x00, bank + 0x2fc);
++		writel(0xef, bank + 0x2f0);
++		usleep_range(3, 8);
++	}
++	for (trio = 0; trio < MSM_CSIPHY_MAX_CPHY_TRIOS; trio++)
++		for (i = 0; i < ARRAY_SIZE(cphy_trio_regs); i++)
++			writel(cphy_trio_regs[i].value, base + trio * CPHY_TRIO_STRIDE +
++			       cphy_trio_regs[i].offset);
++
++	writel(0x0e, base + CPHY_RESET);
++	usleep_range(3048, 3053);
++	return 0;
++}
++
++/**
++ * csiphy_2_1_2_cphy_disable - Quiesce a powered SM8550 C-PHY
++ * @csiphy: device, serialized against configure with clocks still enabled
++ *
++ * Return: zero on success, negative errno for an invalid/unsupported device.
++ */
++int csiphy_2_1_2_cphy_disable(struct csiphy_device *csiphy)
++{
++	void __iomem *base;
++	int ret;
++
++	ret = cphy_validate_device(csiphy);
++	if (ret)
++		return ret;
++	base = csiphy->base;
++	cphy_mask_irqs(base);
++	writel(0x00, base + 0x1084);
++	writel(0x00, base + 0x108c);
++	usleep_range(1, 6);
++	writel(0x00, base + CPHY_COMMON);
++	writel(0x00, base + CPHY_POWER);
++	writel(0x00, base + CPHY_LANE_ENABLE);
++	writel(0x01, base + CPHY_RESET);
++	usleep_range(1, 6);
++	return 0;
++}
++
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST)
++#include "camss-csiphy-3ph-2-1-2-test.c"
++#endif
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.h b/drivers/media/platform/qcom/camss/camss-csiphy.h
+index 12d973add..e7217d2d5 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.h
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.h
+@@ -142,4 +142,8 @@ extern const struct csiphy_formats csiphy_formats_sdm845;
+ extern const struct csiphy_hw_ops csiphy_ops_2ph_1_0;
+ extern const struct csiphy_hw_ops csiphy_ops_3ph_1_0;
+ 
++int csiphy_2_1_2_cphy_configure(struct csiphy_device *csiphy,
++			       u64 data_rate, u32 settle_count);
++int csiphy_2_1_2_cphy_disable(struct csiphy_device *csiphy);
++
+ #endif /* QC_MSM_CAMSS_CSIPHY_H */
+-- 
+2.55.0
+
