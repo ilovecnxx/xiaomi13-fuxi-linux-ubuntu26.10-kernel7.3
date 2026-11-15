@@ -49,6 +49,92 @@ class FakeTransport:
         self.invoke("close")
 
 
+class FakeModemManager:
+    interrupted = False
+
+    def __init__(self, enabled=1, signals=False, capabilities=3):
+        self.state = {"Enabled": enabled, "SignalsLocation": signals,
+                      "Capabilities": capabilities}
+        self.calls = []
+
+    def properties(self):
+        return self.state.copy()
+
+    def setup(self, enabled, signals):
+        self.calls.append((enabled, signals))
+        self.state.update(Enabled=enabled, SignalsLocation=signals)
+
+    def sample(self, _seconds):
+        pass
+
+
+class ModemManagerSessionTest(unittest.TestCase):
+    def test_standard_session_restores_original_sources_and_signalling(self):
+        for enabled in (0, 1):
+            for signals in (False, True):
+                t = FakeModemManager(enabled, signals)
+                report = GNSS.mm_session(t, 1)
+                self.assertEqual(report["status"], "completed")
+                self.assertTrue(report["cleanup"]["restored"])
+                self.assertEqual(t.calls, [(enabled | 2, signals), (enabled, signals)])
+                self.assertEqual(report["satellite_fix"], "not_tested")
+
+    def test_busy_unknown_or_unsupported_modem_is_never_changed(self):
+        for enabled, caps in ((3, 3), (4, 7), (16, 19), (None, 3), (1, 1)):
+            t = FakeModemManager(enabled, capabilities=caps)
+            self.assertEqual(GNSS.mm_session(t, 1)["status"], "preflight_failed")
+            self.assertEqual(t.calls, [])
+
+    def test_start_timeout_after_server_enabled_gps_still_restores(self):
+        t = FakeModemManager()
+        setup = t.setup
+        def timeout_after_enable(enabled, signals):
+            setup(enabled, signals)
+            if enabled & 2:
+                raise TimeoutError("sensitive server details")
+        t.setup = timeout_after_enable
+        report = GNSS.mm_session(t, 1)
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["failed_stage"], "enable")
+        self.assertTrue(report["cleanup"]["restored"])
+        self.assertEqual(t.state["Enabled"], 1)
+        self.assertNotIn("sensitive", json.dumps(report))
+
+    def test_sampling_failure_or_signal_always_restores(self):
+        for interrupted in (False, True):
+            t = FakeModemManager()
+            def sample(_):
+                if interrupted:
+                    t.interrupted = True
+                else:
+                    raise RuntimeError("private details")
+            t.sample = sample
+            report = GNSS.mm_session(t, 1)
+            self.assertEqual(report["status"], "interrupted" if interrupted else "failed")
+            self.assertTrue(report["cleanup"]["restored"])
+
+    def test_other_clients_changes_are_preserved_and_reported(self):
+        t = FakeModemManager()
+        t.sample = lambda _: t.state.update(Enabled=7, SignalsLocation=True)
+        report = GNSS.mm_session(t, 1)
+        self.assertEqual(t.calls[-1], (5, True))
+        self.assertEqual(report["status"], "cleanup_failed")
+        self.assertFalse(report["cleanup"]["restored"])
+
+    def test_cleanup_timeout_is_visible(self):
+        t = FakeModemManager()
+        def fail_cleanup(_):
+            t.properties = lambda: (_ for _ in ()).throw(TimeoutError())
+        t.sample = fail_cleanup
+        self.assertEqual(GNSS.mm_session(t, 1)["status"], "cleanup_failed")
+
+    def test_signal_before_start_never_changes_configuration(self):
+        t = FakeModemManager()
+        t.interrupted = True
+        self.assertEqual(GNSS.mm_session(t, 1)["status"], "interrupted")
+        self.assertEqual(t.calls, [])
+
+
 class GnssSessionTest(unittest.TestCase):
     def test_successful_session_is_not_automatically_a_fix(self):
         t = FakeTransport()

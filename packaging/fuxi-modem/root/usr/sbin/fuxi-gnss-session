@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded LOC session; aggregate reports only, never print coordinates."""
+"""Bounded LOC or ModemManager session; never print coordinates."""
 import argparse
 import fcntl
 import json
@@ -8,9 +8,99 @@ import os
 import signal
 import struct
 import subprocess
+import time
 
 
 SESSION_ID = 126
+MM_LOCATION = "org.freedesktop.ModemManager1.Modem.Location"
+GPS_RAW = 2
+
+
+class ModemManagerTransport:
+    interrupted = False
+
+    def __init__(self):
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.path = "/org/freedesktop/ModemManager1"
+        objects, = self.call("org.freedesktop.DBus.ObjectManager", "GetManagedObjects")
+        paths = [path for path, interfaces in objects.items() if MM_LOCATION in interfaces]
+        if len(paths) != 1:
+            raise ValueError("exactly one modem location interface is required")
+        self.path = paths[0]
+
+    def call(self, interface, method, parameters=None):
+        return self.bus.call_sync(
+            "org.freedesktop.ModemManager1", self.path, interface, method,
+            parameters, None, self.Gio.DBusCallFlags.NONE, 15000, None).unpack()
+
+    def properties(self):
+        properties, = self.call("org.freedesktop.DBus.Properties", "GetAll",
+                                self.GLib.Variant("(s)", (MM_LOCATION,)))
+        return properties
+
+    def setup(self, enabled, signals):
+        self.call(MM_LOCATION, "Setup", self.GLib.Variant("(ub)", (enabled, signals)))
+
+    def interrupt(self, *_):
+        self.interrupted = True
+
+    def sample(self, seconds):
+        deadline = time.monotonic() + seconds
+        while not self.interrupted and time.monotonic() < deadline:
+            time.sleep(min(0.2, max(0, deadline - time.monotonic())))
+
+
+def mm_session(transport, seconds):
+    report = {"schema_version": 1, "backend": "modemmanager",
+              "requested_seconds": seconds, "status": "preflight_failed",
+              "satellite_fix": "not_tested", "cleanup": {"restored": False}}
+    attempted = False
+    stage = "preflight"
+    try:
+        initial = transport.properties()
+        enabled, signals = initial["Enabled"], initial["SignalsLocation"]
+        if (type(enabled) is not int or enabled not in (0, 1)
+                or type(signals) is not bool):
+            raise ValueError("another location source is enabled or state is unknown")
+        if not initial["Capabilities"] & GPS_RAW:
+            report["finding"] = "modemmanager_gps_raw_not_exposed"
+            return report
+        if transport.interrupted:
+            report["status"] = "interrupted"
+            return report
+        stage = "enable"
+        attempted = True
+        transport.setup(enabled | GPS_RAW, signals)
+        stage = "verify_enabled"
+        current = transport.properties()
+        if (current["Enabled"], current["SignalsLocation"]) != (enabled | GPS_RAW, signals):
+            raise ValueError("location configuration changed")
+        report["gps_raw_enabled"] = True
+        stage = "sample"
+        transport.sample(seconds)
+        report["status"] = "interrupted" if transport.interrupted else "completed"
+    except Exception:
+        report["failed_stage"] = stage
+        if stage != "preflight":
+            report["status"] = "failed"
+    finally:
+        if attempted:
+            try:
+                current = transport.properties()
+                # Preserve sources/signalling enabled by another client during the test.
+                transport.setup(current["Enabled"] & ~GPS_RAW, current["SignalsLocation"])
+                final = transport.properties()
+                report["cleanup"]["restored"] = (
+                    (final["Enabled"], final["SignalsLocation"]) == (enabled, signals))
+            except Exception:
+                pass
+            if not report["cleanup"]["restored"]:
+                report["status"] = "cleanup_failed"
+    return report
 
 
 def preflight(run=subprocess.run):
@@ -230,15 +320,18 @@ def duration(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("seconds", type=duration, nargs="?", default=30)
+    parser.add_argument("--modemmanager", action="store_true",
+                        help="exercise standard GPS_RAW enable/disable without reading positions")
     args = parser.parse_args()
     try:
         with open("/run/lock/fuxi-gnss-session.lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            node = preflight()
-            transport = Transport()
+            node = None if args.modemmanager else preflight()
+            transport = ModemManagerTransport() if args.modemmanager else Transport()
             for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 signal.signal(sig, transport.interrupt)
-            report = session(transport, node, args.seconds)
+            report = (mm_session(transport, args.seconds) if args.modemmanager
+                      else session(transport, node, args.seconds))
     except Exception:
         report = {"schema_version": 1, "status": "preflight_failed"}
     print(json.dumps(report, indent=2, sort_keys=True))
