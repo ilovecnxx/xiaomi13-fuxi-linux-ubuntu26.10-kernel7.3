@@ -180,6 +180,8 @@ try {
         camera->requestCompleted.disconnect(&capture);
     }
     valid &= camera->release() == 0;
+    /* SimpleCameraConfiguration owns a Camera reference until destruction. */
+    config.reset();
     camera.reset();
     manager.stop();
     valid &= failures == expectedFailures && errors == expectedErrors;

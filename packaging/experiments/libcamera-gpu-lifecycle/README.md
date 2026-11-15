@@ -103,6 +103,9 @@ context 并退出 1。这验证真实 Adreno 的 EGL 生命周期，仍不包含
 
 `restart-camera.cpp` 使用公开 Camera API，在同一相机/配置/缓冲集合上反复启动；
 核对 `FrameSuccess`/`FrameError`、bytesused、实际帧数及 stop 返回值。
+客户端在停止 CameraManager 前销毁配置对象，释放 SimpleCameraConfiguration
+持有的 Camera 引用；2026-11-15 修正通过主机及手机原生 `-Wall -Wextra -Werror`
+编译，手机产物链接既有隔离 libcamera。尚未运行采集验证告警消失。
 采集失败后不再开始下一轮；超时不能终止内核 D 状态任务。
 对照客户端分别链接只含 `0001+0002` 和含全部三个补丁的隔离库：
 

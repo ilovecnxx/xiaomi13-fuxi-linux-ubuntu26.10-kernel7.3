@@ -18,10 +18,16 @@ compare `result_tree`. Use the existing [cpas-pm commands](../cpas-pm/README.md)
 with unique package name `cam12order`. Image.gz and OV13B10 DTB in the built
 package match the output tree. No standard recipe promotion has occurred.
 
-This is not yet device-tested. The phone remains on cam11reset after its
-traced restart fault; ordinary reboot timed out. Recover connectivity and
-verify a fresh boot before installing the package. Never install while UFS
-or ICC is stalled. Retain the new version after successful validation.
+Device result: cam12order booted and automatically confirmed after a clean
+cam11reset reboot. A single 60-frame RGB capture passed with balanced CPAS
+handshakes and zero shared clock references. A two-round client completed
+only its first round: CPAS start succeeded before the second bandwidth
+request, but MM0 still timed out and blocked GPU/UFS/CPU consumers. Startup
+ordering alone is insufficient. Ordinary recovery reboot initially timed out;
+a later check confirmed a new healthy boot, boot counters zero, Phosh active,
+no failed services or D-state tasks, and no RPMh/filesystem errors in that boot.
+Running/default remains cam12order, fallback deb9. No more captures were run.
+This is not lifecycle acceptance. Never install while ICC/UFS is stalled.
 
 Known gaps: qcom_icc_set still discards BCM commit failures; ICC rollback
 may resubmit old votes. Resume cleanup has no producer running, but a real

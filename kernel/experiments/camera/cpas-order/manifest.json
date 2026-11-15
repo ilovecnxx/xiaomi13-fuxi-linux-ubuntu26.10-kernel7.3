@@ -1,5 +1,5 @@
 {
-  "status": "experimental-host-tested-device-pending",
+  "status": "experimental-device-single-pass-restart-failed",
   "base_manifest": "../csid-reset/manifest.json",
   "base_manifest_sha256": "1d7d6c4a62777ed4cf1fd2dff3eed03ce0d731cd61a4646a78d0e546281e66b9",
   "base_commit": "b5d0f2923092bbcce9c52522cc2179f161b420a5",
@@ -32,7 +32,9 @@
     "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
     "package_payload_matches_build": true,
     "patch_reconstruction_tree_verified": true,
-    "device_tested": false,
+    "device_tested": true,
+    "device_single_rgb_frames": 60,
+    "device_restart_passed": false,
     "mm0_fixed": false,
     "camera_accepted": false,
     "report": "../../../../docs/相机CPAS启动顺序候选-20261115.md"
