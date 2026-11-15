@@ -15,6 +15,8 @@ This repository combines the Xiaomi 13 (`fuxi`) Linux port and its development h
 
 Routine Android/Linux system switching may be performed automatically with the documented `adb reboot recovery`, Linux `systemctl reboot`, and test scripts when the task requires it. Image deployment through `scripts/fuxi-test-recovery.sh` reboots the phone and writes `recovery_b`; verify the target image and current recovery instructions in `README.md` before running it. Do not write Android or firmware partitions; follow the explicit safety boundaries in `TASKS.md`.
 
+User direction (2026-11-15): continue from the latest version that passed the relevant validation. After successful device validation, retain that version as the running/default development baseline; do not routinely switch back to deb9, deb8, or another older version at the end of an experiment. Keep a verified older kernel installed as a recovery option. Roll back only for a concrete boot/runtime regression or an explicit user request, and record the reason. Distinguish host-tested source, device-tested scope, and the actual running kernel in TASKS.md; host tests alone do not establish device validation. Historical reports of restoring deb9 are past actions, not instructions for future work.
+
 ## Coding Style & Naming Conventions
 
 Use four spaces for Python indentation, descriptive `snake_case` names, and standard-library modules where practical. Shell scripts should use Bash, quote expansions, and keep safety checks explicit. Match nearby code and preserve the scripts' existing executable bits. Name tests `test_*.py`; keep test classes descriptive and use `unittest`.
