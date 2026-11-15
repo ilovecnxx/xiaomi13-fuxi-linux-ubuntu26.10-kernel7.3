@@ -1,0 +1,46 @@
+{
+  "status": "experimental-device-restart-blocked",
+  "base_manifest": "../csid-stop/manifest.json",
+  "base_manifest_sha256": "ce1438e86ce1eb700c9d37e6c310aad2581063db128831541a61ceb81b41fdaa",
+  "base_commit": "5fd941e366b4e489dcc5bfaf48997f0be2eff6fd",
+  "base_tree": "4857629696c20bfedd36f007f2720afde9cc2562",
+  "source_commit": "b5d0f2923092bbcce9c52522cc2179f161b420a5",
+  "result_tree": "2927b16bd207008c1e5440655e962f4b774ad4bd",
+  "source_date_epoch": 1794744332,
+  "patches": [
+    {
+      "file": "0001-media-camss-acknowledge-gen3-CSID-path-reset-before-.patch",
+      "sha256": "05c160e3ad7b4b717aad0d0bedb2f08359dff56d3357baec1340d882ce92a56b"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 36,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kasan": true,
+    "debug_mutexes": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 2,
+    "checkpatch_options": "--no-tree --no-signoff",
+    "checkpatch_warning": "British spelling; new test file covered by existing CAMSS MAINTAINERS glob",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-cam11reset",
+    "package_sha256": "6a9c08fd54702c96bcab0394a73c326996a64e20f5bf3a21ca26defd3e7069fc",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "package_payload_matches_build": true,
+    "patch_reconstruction_tree_verified": true,
+    "device_tested": true,
+    "device_boot_passed": true,
+    "device_single_rgb_frames_completed": 60,
+    "device_single_cpas_stop_passed": true,
+    "device_single_harness_passed": false,
+    "device_same_process_restart_passed": false,
+    "device_failure": "Two-round client completed only its first 60-frame round; ICC/RSC blocked tasks affected camera exit, CPU, GPU, touch and UFS. Device subsequently rebooted; trigger unknown.",
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/相机CSID路径复位-20261115.md"
+  }
+}

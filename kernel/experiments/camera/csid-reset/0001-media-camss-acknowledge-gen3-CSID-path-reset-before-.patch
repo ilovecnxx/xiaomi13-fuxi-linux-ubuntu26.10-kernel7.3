@@ -1,0 +1,304 @@
+From b5d0f2923092bbcce9c52522cc2179f161b420a5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 20:05:32 +0800
+Subject: [PATCH] media: camss: acknowledge gen3 CSID path reset before stream
+ stop
+
+Stop the gen3 IFE path with an immediate hardware path reset.
+
+Wait for the reset IRQ and propagate a missing acknowledgement.
+
+Test reset commands, IRQ completion, stale completion and stop errors.
+---
+ .../qcom/camss/camss-csid-gen3-test.c         | 101 ++++++++++++++++++
+ .../platform/qcom/camss/camss-csid-gen3.c     |  47 +++++---
+ .../platform/qcom/camss/camss-csid-test.c     |  24 +++++
+ .../media/platform/qcom/camss/camss-csid.c    |   5 +
+ .../media/platform/qcom/camss/camss-csid.h    |   2 +
+ 5 files changed, 162 insertions(+), 17 deletions(-)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c b/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
+new file mode 100644
+index 000000000..fb13eb5ad
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3-test.c
+@@ -0,0 +1,101 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Reset command and IRQ completion tests; RAM does not model DMA drain. */
++#include <kunit/device.h>
++#include <kunit/test.h>
++#include <linux/kthread.h>
++
++struct csid_gen3_test_ctx {
++	struct camss camss;
++	struct csid_device csid;
++};
++
++static int csid_gen3_test_init(struct kunit *test)
++{
++	struct csid_gen3_test_ctx *ctx;
++	struct device *dev;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	dev = kunit_device_register(test, "camss-csid-gen3-test");
++	if (IS_ERR(dev))
++		return PTR_ERR(dev);
++	ctx->camss.dev = dev;
++	ctx->csid.camss = &ctx->camss;
++	ctx->csid.base = (void __iomem *)kunit_kzalloc(test, 0x1000, GFP_KERNEL);
++	if (!ctx->csid.base)
++		return -ENOMEM;
++	init_completion(&ctx->csid.reset_complete);
++	test->priv = ctx;
++	return 0;
++}
++
++static int csid_gen3_reset_irq_thread(void *data)
++{
++	struct csid_device *csid = data;
++	bool sent = false;
++
++	while (!kthread_should_stop()) {
++		if (!sent && readl(csid->base + CSID_RST_CMD)) {
++			writel(TOP_IRQ_STATUS_RESET_DONE, csid->base + CSID_TOP_IRQ_STATUS);
++			csid_isr(0, csid);
++			sent = true;
++		}
++		usleep_range(100, 200);
++	}
++	return 0;
++}
++
++static void csid_gen3_command_test(struct kunit *test, bool stop)
++{
++	struct csid_gen3_test_ctx *ctx = test->priv;
++	struct csid_device *csid = &ctx->csid;
++	struct task_struct *task;
++	int ret;
++
++	task = kthread_run(csid_gen3_reset_irq_thread, csid, "csid-reset-test");
++	KUNIT_ASSERT_FALSE(test, IS_ERR(task));
++	ret = stop ? csid_stop_stream(csid) : csid_reset(csid);
++	kthread_stop(task);
++	KUNIT_EXPECT_EQ(test, ret, 0);
++	KUNIT_EXPECT_EQ(test, readl(csid->base + CSID_RST_CFG),
++			stop ? RST_MODE : RST_LOCATION | RST_MODE);
++	KUNIT_EXPECT_EQ(test, readl(csid->base + CSID_RST_CMD),
++			stop ? SELECT_HW_RST : SELECT_HW_RST | SELECT_IRQ_RST);
++	KUNIT_EXPECT_EQ(test, readl(csid->base + CSID_TOP_IRQ_CLEAR),
++			(u32)TOP_IRQ_STATUS_RESET_DONE);
++}
++
++static void csid_gen3_start_reset_test(struct kunit *test)
++{
++	csid_gen3_command_test(test, false);
++}
++
++static void csid_gen3_stop_reset_test(struct kunit *test)
++{
++	csid_gen3_command_test(test, true);
++}
++
++static void csid_gen3_missing_ack_test(struct kunit *test)
++{
++	struct csid_gen3_test_ctx *ctx = test->priv;
++
++	/* A stale completion from the previous reset must not satisfy this one. */
++	complete(&ctx->csid.reset_complete);
++	KUNIT_EXPECT_EQ(test, csid_stop_stream(&ctx->csid), -EIO);
++}
++
++static struct kunit_case csid_gen3_test_cases[] = {
++	KUNIT_CASE(csid_gen3_start_reset_test),
++	KUNIT_CASE(csid_gen3_stop_reset_test),
++	KUNIT_CASE(csid_gen3_missing_ack_test),
++	{}
++};
++
++static struct kunit_suite csid_gen3_test_suite = {
++	.name = "camss-csid-gen3",
++	.init = csid_gen3_test_init,
++	.test_cases = csid_gen3_test_cases,
++};
++
++kunit_test_suite(csid_gen3_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-gen3.c b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+index 0fdbf75fb..42fa4e8a7 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen3.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+@@ -308,17 +308,32 @@ static irqreturn_t csid_isr(int irq, void *dev)
+  *
+  * Return 0 on success or a negative error code otherwise
+  */
+-static int csid_reset(struct csid_device *csid)
++static int csid_reset_command(struct csid_device *csid, u32 config, u32 command)
+ {
+ 	unsigned long time;
+-	u32 val;
+-	int i;
+ 
+ 	reinit_completion(&csid->reset_complete);
+ 
+ 	writel(1, csid->base + CSID_TOP_IRQ_CLEAR);
+ 	writel(1, csid->base + CSID_IRQ_CMD);
+ 	writel(1, csid->base + CSID_TOP_IRQ_MASK);
++	writel(config, csid->base + CSID_RST_CFG);
++	writel(command, csid->base + CSID_RST_CMD);
++
++	time = wait_for_completion_timeout(&csid->reset_complete,
++					   msecs_to_jiffies(CSID_RESET_TIMEOUT_MS));
++	if (!time) {
++		dev_err(csid->camss->dev, "CSID reset timeout config=%x command=%x\n",
++			config, command);
++		return -EIO;
++	}
++
++	return 0;
++}
++
++static int csid_reset(struct csid_device *csid)
++{
++	int i;
+ 
+ 	for (i = 0; i < MSM_CSID_MAX_SRC_STREAMS; i++)
+ 		if (csid->phy.en_vc & BIT(i)) {
+@@ -329,21 +344,14 @@ static int csid_reset(struct csid_device *csid)
+ 			       csid->base + CSID_BUF_DONE_IRQ_MASK);
+ 		}
+ 
+-	/* preserve registers */
+-	val = RST_LOCATION | RST_MODE;
+-	writel(val, csid->base + CSID_RST_CFG);
+-
+-	val = SELECT_HW_RST | SELECT_IRQ_RST;
+-	writel(val, csid->base + CSID_RST_CMD);
+-
+-	time = wait_for_completion_timeout(&csid->reset_complete,
+-					   msecs_to_jiffies(CSID_RESET_TIMEOUT_MS));
+-	if (!time) {
+-		dev_err(csid->camss->dev, "CSID reset timeout\n");
+-		return -EIO;
+-	}
++	return csid_reset_command(csid, RST_LOCATION | RST_MODE,
++				 SELECT_HW_RST | SELECT_IRQ_RST);
++}
+ 
+-	return 0;
++static int csid_stop_stream(struct csid_device *csid)
++{
++	/* Titan gen3 stops the IFE path through an immediate CSID path reset. */
++	return csid_reset_command(csid, RST_MODE, SELECT_HW_RST);
+ }
+ 
+ static void csid_subdev_init(struct csid_device *csid)
+@@ -352,6 +360,7 @@ static void csid_subdev_init(struct csid_device *csid)
+ }
+ 
+ const struct csid_hw_ops csid_ops_gen3 = {
++	.stop_stream = csid_stop_stream,
+ 	.configure_stream = csid_configure_stream,
+ 	.configure_testgen_pattern = csid_configure_testgen_pattern,
+ 	.hw_version = csid_hw_version,
+@@ -361,3 +370,7 @@ const struct csid_hw_ops csid_ops_gen3 = {
+ 	.subdev_init = csid_subdev_init,
+ 	.reg_update = csid_subdev_reg_update,
+ };
++
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSID_KUNIT_TEST)
++#include "camss-csid-gen3-test.c"
++#endif
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-test.c b/drivers/media/platform/qcom/camss/camss-csid-test.c
+index ccac6d25b..ea7d885d7 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-test.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-test.c
+@@ -12,8 +12,19 @@ struct csid_power_test_ctx {
+ 	int get_error;
+ 	unsigned int starts;
+ 	unsigned int stops;
++	unsigned int quiesces;
++	int stop_error;
+ };
+ 
++static int csid_test_stop_stream(struct csid_device *csid)
++{
++	struct csid_power_test_ctx *ctx =
++		container_of(csid, struct csid_power_test_ctx, csid);
++
++	ctx->quiesces++;
++	return ctx->stop_error;
++}
++
+ static void csid_test_configure_stream(struct csid_device *csid, u8 enable)
+ {
+ 	struct csid_power_test_ctx *ctx =
+@@ -26,6 +37,7 @@ static void csid_test_configure_stream(struct csid_device *csid, u8 enable)
+ }
+ 
+ static const struct csid_hw_ops csid_test_hw_ops = {
++	.stop_stream = csid_test_stop_stream,
+ 	.configure_stream = csid_test_configure_stream,
+ };
+ 
+@@ -149,15 +161,27 @@ static void csid_stream_stop_restart_test(struct kunit *test)
+ 		KUNIT_EXPECT_FALSE(test, csid->phy.need_vc_update);
+ 		KUNIT_ASSERT_EQ(test, csid_set_stream(&csid->subdev, 0), 0);
+ 		KUNIT_EXPECT_EQ(test, ctx->stops, i);
++		KUNIT_EXPECT_EQ(test, ctx->quiesces, i);
+ 		KUNIT_EXPECT_TRUE(test, csid->phy.need_vc_update);
+ 	}
+ }
+ 
++static void csid_stream_stop_failure_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++
++	ctx->stop_error = -EIO;
++	KUNIT_EXPECT_EQ(test, csid_set_stream(&ctx->csid.subdev, 0), -EIO);
++	KUNIT_EXPECT_EQ(test, ctx->quiesces, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->stops, 0U);
++}
++
+ static struct kunit_case csid_power_test_cases[] = {
+ 	KUNIT_CASE(csid_parent_failure_test),
+ 	KUNIT_CASE(csid_disabled_pm_test),
+ 	KUNIT_CASE(csid_resume_failure_test),
+ 	KUNIT_CASE(csid_stream_stop_restart_test),
++	KUNIT_CASE(csid_stream_stop_failure_test),
+ 	{}
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index 555a04087..194cdbc3b 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -774,6 +774,11 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
+ 
+ 	/* Stop even when the enabled virtual channels have not changed. */
+ 	if (!enable || csid->phy.need_vc_update) {
++		if (!enable && csid->res->hw_ops->stop_stream) {
++			ret = csid->res->hw_ops->stop_stream(csid);
++			if (ret)
++				return ret;
++		}
+ 		csid->res->hw_ops->configure_stream(csid, enable);
+ 		csid->phy.need_vc_update = !enable;
+ 	}
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.h b/drivers/media/platform/qcom/camss/camss-csid.h
+index 5296b10f6..25583a6b7 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.h
++++ b/drivers/media/platform/qcom/camss/camss-csid.h
+@@ -75,6 +75,8 @@ struct csid_phy_config {
+ struct csid_device;
+ 
+ struct csid_hw_ops {
++	/* Optional acknowledged stop before disabling the stream configuration. */
++	int (*stop_stream)(struct csid_device *csid);
+ 	/*
+ 	 * configure_stream - Configures and starts CSID input stream
+ 	 * @csid: CSID device
+-- 
+2.55.0
+
