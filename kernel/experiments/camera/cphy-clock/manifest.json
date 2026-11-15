@@ -1,0 +1,40 @@
+{
+  "status": "experimental-host-tested-cphy-clocks",
+  "base_manifest": "../cphy-phy/manifest.json",
+  "base_manifest_sha256": "cea744b3a68abc48ddaf5dcd83eb11c79ee69d9817010da768cc2a9aae4f6930",
+  "base_commit": "cd664341a4bf475c5e9a52665ba254b039c0cb13",
+  "base_tree": "28b699c0da1dac932c7857ee2329f1df7f30f199",
+  "source_commit": "3038e196d0839a19ba05f9f354115ef297d0bad4",
+  "result_tree": "8e55bd9348e4c6c9adf60cb5603044ebf6d80e8a",
+  "source_date_epoch": 1794750728,
+  "patches": [
+    {
+      "file": "0001-media-camss-validate-C-PHY-link-rates-and-SM8550-clo.patch",
+      "sha256": "e4d1c8e41f000c37e25986eb9687a05b4e6b12608ff976129cb4b5b04d13942a"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 84,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kunit_added": 16,
+    "kasan": true,
+    "debug_mutexes": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 1,
+    "checkpatch_warning_review": "New file covered by the CAMSS directory entry in MAINTAINERS",
+    "checkpatch_options": "--no-tree --no-signoff",
+    "patch_reconstruction_tree_verified": true,
+    "manifest_ancestry_verified": 14,
+    "ancestry_patch_hashes_verified": 24,
+    "device_tested": false,
+    "cphy_endpoint_enabled": false,
+    "phy_stream_integration": false,
+    "imx800_driver_added": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/主摄C-PHY频率与时钟-20261115.md"
+  }
+}

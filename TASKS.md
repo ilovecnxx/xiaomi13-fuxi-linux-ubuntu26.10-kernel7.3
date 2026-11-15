@@ -4,7 +4,7 @@
 [收尾前历史快照](docs/archive/TASKS-20261114-before-closeout.md)，不沿用历史授权。
 工程收尾 P0 已完成，当前继续功能开发。早期环境限制见 [收尾记录](docs/工程收尾-20261114.md)，
 恢复连接后的设备结果见 [设备收尾验收](docs/设备收尾验收-20261114.md)，
-最新主摄进展见 [C-PHY 接收配置候选](docs/主摄C-PHY接收配置-20261115.md)，完整功能范围见
+最新主摄进展见 [C-PHY 频率与时钟候选](docs/主摄C-PHY频率与时钟-20261115.md)，完整功能范围见
 [相机完成矩阵](docs/相机功能完成矩阵.md)。
 
 **最新实机更新：cam12order 已安装、正常启动并自动确认，运行/默认 cam12order，
@@ -24,12 +24,13 @@ Phosh active、当前启动没有 RPMh/文件系统错误；未再采集。没�
 - 旧版保留为故障恢复入口。只有出现明确的启动失败、功能回归或用户要求时才回退，并记录触发原因及恢复目标。
 - 分别记录源码验证、实机验证范围和实际运行状态；主机编译/测试通过不能写成实机通过，单次 RAW 通过不能写成 MM0 或整机功能完成。
 
-当前相机源码续开发基准是 `cphy-phy`（源码提交 `cd664341a4bf475c5e9a52665ba254b039c0cb13`），
-从 `cphy-rx` 向前补齐 PHY 2.1.2 寄存器后端，保留接收端类型/trio 校验和 CSID780 配置；
-68 项 KUnit、ARM64 W=1 通过，checkpatch 0 错误、1 条已核实覆盖的 MAINTAINERS 提醒。
-28 档速率和初始化表已核对公开固定来源；端点及 stream-on 尚未连接后端，尚未部署。
-本机原厂 DTB 已确认主摄连接 CSIPHY2、PHY 2.1.2、MCLK 19.2 MHz；模式速率/settle、
-RX 时钟、完整 PHY 集成和 IMX800 驱动仍待完成，见[PHY 后端记录](docs/主摄C-PHY寄存器后端-20261115.md)。
+当前相机源码续开发基准是 `cphy-clock`（源码提交 `3038e196d0839a19ba05f9f354115ef297d0bad4`），
+从 `cphy-phy` 向前补齐明确的 C-PHY link frequency、数据率换算、RX/timer 独立选档及错误检测，
+保留 PHY 2.1.2 后端、接收端类型/trio 校验和 CSID780 配置。84 项 KUnit、ARM64 W=1 通过，
+checkpatch 0 错误、1 条已核实覆盖的 MAINTAINERS 提醒。端点及 stream-on 尚未连接后端，尚未部署。
+厂商上层 settle 转换已找到固定来源；本机原厂 DTB 已确认 CSIPHY2、PHY 2.1.2、MCLK 19.2 MHz
+及 RX/timer 档位。实际 PLL、settle 传递、完整 PHY 集成和 IMX800 驱动仍待完成，
+见[频率与时钟记录](docs/主摄C-PHY频率与时钟-20261115.md)。
 手机运行/默认 cam12order、恢复入口 deb9。
 单次 RGB 60 帧的 CPAS 停机握手成功，后续只读确认休眠/共享时钟归零；
 但同进程两轮测试只完成首轮，第二轮 CPAS start 成功后 MM0 仍超时，影响 UFS/CPU/GPU。

@@ -1,0 +1,612 @@
+From 3038e196d0839a19ba05f9f354115ef297d0bad4 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 21:52:08 +0800
+Subject: [PATCH] media: camss: validate C-PHY link rates and SM8550 clocks
+
+---
+ drivers/media/platform/qcom/camss/Kconfig     |   3 +-
+ .../media/platform/qcom/camss/camss-csid.c    |   4 +-
+ .../qcom/camss/camss-csiphy-3ph-2-1-2.c       |  21 ++
+ .../qcom/camss/camss-csiphy-clock-test.c      | 344 ++++++++++++++++++
+ .../media/platform/qcom/camss/camss-csiphy.c  |  78 +++-
+ .../media/platform/qcom/camss/camss-csiphy.h  |   1 +
+ drivers/media/platform/qcom/camss/camss.c     |   9 +-
+ drivers/media/platform/qcom/camss/camss.h     |   2 +-
+ 8 files changed, 454 insertions(+), 8 deletions(-)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index 5c346cb76..78f64cbc8 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -33,10 +33,11 @@ config VIDEO_QCOM_CAMSS_CSID_KUNIT_TEST
+ 
+ config VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST
+ 	bool "KUnit tests for CAMSS C-PHY programming" if !KUNIT_ALL_TESTS
+-	depends on KUNIT=y && VIDEO_QCOM_CAMSS=y
++	depends on KUNIT=y && VIDEO_QCOM_CAMSS=y && COMMON_CLK
+ 	default KUNIT_ALL_TESTS
+ 	help
+ 	  Exercise SM8550 PHY 2.1.2 C-PHY register programming, input validation,
+ 	  rate boundaries and stop/reconfigure using memory-backed registers.
+ 	  Check that rejected configurations leave the registers unchanged.
++	  Exercise sensor link frequency controls and RX/timer clock selection.
+ 	  These tests do not validate electrical timing or sensor modes.
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index b16306eda..5bda52ba3 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -547,7 +547,9 @@ static int csid_set_clock_rates(struct csid_device *csid)
+ 	fmt = csid_get_fmt_entry(csid->res->formats->formats, csid->res->formats->nformats,
+ 				 csid->fmt[MSM_CSIPHY_PAD_SINK].code);
+ 	link_freq = camss_get_link_freq(&csid->subdev.entity, fmt->bpp,
+-					csid->phy.lane_cnt);
++					csid->phy.lane_cnt, csid->phy.bus_type);
++	if (link_freq < 0 && csid->phy.bus_type == V4L2_MBUS_CSI2_CPHY)
++		return link_freq;
+ 	if (link_freq < 0)
+ 		link_freq = 0;
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+index f5cac13d4..97204a083 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-3ph-2-1-2.c
+@@ -8,6 +8,7 @@
+ 
+ #include <linux/delay.h>
+ #include <linux/io.h>
++#include <linux/math64.h>
+ 
+ #include "camss.h"
+ #include "camss-csiphy.h"
+@@ -245,6 +246,26 @@ int csiphy_2_1_2_cphy_disable(struct csiphy_device *csiphy)
+ 	return 0;
+ }
+ 
++/**
++ * csiphy_2_1_2_cphy_data_rate - Convert V4L2 link frequency to bits/s per trio
++ * @link_freq: positive V4L2 link frequency in Hz
++ *
++ * C-PHY encodes 16 bits in 7 symbols; V4L2 link frequency is half the symbol
++ * rate. Round up so a fractional bit/s cannot select an undersized rate bin.
++ * Bound the input before multiplication using the final PHY bandwidth bin.
++ *
++ * Return: data rate, or -ERANGE for a rate outside the supported table.
++ */
++s64 csiphy_2_1_2_cphy_data_rate(s64 link_freq)
++{
++	u64 max_rate = cphy_rates[ARRAY_SIZE(cphy_rates) - 1].bandwidth;
++
++	if (link_freq <= 0 || link_freq > div_u64(max_rate * 7, 32))
++		return -ERANGE;
++
++	return DIV_ROUND_UP_ULL((u64)link_freq * 32, 7);
++}
++
+ #if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST)
+ #include "camss-csiphy-3ph-2-1-2-test.c"
+ #endif
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c b/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
+new file mode 100644
+index 000000000..a8801a616
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-csiphy-clock-test.c
+@@ -0,0 +1,344 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Exercise the media graph, V4L2 controls and common clock framework. */
++#include <kunit/test.h>
++#include <linux/clk-provider.h>
++#include <media/v4l2-ctrls.h>
++
++struct cphy_clock_mock {
++	struct clk_hw hw;
++	unsigned long rate;
++	long rounded;
++	int error;
++	unsigned int writes;
++};
++
++struct cphy_clock_test_ctx {
++	struct camss camss;
++	struct camss_resources resources;
++	struct csiphy_device csiphy;
++	struct csiphy_csi2_cfg csi2;
++	struct media_device mdev;
++	struct v4l2_subdev sensor;
++	struct media_pad sensor_pad;
++	struct v4l2_ctrl_handler controls;
++	struct camss_clock clocks[2];
++	struct cphy_clock_mock mock[2];
++	u32 rx_rates[2];
++	u32 timer_rate;
++	s64 menu[2];
++	u64 mbus_freq;
++	int mbus_error;
++};
++
++static unsigned long cphy_clock_recalc(struct clk_hw *hw, unsigned long parent)
++{
++	return container_of(hw, struct cphy_clock_mock, hw)->rate;
++}
++
++static int cphy_clock_determine(struct clk_hw *hw, struct clk_rate_request *req)
++{
++	struct cphy_clock_mock *mock = container_of(hw, struct cphy_clock_mock, hw);
++
++	if (mock->rounded < 0)
++		return mock->rounded;
++	if (mock->rounded)
++		req->rate = mock->rounded;
++	return 0;
++}
++
++static int cphy_clock_set(struct clk_hw *hw, unsigned long rate,
++			  unsigned long parent)
++{
++	struct cphy_clock_mock *mock = container_of(hw, struct cphy_clock_mock, hw);
++
++	mock->writes++;
++	if (mock->error)
++		return mock->error;
++	mock->rate = rate;
++	return 0;
++}
++
++static const struct clk_ops cphy_clock_ops = {
++	.recalc_rate = cphy_clock_recalc,
++	.determine_rate = cphy_clock_determine,
++	.set_rate = cphy_clock_set,
++};
++
++static int cphy_clock_mbus(struct v4l2_subdev *sd, unsigned int pad,
++			   struct v4l2_mbus_config *config)
++{
++	struct cphy_clock_test_ctx *ctx =
++		container_of(sd, struct cphy_clock_test_ctx, sensor);
++
++	config->link_freq = ctx->mbus_freq;
++	return ctx->mbus_error;
++}
++
++static const struct v4l2_subdev_pad_ops cphy_clock_pad_ops = {
++	.get_mbus_config = cphy_clock_mbus,
++};
++
++static const struct v4l2_subdev_ops cphy_clock_sensor_ops = {
++	.pad = &cphy_clock_pad_ops,
++};
++
++static void cphy_clock_cleanup(void *data)
++{
++	struct cphy_clock_test_ctx *ctx = data;
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(ctx->clocks); i++) {
++		if (ctx->clocks[i].clk) {
++			clk_put(ctx->clocks[i].clk);
++			clk_hw_unregister(&ctx->mock[i].hw);
++		}
++	}
++	media_device_unregister_entity(&ctx->sensor.entity);
++	media_device_unregister_entity(&ctx->csiphy.subdev.entity);
++	media_device_cleanup(&ctx->mdev);
++	v4l2_ctrl_handler_free(&ctx->controls);
++}
++
++static int cphy_clock_init(struct kunit *test)
++{
++	static const char * const names[] = { "cphy-test-rx", "cphy-test-timer" };
++	struct cphy_clock_test_ctx *ctx;
++	unsigned int i;
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++	ctx->resources.version = CAMSS_8550;
++	ctx->camss.res = &ctx->resources;
++	ctx->csiphy.camss = &ctx->camss;
++	ctx->csiphy.cfg.csi2 = &ctx->csi2;
++	ctx->csi2.bus_type = V4L2_MBUS_CSI2_CPHY;
++	ctx->csiphy.nclocks = ARRAY_SIZE(ctx->clocks);
++	ctx->csiphy.clock = ctx->clocks;
++	ctx->rx_rates[0] = 400000000;
++	ctx->rx_rates[1] = 480000000;
++	ctx->timer_rate = 400000000;
++	ctx->clocks[0].freq = ctx->rx_rates;
++	ctx->clocks[0].nfreqs = ARRAY_SIZE(ctx->rx_rates);
++	ctx->clocks[1].freq = &ctx->timer_rate;
++	ctx->clocks[1].nfreqs = 1;
++	ctx->menu[0] = 1449597917;
++	ctx->menu[1] = 2992500000LL;
++	v4l2_ctrl_handler_init(&ctx->controls, 2);
++	media_device_init(&ctx->mdev);
++	v4l2_subdev_init(&ctx->sensor, &cphy_clock_sensor_ops);
++	v4l2_subdev_init(&ctx->csiphy.subdev, &csiphy_v4l2_ops);
++	ctx->sensor.entity.function = MEDIA_ENT_F_CAM_SENSOR;
++	ctx->sensor.ctrl_handler = &ctx->controls;
++	ctx->sensor_pad.flags = MEDIA_PAD_FL_SOURCE;
++	ctx->csiphy.pads[0].flags = MEDIA_PAD_FL_SINK;
++	ret = kunit_add_action_or_reset(test, cphy_clock_cleanup, ctx);
++	if (ret)
++		return ret;
++	ret = media_entity_pads_init(&ctx->sensor.entity, 1, &ctx->sensor_pad);
++	if (ret)
++		return ret;
++	ret = media_entity_pads_init(&ctx->csiphy.subdev.entity, 1, ctx->csiphy.pads);
++	if (ret)
++		return ret;
++	ret = media_device_register_entity(&ctx->mdev, &ctx->sensor.entity);
++	if (ret)
++		return ret;
++	ret = media_device_register_entity(&ctx->mdev, &ctx->csiphy.subdev.entity);
++	if (ret)
++		return ret;
++	ret = media_create_pad_link(&ctx->sensor.entity, 0,
++				    &ctx->csiphy.subdev.entity, 0, MEDIA_LNK_FL_ENABLED);
++	if (ret)
++		return ret;
++	for (i = 0; i < ARRAY_SIZE(ctx->clocks); i++) {
++		struct clk_init_data init = { .name = names[i], .ops = &cphy_clock_ops };
++		struct clk *clk;
++
++		ctx->mock[i].hw.init = &init;
++		ret = clk_hw_register(NULL, &ctx->mock[i].hw);
++		if (ret)
++			return ret;
++		clk = clk_hw_get_clk(&ctx->mock[i].hw, NULL);
++		if (IS_ERR(clk)) {
++			clk_hw_unregister(&ctx->mock[i].hw);
++			return PTR_ERR(clk);
++		}
++		ctx->clocks[i].clk = clk;
++	}
++	return 0;
++}
++
++static struct v4l2_ctrl *cphy_clock_add_link(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	struct v4l2_ctrl *ctrl;
++
++	ctrl = v4l2_ctrl_new_int_menu(&ctx->controls, NULL, V4L2_CID_LINK_FREQ,
++				     1, 0, ctx->menu);
++	KUNIT_ASSERT_NOT_NULL(test, ctrl);
++	return ctrl;
++}
++
++static void cphy_clock_link_sources_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	struct media_entity *entity = &ctx->csiphy.subdev.entity;
++	struct v4l2_ctrl *ctrl;
++
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), -ENOENT);
++	ctrl = v4l2_ctrl_new_std(&ctx->controls, NULL, V4L2_CID_PIXEL_RATE,
++				0, 2000000000, 1, 600000000);
++	KUNIT_ASSERT_NOT_NULL(test, ctrl);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), -ENOENT);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_DPHY), 1000000000LL);
++	ctrl = cphy_clock_add_link(test);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), ctx->menu[0]);
++	KUNIT_ASSERT_EQ(test, v4l2_ctrl_s_ctrl(ctrl, 1), 0);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), ctx->menu[1]);
++	ctx->mbus_freq = 1500000000;
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), 1500000000LL);
++	ctx->mbus_error = -EIO;
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), -EIO);
++	ctx->mbus_error = -ENOIOCTLCMD;
++	ctx->mbus_freq = 0;
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), ctx->menu[1]);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_PARALLEL), -EINVAL);
++	media_entity_remove_links(entity);
++	KUNIT_EXPECT_EQ(test, camss_get_link_freq(entity, 10, 3,
++			V4L2_MBUS_CSI2_CPHY), -ENODEV);
++}
++
++static void cphy_clock_rates_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	struct v4l2_ctrl *ctrl = cphy_clock_add_link(test);
++
++	KUNIT_ASSERT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), 0);
++	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[0].clk), 400000000UL);
++	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[1].clk), 400000000UL);
++	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 400000000U);
++	KUNIT_ASSERT_EQ(test, v4l2_ctrl_s_ctrl(ctrl, 1), 0);
++	KUNIT_ASSERT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), 0);
++	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[0].clk), 480000000UL);
++	KUNIT_EXPECT_EQ(test, clk_get_rate(ctx->clocks[1].clk), 400000000UL);
++	KUNIT_EXPECT_EQ(test, ctx->mock[1].writes, 1U);
++}
++
++static const char * const cphy_clock_bad_cases[] = {
++	"missing-frequency", "excess-frequency", "rx-too-slow", "timer-rounded",
++	"rx-round-error", "timer-round-error", "wrong-soc", "generic-phy",
++	"missing-clock", "no-rx-rate", "wrong-timer", "no-vote",
++};
++
++static void cphy_clock_bad_desc(const char * const *name, char *desc)
++{
++	strscpy(desc, *name, KUNIT_PARAM_DESC_SIZE);
++}
++
++KUNIT_ARRAY_PARAM(cphy_clock_bad, cphy_clock_bad_cases, cphy_clock_bad_desc);
++
++static void cphy_clock_invalid_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++	const char *name = *(const char * const *)test->param_value;
++	int expected = -ERANGE;
++
++	ctx->mbus_freq = ctx->menu[0];
++	if (!strcmp(name, "missing-frequency")) {
++		ctx->mbus_freq = 0;
++		expected = -ENOENT;
++	} else if (!strcmp(name, "excess-frequency")) {
++		ctx->mbus_freq = S64_MAX;
++	} else if (!strcmp(name, "rx-too-slow")) {
++		ctx->mock[0].rounded = 200000000;
++	} else if (!strcmp(name, "timer-rounded")) {
++		ctx->mock[1].rounded = 399000000;
++	} else if (!strcmp(name, "rx-round-error")) {
++		ctx->mock[0].rounded = -EIO;
++		expected = -EIO;
++	} else if (!strcmp(name, "timer-round-error")) {
++		ctx->mock[1].rounded = -EIO;
++		expected = -EIO;
++	} else if (!strcmp(name, "wrong-soc")) {
++		ctx->resources.version = CAMSS_7280;
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "generic-phy")) {
++		ctx->csiphy.phy = ERR_PTR(-ENODEV);
++		expected = -EOPNOTSUPP;
++	} else if (!strcmp(name, "missing-clock")) {
++		ctx->csiphy.nclocks = 1;
++		expected = -EINVAL;
++	} else if (!strcmp(name, "no-rx-rate")) {
++		ctx->clocks[0].nfreqs = 0;
++		expected = -EINVAL;
++	} else if (!strcmp(name, "wrong-timer")) {
++		ctx->timer_rate = 200000000;
++		expected = -EINVAL;
++	} else if (!strcmp(name, "no-vote")) {
++		ctx->mbus_freq = ctx->menu[1];
++		ctx->clocks[0].nfreqs = 1;
++	}
++	KUNIT_EXPECT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), expected);
++	KUNIT_EXPECT_EQ(test, ctx->mock[0].writes, 0U);
++	KUNIT_EXPECT_EQ(test, ctx->mock[1].writes, 0U);
++	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 0U);
++}
++
++static void cphy_clock_conversion_test(struct kunit *test)
++{
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(1449597917), 6626733335LL);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(2992500000LL), 13680000000LL);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(2992500001LL), -ERANGE);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(1), 5LL);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(0), -ERANGE);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(-1), -ERANGE);
++	KUNIT_EXPECT_EQ(test, csiphy_2_1_2_cphy_data_rate(S64_MAX), -ERANGE);
++}
++
++static void cphy_clock_provider_failure_test(struct kunit *test)
++{
++	struct cphy_clock_test_ctx *ctx = test->priv;
++
++	ctx->mbus_freq = ctx->menu[0];
++	ctx->mock[0].error = -EIO;
++	KUNIT_EXPECT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), -ERANGE);
++	KUNIT_EXPECT_EQ(test, ctx->mock[0].writes, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->mock[1].writes, 0U);
++	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 0U);
++	ctx->mock[0].error = 0;
++	ctx->mock[1].error = -EIO;
++	KUNIT_EXPECT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), -ERANGE);
++	KUNIT_EXPECT_EQ(test, ctx->mock[1].writes, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 0U);
++	ctx->mock[1].error = 0;
++	KUNIT_ASSERT_EQ(test, csiphy_set_clock_rates_cphy(&ctx->csiphy), 0);
++	KUNIT_EXPECT_EQ(test, ctx->csiphy.timer_clk_rate, 400000000U);
++}
++
++static struct kunit_case cphy_clock_cases[] = {
++	KUNIT_CASE(cphy_clock_link_sources_test),
++	KUNIT_CASE(cphy_clock_rates_test),
++	KUNIT_CASE_PARAM(cphy_clock_invalid_test, cphy_clock_bad_gen_params),
++	KUNIT_CASE(cphy_clock_conversion_test),
++	KUNIT_CASE(cphy_clock_provider_failure_test),
++	{}
++};
++
++static struct kunit_suite cphy_clock_suite = {
++	.name = "camss-cphy-clock",
++	.init = cphy_clock_init,
++	.test_cases = cphy_clock_cases,
++};
++kunit_test_suite(cphy_clock_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.c b/drivers/media/platform/qcom/camss/camss-csiphy.c
+index f99eea2ef..37d17c25d 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.c
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.c
+@@ -133,9 +133,69 @@ static u8 csiphy_get_bpp(const struct csiphy_format_info *formats,
+ }
+ 
+ /*
+- * csiphy_set_clock_rates_legacy - Calculate and set clock rates on CSIPHY module
++ * csiphy_set_clock_rates_cphy - Set SM8550 C-PHY RX and timer clocks
+  * @csiphy: CSIPHY device
+  */
++static int csiphy_set_clock_rates_cphy(struct csiphy_device *csiphy)
++{
++	struct camss_clock *rx, *timer;
++	s64 link_freq, data_rate;
++	u64 min_rate;
++	long rx_rate, timer_rate;
++	int i, ret;
++
++	if (csiphy->camss->res->version != CAMSS_8550 || csiphy->phy)
++		return -EOPNOTSUPP;
++	/* SM8550 resources list the RX clock first and the timer second. */
++	if (csiphy->nclocks != 2)
++		return -EINVAL;
++	rx = &csiphy->clock[0];
++	timer = &csiphy->clock[1];
++	if (rx->nfreqs <= 0 || timer->nfreqs != 1 || timer->freq[0] != 400000000)
++		return -EINVAL;
++
++	link_freq = camss_get_link_freq(&csiphy->subdev.entity, 0, 0,
++				      V4L2_MBUS_CSI2_CPHY);
++	if (link_freq < 0)
++		return link_freq;
++	data_rate = csiphy_2_1_2_cphy_data_rate(link_freq);
++	if (data_rate < 0)
++		return data_rate;
++
++	/* PHY 2.1.2 uses the vendor's /32 RX vote and an independent timer. */
++	min_rate = div_u64(data_rate, 32) + 1;
++	for (i = 0; i < rx->nfreqs; i++)
++		if (rx->freq[i] > min_rate)
++			break;
++	if (i == rx->nfreqs)
++		return -ERANGE;
++
++	rx_rate = clk_round_rate(rx->clk, rx->freq[i]);
++	if (rx_rate < 0)
++		return rx_rate;
++	if (rx_rate <= min_rate)
++		return -ERANGE;
++	timer_rate = clk_round_rate(timer->clk, timer->freq[0]);
++	if (timer_rate < 0)
++		return timer_rate;
++	if (timer_rate != timer->freq[0])
++		return -ERANGE;
++
++	ret = clk_set_rate(rx->clk, rx_rate);
++	if (ret)
++		return ret;
++	/* CCF does not propagate every provider set_rate error. */
++	if (clk_get_rate(rx->clk) <= min_rate)
++		return -ERANGE;
++	ret = clk_set_rate(timer->clk, timer_rate);
++	if (ret)
++		return ret;
++	if (clk_get_rate(timer->clk) != timer_rate)
++		return -ERANGE;
++	csiphy->timer_clk_rate = timer_rate;
++	return 0;
++}
++
+ static int csiphy_set_clock_rates_legacy(struct csiphy_device *csiphy)
+ {
+ 	struct device *dev = csiphy->camss->dev;
+@@ -147,7 +207,11 @@ static int csiphy_set_clock_rates_legacy(struct csiphy_device *csiphy)
+ 				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
+ 	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+ 
+-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
++	if (csiphy->cfg.csi2->bus_type == V4L2_MBUS_CSI2_CPHY)
++		return csiphy_set_clock_rates_cphy(csiphy);
++
++	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
++				      csiphy->cfg.csi2->bus_type);
+ 	if (link_freq < 0)
+ 		link_freq  = 0;
+ 
+@@ -274,7 +338,8 @@ static int csiphy_stream_on_legacy(struct csiphy_device *csiphy)
+ 	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
+ 	u8 val;
+ 
+-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
++	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
++				      csiphy->cfg.csi2->bus_type);
+ 
+ 	if (link_freq < 0) {
+ 		dev_err(csiphy->camss->dev,
+@@ -336,7 +401,8 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
+ 
+ 	dphy_cfg = &dphy_opts.mipi_dphy;
+ 
+-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
++	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
++				      csiphy->cfg.csi2->bus_type);
+ 
+ 	if (link_freq <= 0) {
+ 		dev_err(dev,
+@@ -998,3 +1064,7 @@ void msm_csiphy_unregister_entity(struct csiphy_device *csiphy)
+ 	v4l2_device_unregister_subdev(&csiphy->subdev);
+ 	media_entity_cleanup(&csiphy->subdev.entity);
+ }
++
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSIPHY_KUNIT_TEST)
++#include "camss-csiphy-clock-test.c"
++#endif
+diff --git a/drivers/media/platform/qcom/camss/camss-csiphy.h b/drivers/media/platform/qcom/camss/camss-csiphy.h
+index e7217d2d5..a83f741ff 100644
+--- a/drivers/media/platform/qcom/camss/camss-csiphy.h
++++ b/drivers/media/platform/qcom/camss/camss-csiphy.h
+@@ -145,5 +145,6 @@ extern const struct csiphy_hw_ops csiphy_ops_3ph_1_0;
+ int csiphy_2_1_2_cphy_configure(struct csiphy_device *csiphy,
+ 			       u64 data_rate, u32 settle_count);
+ int csiphy_2_1_2_cphy_disable(struct csiphy_device *csiphy);
++s64 csiphy_2_1_2_cphy_data_rate(s64 link_freq);
+ 
+ #endif /* QC_MSM_CAMSS_CSIPHY_H */
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index 5f602d358..db281bc3c 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -4542,11 +4542,12 @@ struct media_pad *camss_find_sensor_pad(struct media_entity *entity)
+  * @entity: Media entity in the current pipeline
+  * @bpp: Number of bits per pixel for the current format
+  * @lanes: Number of lanes in the link to the sensor
++ * @bus_type: CSI-2 physical bus type
+  *
+  * Return link frequency on success or a negative error code otherwise
+  */
+ s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
+-			unsigned int lanes)
++			unsigned int lanes, enum v4l2_mbus_type bus_type)
+ {
+ 	struct media_pad *sensor_pad;
+ 
+@@ -4554,6 +4555,12 @@ s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
+ 	if (!sensor_pad)
+ 		return -ENODEV;
+ 
++	/* C-PHY requires an explicit rate; a sensor pixel clock is ambiguous. */
++	if (bus_type == V4L2_MBUS_CSI2_CPHY)
++		return v4l2_get_link_freq(sensor_pad, 0, 0);
++	if (bus_type != V4L2_MBUS_CSI2_DPHY)
++		return -EINVAL;
++
+ 	return v4l2_get_link_freq(sensor_pad, bpp, 2 * lanes);
+ }
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss.h b/drivers/media/platform/qcom/camss/camss.h
+index a36ab0708..e2c0b3aac 100644
+--- a/drivers/media/platform/qcom/camss/camss.h
++++ b/drivers/media/platform/qcom/camss/camss.h
+@@ -181,7 +181,7 @@ void camss_cpas_snapshot(struct camss *camss, unsigned int vfe_id,
+ 			 const char *phase);
+ struct media_pad *camss_find_sensor_pad(struct media_entity *entity);
+ s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
+-			unsigned int lanes);
++			unsigned int lanes, enum v4l2_mbus_type bus_type);
+ int camss_get_pixel_clock(struct media_entity *entity, u64 *pixel_clock);
+ int camss_pm_domain_on(struct camss *camss, int id);
+ void camss_pm_domain_off(struct camss *camss, int id);
+-- 
+2.55.0
+
