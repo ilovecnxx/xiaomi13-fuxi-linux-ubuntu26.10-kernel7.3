@@ -10,19 +10,9 @@
 /.venv/
 /logs/
 
-# ---- work/ 采用白名单：只跟踪下面几个子目录 ----
-/work/*
-!/work/patches/
-!/work/state/
-!/work/deploy/
-!/work/rootfs-overlay/
-!/work/device-info/
-!/work/chromium-mobile/
-# 自有应用与小工具源码（2026-11-04 公开）
-!/work/denial-arm64/
-!/work/scripts-tmp/
-!/work/wdt-test/
-!/work/tools-host/
+# New work/ outputs are local. Existing tracked historical files remain tracked.
+# Maintained sources belong in apps/, scripts/, kernel/ or packaging/.
+/work/
 
 # ---- 白名单目录内仍排除：产物/二进制/密钥 ----
 *.img
@@ -49,13 +39,6 @@ known_hosts
 __pycache__/
 *.pyc
 
-# ---- 设备密钥 / 存档（绝不入库）----
-/work/ssh/
-/work/backup/
-/work/efs-copy/
-/work/firmware*/
-/work/transfer/
-
 # ---- 第三方源码与工具二进制 ----
 /research/src-mm/
 /tools/platform-tools/
@@ -68,13 +51,5 @@ __pycache__/
 /apps/**/build/
 /apps/**/*.egg-info/
 /apps/**/.pytest_cache/
-/work/wdt-test/wdt_test
-
-# ---- Denial 安装产物与截图（2026-11-07）----
-/work/denial-arm64/artifacts/
-/work/denial-arm64/*.png
-
 # ---- 其它 ----
 .checkpatch-camelcase.date.0
-/work/apt/
-/work/modem-bin/

@@ -1,4 +1,9 @@
-# Fuxi Camera Experiment
+# Historical OV13B10 Camera Recipe
+
+This page reproduces the historical cam4 recipe and its follow-ups. It is not the
+current camera worktree, device baseline or rollback instruction. Continue from
+[TASKS.md](../../../TASKS.md); current scope and technical entry points are in the
+[main-camera plan](../../../docs/主摄接通计划-20261115.md).
 
 This series is separate from `kernel/manifest.json`. It demonstrates OV13B10
 capture, but is not a daily-use or release candidate: both cam3 and cam4 stream
@@ -97,7 +102,7 @@ Focused checks used `W=1` for `drivers/misc/fuxi-camera-power.o`,
 `dt_binding_check`. The DT build retains the existing unrelated DSI
 `avoid_unnecessary_addr_size` warning.
 
-## Device Boundary
+## Historical Device Setup
 
 Only Linux kernel deb installation is used. The capture variant is
 `sm8550-xiaomi-fuxi-ov13b10`, not the manual-power diagnostic variant. Preserve

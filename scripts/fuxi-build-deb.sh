@@ -30,6 +30,10 @@ read -r -a EXTRA_CFG <<< "${FUXI_EXTRA_CFG:-}"
 JOBS="${FUXI_BUILD_JOBS:-$(nproc)}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo 'FUXI_BUILD_JOBS must be a positive integer'; exit 1; }
 export FUXI_BUILD_JOBS="$JOBS"
+mkdir -p "$B/work/kbuild"
+STATE=$(mktemp -d "$B/work/kbuild/.source-$NAME.XXXXXX")
+trap 'rm -rf "$STATE"' EXIT
+python3 "$B/scripts/fuxi-source-state.py" capture --tree "$K" --output "$STATE"
 M=(make -C "$K" O="$O" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j"$JOBS" LOCALVERSION="-fuxi-$NAME")
 # Keep errexit active inside build groups and show failures outside their log redirection.
 exec 3>&2
@@ -73,6 +77,7 @@ Description: Linux kernel $KR for Xiaomi 13 (fuxi)
 EOF
   [ -f "$P/usr/lib/linux-image-$KR/qcom/sm8550-xiaomi-fuxi.dtb" ] || { echo "[deb] 包里没有 qcom/sm8550-xiaomi-fuxi.dtb"; exit 1; }
   find "$P" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+  python3 "$B/scripts/fuxi-source-state.py" verify --tree "$K" --output "$STATE"
   mkdir -p "$KO"
   dpkg-deb --root-owner-group -Zxz -b "$P" "$KO/linux-image-${KR}_$KV-${NAME}_arm64.deb"
 } >> "$L" 2>&1
@@ -80,7 +85,7 @@ trap - ERR
 exec 3>&-
 rm -rf "$P"
 cp "$O/.config" "$KO/config"
-echo "$(git -C "$K" rev-parse --short HEAD)$(git -C "$K" diff --quiet HEAD || echo -dirty) $(git -C "$K" rev-parse --abbrev-ref HEAD)" > "$KO/source"
+cp "$STATE/source.patch" "$STATE/source-state.json" "$KO/"
 python3 - "$B" "$K" "$KO" "$KR" <<'PY'
 import hashlib
 import json
@@ -90,13 +95,10 @@ import subprocess
 import sys
 
 root, tree, output = map(Path, sys.argv[1:4])
-def git(*args):
-    return subprocess.check_output(["git", "-C", str(tree), *args], text=True).strip()
+state = json.loads((output / "source-state.json").read_text())
 record = {
     "kernel_release": sys.argv[4],
-    "source_commit": git("rev-parse", "HEAD"),
-    "source_tree": git("rev-parse", "HEAD^{tree}"),
-    "source_dirty": bool(git("status", "--porcelain")),
+    **state,
     "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
     "extra_config": os.environ.get("FUXI_EXTRA_CFG", ""),
     "build_jobs": int(os.environ["FUXI_BUILD_JOBS"]),
@@ -106,6 +108,9 @@ record = {
         if Path("/build-environment.lock").exists() else None,
 }
 (output / "build.json").write_text(json.dumps(record, indent=2) + "\n")
+(output / "source").write_text(
+    state["source_commit"] + ("-dirty" if state["source_dirty"] else "")
+    + " tree=" + state["source_tree"] + "\n")
 PY
 if [ -f /build-environment.lock ]; then cp /build-environment.lock "$KO/build-environment.lock"; fi
 ( cd "$KO" && find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS )

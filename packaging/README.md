@@ -10,7 +10,7 @@ to reuse altered trees. Original local experiments are not changed.
 The `build/Containerfile` fixes the OCI base and signed APT snapshot. Build
 artifacts and environment records stay under ignored `work/` and `build/`.
 
-Build order:
+For full integration, build in this order:
 
 1. Prepare third-party sources and the kernel source.
 2. Build the pinned amd64 and arm64 environments.
@@ -18,6 +18,12 @@ Build order:
 4. Build kernel debs independently in the amd64 environment.
 5. Build device packages and publish an APT snapshot. Only kernel builds listed
    in `apt/kernels.list` are advertised; changing this list requires device evidence.
+
+Daily iteration rebuilds only the changed component and affected dependents.
+Reuse matching source trees, environment images and build outputs. A support-only
+snapshot uses `FUXI_APT_SUPPORT_ONLY=1`; local validation uses `FUXI_APT_LOCAL=1`.
+An application/documentation change does not require rebuilding kernels, all
+third-party dependencies or publishing an APT snapshot.
 
 `scripts/fuxi-modem-bin-pull.sh` remains a recovery/diagnostic export tool; its
 device-pulled output cannot satisfy the standard source-provenance checks.

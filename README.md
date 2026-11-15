@@ -1,153 +1,78 @@
 # Xiaomi 13 `fuxi` 主线 Linux 移植
 
-在小米 13（SM8550）上跑**主线内核 + 完整 Ubuntu 用户空间**，做成一台可以日常使用的 Linux 手机。
-不使用 Android vendor kernel、Halium 或 Android HAL；Android 与 Linux 双系统共存，正常启动目标为 Android，
-首次部署引导层到 `recovery_b`，以后重启到 recovery 进入 Linux。
+在小米 13（SM8550）运行主线内核和完整 Ubuntu 用户空间，目标是一台日常可用的 Linux 手机。
+不使用 Android vendor kernel、Halium 或 Android HAL；保留 Android 双系统。
+引导链为 U-Boot、extlinux、initramfs-tools，日常内核通过 deb 升级。
+公开版本 v0.6.0 使用 Linux 7.4.0-rc1、Ubuntu 26.10；公开版本不代表手机当前运行版本。
 
-当前版本：**v0.6.0**（内核 `7.4.0-rc1`，主线 U-Boot + extlinux 引导，内核以 deb 包升级，Ubuntu 26.10）。
+## 开发入口
 
-标准源码基线：`7.4.0-rc1-fuxi-std2`，固定源码、配置和补丁配方见 `kernel/`。
-**开发基准规则（2026-11-15 用户要求）：以最新通过相应验收的版本继续推进；新版本实机验收通过后保留运行和默认启动，不再例行回退旧版。旧内核仅保留作故障恢复入口。** 当前相机源码基准为从 `cphy-stream` 向前开发的 `imx800-power`，手机运行/默认 cam12order，恢复入口 deb9。下文恢复旧版的描述均是历史动作，当前状态以 [TASKS.md](TASKS.md) 为准。
-**当前相机范围：只完善 IMX800 主摄，其他摄像头后续再做。** 主摄已读到 ID，C-PHY 接收链路和传感器驱动尚未接通；从已有共享底层修复继续推进，见[基础相机目标](docs/基础相机目标.md)和[主摄接通计划](docs/主摄接通计划-20261115.md)。
-主摄候选保留 SM8550 C-PHY 端点、PHY 2.1.2 启停和失败清理，新增板级有序上电、严格身份及隔离 DT；148 项内核测试、ARM64 W=1、binding 与实际 DTB schema 通过，见[上电与身份基础](docs/主摄上电与身份-20261115.md)。尚无 V4L2 采集接口，PLL、单模式及采集端点仍待核实/实现，未部署或主摄出图；停流错误被 V4L2 记录后返回成功的限制仍在，见[端点与启停记录](docs/主摄C-PHY端点与启停-20261115.md)。
-**最新实机结果：Linux 已恢复，SSH 和 Phosh 可用。** cam12order 正常启动及单次 60 帧通过，但同进程第二轮在 CPAS start 成功后仍发生 MM0 超时，说明启动顺序调整不足以修复。正常重启请求先超时，后续已确认新启动恢复：启动计数零、Phosh active、无失败服务或 D 状态，未再采集。尚未通过相机生命周期验收，见[实机结果](docs/相机CPAS启动顺序候选-20261115.md#cam12order-实机结果)。
-最近实机验收（2026-11-14）：运行/默认 deb9、回退 deb8，设备包升级到 `0.20261114.1701`；正常重启后自动确认成功，拆分初始化服务及无线/传感器健康检查通过。此前 BCB 残留 `boot-recovery`，普通重启不保证进入 Android，本轮未手动清除。
-后续相机实验状态：cam6hfclk 在同进程第二次启流时再次触发 MM0 互连阻塞；用户重启后已确认恢复 deb9，默认 deb9、回退 deb8，启动计数清零、健康检查失败项 0。context 清理候选通过主机及手机 Adreno 各 700 次独立 EGL 启动尝试；真实相机同进程重启仍未验收，见[重启实验](docs/相机重启实验-20261114.md)。
-新增[本机模块解析工具](docs/相机模块解析-20261114.md)，已检查六份传感器模块；按用户要求继续评估[小米徕卡相机移植](docs/小米徕卡相机移植评估-20261114.md)，现有 Android 移植不能直接等同于 Ubuntu 支持。
-后续新增 [RPMh 超时生命周期候选](docs/相机RPMh生命周期-20261114.md)，已扩展到单条读写、异步失败释放及 TCS 有界等待，ARM64 W=1 与 QEMU/KASAN 18 项测试通过。11-15 含该候选的 `cam7cpas` 已完成单次 RAW 5 帧和 [CPAS 状态采样](docs/相机CPAS状态采样-20261114.md)，确认 Titan 780 / CPAS 1.0.0；未验证真实硬件超时恢复或握手，MM0 根因仍未解决。手机已恢复 deb9/deb8，启动计数清零，无线/传感器健康检查失败项 0；主摄仍需补齐 CAMSS/PHY 的 C-PHY 支持。
-后续 `cam8icp` [ICP 时钟诊断](docs/相机CPAS-ICP诊断-20261115.md) 单次 RAW 5 帧通过：临时开启 19.2 MHz ICP 后 status 从 0 变为 1，三次轮询成功，control 始终为 1。这确认读数受 ICP 时钟影响，尚未验证停机握手或修复 MM0；未重跑第二次启流，手机已恢复 deb9。
-最新 [CPAS 回归与 CSID 修复](docs/相机CPAS回归与CSID引用修复-20261115.md) 候选补齐上电失败的父引用释放，17 项内核测试、旧错误分支反例、ARM64 W=1 与严格主机 366+62 项通过；未安装到手机，MM0 仍待解决。本轮只读复查仍为 deb9/deb8、启动计数零；无线/传感器通过，但蓝牙软禁用、Phosh 重试 1 次使健康检查出现 2 项失败。
-相机首帧初始化补丁已完成原生构建、GDB 原版/补丁对照及六轮 CPU 采集（2,520 帧），见[首帧修复验收](docs/相机首帧修复验收-20261114.md)。后续 GPU 候选修复逐帧 EGL image 泄漏及错误帧回收，见[GPU 验收](docs/相机GPU回收验收-20261114.md)。补丁与 `cam6hfclk` 仍是隔离候选，历史自然停帧、MM0/RPMh 根因及桌面取景尚未结案；四摄和用户功能见[相机完成矩阵](docs/相机功能完成矩阵.md)。
-当前任务与剩余门槛见 [`TASKS.md`](TASKS.md)，本轮最终设备结果见 [`设备收尾验收`](docs/设备收尾验收-20261114.md)，早期验证与环境限制保留在 [`工程收尾`](docs/工程收尾-20261114.md)；相机证据见 [`HF 时钟实验`](docs/相机HF时钟实验-20261112.md) 和 [`MM0 诊断`](docs/相机MM0诊断-20261112.md)。
-标准化收尾记录见 [`验收记录`](docs/标准化收尾验收-20261107.md)，Release 下载仍以各版本说明为准。
-构建环境、持续集成、内核更新与签名发布规则见 [`维护与发布`](docs/内核持续维护与发布.md)。
-新增维护工具的验收不等同于相机、通话、快充完成；对外发布还需真实作者签字和许可证审核。
-本轮构建、故障测试和设备重启结果见 [`维护补强验收`](docs/维护补强验收-20261108.md)。
-CPU 短时负载、无线与传感器并行初始化结果见 [`驱动验收`](docs/驱动初始化与功耗验收-20261108.md)；持续功耗和挂起恢复仍待验收。
+整个项目采用快速迭代：实现一个可观察结果，做必要检查，运行验证，再按结果继续。
+沿用最新通过相应验证的成果，不例行回退，不为每个小改动新增报告或配方层。
 
-## 当前状态
+| 入口 | 职责 |
+| --- | --- |
+| [AGENTS.md](AGENTS.md) | 通用开发、测试、提交和操作边界 |
+| [TASKS.md](TASKS.md) | 唯一当前状态：优先级、暂停、源码/设备基准、最近结果和下一步 |
+| [内核操作](docs/内核维护与独立升级.md) | 构建、安装、正常重启、恢复与清理 |
+| [内核配方](kernel/README.md)、[设备包](packaging/README.md)、[应用](apps/README.md) | 各模块源码归属与构建入口 |
+| [维护与发布](docs/内核持续维护与发布.md) | 集成和公开发布，不是每轮实验的前置门槛 |
+| [本次精简记录](docs/项目精简记录-20261116.md) | 已合并/删除内容、历史找回方式与保留边界 |
 
-| 能力 | 状态 |
-|---|---|
-| 启动、UFS 根文件系统、双系统切换 | Linux 启动和内核 deb 独立升级已实测，启动失败 2 次自动回退；BCB 残留影响返回 Android，见[启动说明](docs/双系统启动说明.md) |
-| 显示、触摸、Phosh 桌面 | ✅ 原生 MSM DSI、120 Hz、Adreno 740 GPU 渲染，用户现场确认 |
-| Denial 桌面（mobile shell） | 0.6.2 官方 arm64 包曾安装运行；11-14 实测当前运行 Phosh，未切换桌面 |
-| WiFi / 蓝牙 | ✅ 5 GHz 自动重连、CN 管制域、蓝牙上电与 L2CAP 链路 |
-| 传感器 | 部分支持：加速度、光线、距离、磁场、指南针、陀螺仪及重力已有读数；重力限时启停及中断关闭通过，轴方向、运动响应等仍未验收，不能等同全部传感器支持 |
-| NFC | 未接通：std2 未启用 `CONFIG_NFC`，没有可用 NFC 设备；读卡、卡模拟和支付均未验收 |
-| GPS / GNSS | 标准 MM GPS_RAW 按需启停已通过实机验收；能力收紧为 `3gpp-lac-ci/gps-raw`，本次两轮请求无有效 fix，原生 NMEA/AGPS 与桌面定位仍未完成 |
-| 音频（非通话） | ✅ 双扬声器、主麦克风；⚠️ 保护/标定未做，蓝牙耳机 A2DP 未验收 |
-| 电量、充电、调频温控、s2idle | ✅ 可用；⚠️ 续航未达标，空闲自动挂起已关闭 |
-| 浏览器 / 应用 | ✅ Chromium（隔离安装）、Epiphany、文件选择器、Clash、DeepSeek Harness |
-| 蜂窝数据 | ✅ 双卡注册，上网卡可选卡槽 1/2 |
-| 通话、短信、双卡 | ⚠️ 双卡 IMS 注册、短信收发、VoLTE 来电接听实测通过；**通话没有声音**（ADSP TX 图 `start` 返回 -22） |
-| 相机 | 当前只推进 IMX800 主摄：已读到 ID，接收端配置候选通过主机验证，完整 C-PHY/驱动和出图未完成；共享 MM0 重开故障仍在，见[主摄计划](docs/主摄接通计划-20261115.md) |
-| 指纹 | 当前不可用：TrustZone 独占，尚无本项目可用方案 |
+历史报告和交接只保留证据，不作为当前操作指令。设备版本及实验状态只在 `TASKS.md` 更新。
 
-这是一份部分功能可用的 Linux 移植，尚未覆盖原厂小米系统全部能力。
-原厂功能对照、NFC/GNSS 检查依据与待验收范围见 [`功能覆盖核查`](docs/功能覆盖核查-20261108.md)。
+## 能力概览
 
-充电实测与限制见 [`docs/充电验收-20261107.md`](docs/充电验收-20261107.md)：墙充可净充电；电脑 USB SDP 输入功率较低，使用中可能净放电。**快充尚未解决**：多数测量为 5 V、约 4.4-6.9 W，曾短暂测到 8.825 V / 0.903 A；高电量窗口不能代表峰值能力。chg3 的电池认证和受限限流/协议查询接口已纳入标准源码，但固件限流与 VDM 握手问题仍存在，见 [`快充修复进展`](docs/快充修复进展-20261107.md)与[`开源实现调研`](docs/快充开源实现调研-20261107.md)。
+| 能力 | 已知范围 |
+| --- | --- |
+| 启动与升级 | UFS 根文件系统、内核 deb、多内核启动及自动回退已有实机验证 |
+| 显示与桌面 | 显示、触摸、Adreno GPU、Phosh 可用 |
+| 网络与蜂窝 | WiFi、蓝牙基础链路、双卡注册及数据可用；A2DP 仍待验收 |
+| 传感器与定位 | 多种传感器有读数；真实轴向、桌面集成、GNSS 有效 fix 等未完成 |
+| 音频与通话 | 扬声器、麦克风可用；通话无声，保护/标定未完成 |
+| 电源 | 电量、充电、温控可用；持续快充、挂起和续航未完成 |
+| 应用 | 浏览器、文件管理及项目自有应用可用；具体缺口见当前队列 |
+| 相机 | 主摄基础流程未完成；验收范围见[基础相机目标](docs/基础相机目标.md) |
+| NFC、指纹 | 未接通 |
 
-当前维护入口见 [`内核维护与独立升级`](docs/内核维护与独立升级.md)，源码清单与补丁见 [`kernel/`](kernel/README.md)，任务状态见 [`TASKS.md`](TASKS.md)。历次交接保留在 `docs/`，不代替当前操作文档。
+这是部分功能可用的移植，不等于原厂完整能力。详细功能边界见
+[覆盖核查](docs/功能覆盖核查-20261108.md)和[相机矩阵](docs/相机功能完成矩阵.md)。
 
 ## 下载与安装
 
-**仓库 zip 只有源码、文档和脚本，不含任何可刷镜像，也不能直接刷机。**
+**仓库 zip 是源码和工具，不是可刷镜像；Release 是开发者预览，不是一键安装包。**
 
-可刷的东西在 Release 里：
+- [v0.6.0 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.6.0-uboot-20261107)：U-Boot、内核 deb、设备包、补丁和校验和。
+- [v0.5.0 历史 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.5.0-dualboot-20261031)：旧引导路径，仅供历史复现。
 
-- [v0.6.0](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.6.0-uboot-20261107) —
-  `abl-fuxi-uboot7.img`（主线 U-Boot，1.3 MB）、7.4 内核 deb、fuxi-device/desktop/modem 包、完整内核补丁、`.config`、校验和。
-  从 v0.5.0 升级要先在 Linux 里装好内核 deb 和 fuxi-device，再换 `recovery_b`，步骤见 Release 说明。
-- [v0.5.0](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.5.0-dualboot-20261031) —
-  `abl-fuxi-modem16-epmap.img`（10.4 MB）、完整内核补丁、`.config`、源码树快照、校验和。
+首次安装需要已解锁 bootloader，已经正确创建且位于 `/dev/sda33` 的 `linux` 分区，
+以及其中的 arm64 Ubuntu rootfs。原厂没有此分区，Release 不提供 rootfs。
+本项目开发流程不授权修改 GPT。首次引导部署与已有 Linux 的日常升级是两种操作，
+完整前提及恢复说明见[双系统启动说明](docs/双系统启动说明.md)和对应 Release。
+首次部署引导层涉及 `recovery_b`；日常内核升级仅写 Linux 分区，不重刷引导层。
+BCB 残留 `boot-recovery` 时普通重启不保证返回 Android。
 
-安装前必须同时满足：
-
-1. 小米 13 已解锁 bootloader；
-2. 分区表里有一个 `linux` 分区，且正好是 `/dev/sda33`（**原厂没有这个分区**，作者另行改过 GPT，改错有变砖风险）；
-3. `sda33` 里已装好 arm64 Ubuntu rootfs（Release 不提供）。
-
-镜像只写 `recovery_b`，不动 Android 系统分区；起不来时长按电源退出失败启动。
-若 BCB 留有 `boot-recovery`，强制重启也不保证进入 Android，恢复条件见启动说明。
-完整前提、步骤和已知问题见 Release 说明与 [`docs/双系统启动说明.md`](docs/双系统启动说明.md)。
-
-> **开发者预览，不是一键安装包。** 主要用途是复现作者的构建与实验结果。
-
-## 从源码构建
+## 构建与检查
 
 ```bash
-# 按固定上游压缩包、校验和与分组补丁重建源码
 python3 scripts/fuxi-kernel-source.py prepare
-# 无网络时：prepare --archive /path/linux-7.4-rc1.tar.gz
+# 离线：prepare --archive /path/linux-7.4-rc1.tar.gz
 scripts/fuxi-build-deb.sh <唯一名字>
+bash scripts/fuxi-ci.sh docs       # 活跃文档本地链接
+bash scripts/fuxi-ci.sh scripts    # 脚本回归，不下载内核
+bash scripts/fuxi-ci.sh apps       # SuperTerm 回归
 ```
 
-构建产物在 `work/kbuild/<名字>/`：内核 deb、配置、源码记录、`build.json` 与校验和。
-完整云端打包可在 Actions 手动运行 `Full Kernel Package`，保留 deb、对应源码、日志及分阶段计时 7 天；
-本地同条件计时入口为 `python3 scripts/fuxi-kernel-benchmark.py <相同名字>`，详见 [`完整包和速度对比`](docs/内核持续维护与发布.md#完整包和速度对比)。
-标准源码在 `build/linux-standard/`（不提交第三方源码），默认构建前必须通过完整源码树校验。
-安装内核 deb 后由 initramfs-tools 和设备包钩子更新启动项，日常升级不重刷 recovery_b。
-构建依赖、实验源码入口和补丁维护见 [`kernel/README.md`](kernel/README.md)。
+内核产物在 `work/kbuild/<名字>/`，包含 deb、配置、准确源码记录和校验和。
+本地迭代复用兼容的输出目录；固定环境、实验源码入口及恢复方法见上面的模块文档。
+云端 `Full Kernel Package` 保留独立干净构建，用于完整包与性能对比，不替代本地增量开发。
 
-`build/linux/`、`fuxi-build-abl.sh` 和 `scripts/legacy/` 属于旧 ABL/shim 路径，仅供历史复现。
-
-## 验证与访问
-
-```bash
-scripts/fuxi-ssh.sh                       # USB SSH，手机 10.42.0.2；FUXI_HOST=<无线 IP> 走 WiFi
-scripts/fuxi-health.sh                    # 只读验收
-scripts/fuxi-health.sh --require-wifi --require-sensors
-bash scripts/fuxi-device-baseline.sh      # 只读核对安装器/服务版本差异；不代表整机健康或启动验收
-scripts/fuxi-driver-audit.sh 10           # 只读区间采样，JSON 保存在 work/driver-audit/
-scripts/fuxi-gnss-audit.sh                # 只读 GNSS 接口检查，不启动定位；JSON 保存在 work/gnss-audit/
-scripts/fuxi-runtime-audit.sh             # 只读 KVM/TUN API 与启动级别检查；不创建 VM、网卡或修改路由
-scripts/fuxi-sensor-inventory.sh          # SSC 固定类型属性及矩阵回退告警，不启动测量流；不是坐标/全传感器验收
-scripts/fuxi-gravity-sample.sh 3          # 按需 1–10 秒重力三轴采样，报告正常/中断关闭；不是运动标定验收
-scripts/fuxi-gnss-session.sh 30           # 按需限时 LOC 会话，汇总报告，不保存坐标；不是桌面定位服务
-FUXI_HOST=<手机无线IP> scripts/fuxi-ssh.sh python3 - --chunks 16 < scripts/fuxi-charger-log.py  # 按需读 ADSP 充电日志
-scripts/fuxi-test-recovery.sh <镜像> '<检查命令>'   # 写入 recovery_b 并重启验证（会重启手机）
-python3 -m unittest discover -s scripts/tests -v
-```
-
-`scripts/fuxi-test-recovery.sh` 默认测完回 Android，`FUXI_KEEP=1` 留在 Linux。测试前先核对设备、镜像和备份。
-`fuxi-driver-audit.sh` 同时记录指定常驻服务的 CPU 与主线程上下文切换增量、每秒速率和进程身份变化，
-并按区间记录内核 `wakeup_sources` 中各源的 `event_count`、`wakeup_count`、`total_time`、
-`prevent_suspend_time` 增量及源集合是否变化；计数器重置或数据不可读时报告未知。
-这些是内核唤醒源计数，不等同整机唤醒次数或续航测量。区间首尾附带背光、供电及带单位的电池原始读数，
-`power_condition_endpoints_match` 标记可读的背光设置、供电在线状态和电池状态是否相同。
-首尾相同不能排除区间内变化；瞬时电流及 USB 合同值不用于自动计算续航或整机功耗。
-事件驱动双卡监听及自动采样结果见 [`持续优化记录`](docs/功耗性能持续优化-20261108.md)。
-
-## 目录
-
-| 路径 | 内容 |
-|---|---|
-| `docs/` | 设计、调研、验收记录与历次交接文档 |
-| `scripts/` | 构建、部署、健康检查与回归测试 |
-| `kernel/` | 固定源码清单、分组补丁、作者记录与上游整理计划 |
-| `device-info/` | 本机器件、分区与内核参数快照 |
-| `work/patches/` | 内核与第三方项目的补丁 |
-| `work/rootfs-overlay/` | 历史用户空间服务与桌面配置 |
-| `apps/` | SuperTerm、Mihomo GUI、DSH 手机前端的权威源码 |
-| `packaging/` | 设备包内容、固定第三方源码配方、构建环境与发布门槛 |
-| `work/` | 本地构建、日志、实验与设备状态；旧 overlay 只作历史参考 |
-
-## 操作边界
-
-- Linux 侧修改只落在 `linux` 分区和 `recovery_b`；Android 系统与固件分区只读。
-- 不写 GPT/槽位、`xbl`/`abl`/`tz`/`hyp`、`modemst1/2`、`fsg`/`fsc`、`persist`、`efs`。
-- 备份必须核对哈希后才用于回退。
+访问与健康检查使用 `scripts/fuxi-ssh.sh`、`scripts/fuxi-health.sh`；
+当前版本与暂停状态先查 `TASKS.md`。详细日志和产物留在 `work/`，不反复复制到入口文档。
+`build/linux/`、旧 overlay 和 `scripts/legacy/` 仅供历史复现。
 
 ## 许可证
 
-自有代码没有统一的开源授权，保留已有权利；Linux 和其他第三方代码遵循各自许可证，不能用仓库说明覆盖。
-范围和再分发要求见 [`LICENSE.md`](LICENSE.md)、[`THIRD_PARTY.md`](THIRD_PARTY.md)。
-
-## 资料入口
-
-- [`docs/目标-M5.md`](docs/目标-M5.md)：独立可用目标与各外设实验历史
-- [`docs/双系统启动说明.md`](docs/双系统启动说明.md)：启动链、切换与恢复
-- [`docs/内核维护与独立升级.md`](docs/内核维护与独立升级.md)：当前构建、安装、回退与清理流程
-- [`TASKS.md`](TASKS.md)：当前任务与红线
+自有代码没有统一开源授权，保留已有权利；第三方代码遵守各自许可证。
+再分发要求见 [LICENSE.md](LICENSE.md)、[THIRD_PARTY.md](THIRD_PARTY.md)。
+私钥、专有固件、生成镜像及原始设备日志不入库；公开发布与本地实验分开。

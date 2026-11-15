@@ -3,7 +3,10 @@ set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$B"
 case "${1:-host}" in
-  host|host-restricted)
+  docs)
+    python3 scripts/fuxi-doc-check.py
+    ;;
+  host|host-restricted|scripts)
     if [[ "${1:-host}" == host-restricted ]]; then
       if [[ -n "${CI:-}" && "${CI}" != false && "${CI}" != 0 ]]; then
         echo 'host-restricted is for local diagnostics only; CI must run host' >&2
@@ -16,7 +19,13 @@ case "${1:-host}" in
     fi
     while IFS= read -r -d '' script; do bash -n "$script"; done < <(find scripts -name '*.sh' -print0)
     python3 -m unittest discover -s scripts/tests -v
+    if [[ "${1:-host}" != scripts ]]; then python3 apps/superterm/tests/run_tests.py; fi
+    ;;
+  apps)
     python3 apps/superterm/tests/run_tests.py
+    ;;
+  kernel-host)
+    python3 -m unittest discover -s scripts/tests/kernel -v
     ;;
   kernel)
     python3 scripts/fuxi-kernel-source.py check
@@ -38,5 +47,5 @@ case "${1:-host}" in
     make -C build/linux-standard O="$O" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
       dt_binding_check DT_SCHEMA_FILES='display/panel/xiaomi,fuxi-m3-38-0c-0a.yaml:input/touchscreen/st,ftm5.yaml'
     ;;
-  *) echo 'usage: fuxi-ci.sh host|host-restricted|kernel|userspace|bindings' >&2; exit 1;;
+  *) echo 'usage: fuxi-ci.sh docs|scripts|apps|host|host-restricted|kernel-host|kernel|userspace|bindings' >&2; exit 1;;
 esac

@@ -28,11 +28,21 @@ manifest. A partial extraction is removed on failure. The source preparation
 step does not use any local cache worktree or its uncommitted changes.
 
 Build output is `work/kbuild/<unique-name>/`: the kernel deb, saved config,
-`source`, `build.json`, and `SHA256SUMS`. The build fixes its timestamp, user,
+`source`, `build.json`, `source-state.json`, `source.patch` and `SHA256SUMS`.
+The build fixes its timestamp, user,
 host and build counter. Bit-for-bit comparisons also require identical names,
 configuration and toolchain; that is distinct from verified source content.
 An explicit `FUXI_KTREE` / `FUXI_KOUT` selects an experimental source/build pair
-and records its commit, tree and dirty state.
+and records its commit, actual worktree content tree and dirty state. The binary
+patch includes tracked changes and nonignored new files without altering the real
+Git index. Inputs ignored by Git need separate provenance. The builder rejects
+collection if source differs at the end; do not edit that tree during a build.
+Recovery instructions are in [kernel operations](../docs/内核维护与独立升级.md).
+
+Reuse the active source tree, pinned container image and compatible `FUXI_KOUT`
+for daily development. Unique package names do not require fresh output trees.
+Do not rerun preparation, image construction or passing checks without changed
+inputs. Clean builds remain useful for integration and benchmark comparisons.
 
 `packaging/apt/kernels.list` is the allowlist for the local apt source. Add a
 build only after device validation. `scripts/fuxi-build-pkgs.sh` requires those
@@ -62,7 +72,7 @@ experiments are intentionally not folded into this baseline.
 
 ## Update the Recipe
 
-Commit changes in a separate source worktree. Export against the same imported
+At a validated milestone, commit the source changes and export against the same imported
 upstream base (not a previous fuxi kernel):
 
 ```bash
@@ -70,9 +80,11 @@ python3 scripts/fuxi-kernel-source.py export --tree /path/source --base <base-co
 ```
 
 Export rejects dirty source trees, overlapping groups and unassigned paths.
-Review every patch and the manifest. Prepare a new, empty directory with
-`prepare --tree /path/verification --archive ...` and verify a complete build
-and device boot before committing the recipe. For a new upstream release,
+Review every patch and the manifest. For a changed recipe, replay into an empty
+directory with `prepare --tree /path/verification --archive ...` and run checks
+appropriate to its changes. Build and boot validation precede device promotion;
+host-validated recipes may be committed with that limitation recorded.
+Do not export/replay a recipe after every source edit. For a new upstream release,
 update the archive URL/checksum/root and rebase the patches first; changing a
 version string alone is not an upgrade.
 
