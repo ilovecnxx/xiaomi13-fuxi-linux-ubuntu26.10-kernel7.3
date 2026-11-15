@@ -1,0 +1,44 @@
+{
+  "status": "experimental-device-rgb-stop-failed",
+  "base_manifest": "../cpas-pm/manifest.json",
+  "base_manifest_sha256": "4e61b4db88349f2c0ae93176b6a542209b911cf7f0fcf3b909bfaa10d3912ad8",
+  "base_commit": "7d9d247c3b71e1f3d862c8b1cb2ffbb0db39c054",
+  "base_tree": "44bb6caeb865585c4c1a4168dfd39aad2e9ece42",
+  "source_commit": "5fd941e366b4e489dcc5bfaf48997f0be2eff6fd",
+  "result_tree": "4857629696c20bfedd36f007f2720afde9cc2562",
+  "source_date_epoch": 1794743467,
+  "patches": [
+    {
+      "file": "0001-media-camss-stop-CSID-even-when-virtual-channels-are.patch",
+      "sha256": "7ba248f3e4e243d23914e64470707a208872e41036a8011757e127a9770e182b"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 32,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kasan": true,
+    "debug_mutexes": true,
+    "parent_regression_reproduced": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 1,
+    "checkpatch_warning": "Unwrapped commit message line",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-cam10stop",
+    "package_sha256": "053e1b2f1c4292332ff7f60614197205866ae1c43e9f1114c5dad0226b99c597",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "package_payload_matches_build": true,
+    "patch_reconstruction_tree_verified": true,
+    "device_tested": true,
+    "device_boot_passed": true,
+    "device_rgb_frames_completed": 60,
+    "device_rgb_stop_passed": false,
+    "device_failure": "CPAS stop status 0x5 timeout persists after fixing skipped CSID stream-off",
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/相机CSID停流修复-20261115.md"
+  }
+}

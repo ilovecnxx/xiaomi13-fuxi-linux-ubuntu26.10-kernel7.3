@@ -1,0 +1,99 @@
+From 5fd941e366b4e489dcc5bfaf48997f0be2eff6fd Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 19:51:07 +0800
+Subject: [PATCH] media: camss: stop CSID even when virtual channels are
+ unchanged
+
+The VC dirty flag is cleared at stream start. A later stream-off with unchanged links skips configure_stream(false), leaving the decoder enabled until power loss. Always send stop and mark the configuration dirty so a subsequent start restores the enabled channels. Exercise 20 real set_stream cycles through the hardware callback boundary.
+---
+ .../platform/qcom/camss/camss-csid-test.c     | 38 +++++++++++++++++++
+ .../media/platform/qcom/camss/camss-csid.c    |  5 ++-
+ 2 files changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-test.c b/drivers/media/platform/qcom/camss/camss-csid-test.c
+index 28534b1c4..ccac6d25b 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid-test.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-test.c
+@@ -10,6 +10,23 @@ struct csid_power_test_ctx {
+ 	unsigned int puts;
+ 	unsigned int resumes;
+ 	int get_error;
++	unsigned int starts;
++	unsigned int stops;
++};
++
++static void csid_test_configure_stream(struct csid_device *csid, u8 enable)
++{
++	struct csid_power_test_ctx *ctx =
++		container_of(csid, struct csid_power_test_ctx, csid);
++
++	if (enable)
++		ctx->starts++;
++	else
++		ctx->stops++;
++}
++
++static const struct csid_hw_ops csid_test_hw_ops = {
++	.configure_stream = csid_test_configure_stream,
+ };
+ 
+ static int csid_test_parent_get(struct camss *camss, int id)
+@@ -49,6 +66,7 @@ static const struct parent_dev_ops csid_test_parent_ops = {
+ 
+ static const struct csid_subdev_resources csid_test_resources = {
+ 	.parent_dev_ops = &csid_test_parent_ops,
++	.hw_ops = &csid_test_hw_ops,
+ };
+ 
+ static int csid_power_test_init(struct kunit *test)
+@@ -116,10 +134,30 @@ static void csid_resume_failure_test(struct kunit *test)
+ 	pm_runtime_disable(dev);
+ }
+ 
++static void csid_stream_stop_restart_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	struct csid_device *csid = &ctx->csid;
++	unsigned int i;
++
++	/* Avoid a media graph: the test generator supplies the input link. */
++	csid->testgen.enabled = true;
++	csid->phy.need_vc_update = true;
++	for (i = 1; i <= 20; i++) {
++		KUNIT_ASSERT_EQ(test, csid_set_stream(&csid->subdev, 1), 0);
++		KUNIT_EXPECT_EQ(test, ctx->starts, i);
++		KUNIT_EXPECT_FALSE(test, csid->phy.need_vc_update);
++		KUNIT_ASSERT_EQ(test, csid_set_stream(&csid->subdev, 0), 0);
++		KUNIT_EXPECT_EQ(test, ctx->stops, i);
++		KUNIT_EXPECT_TRUE(test, csid->phy.need_vc_update);
++	}
++}
++
+ static struct kunit_case csid_power_test_cases[] = {
+ 	KUNIT_CASE(csid_parent_failure_test),
+ 	KUNIT_CASE(csid_disabled_pm_test),
+ 	KUNIT_CASE(csid_resume_failure_test),
++	KUNIT_CASE(csid_stream_stop_restart_test),
+ 	{}
+ };
+ 
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index a288d7957..555a04087 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -772,9 +772,10 @@ static int csid_set_stream(struct v4l2_subdev *sd, int enable)
+ 			return -ENOLINK;
+ 	}
+ 
+-	if (csid->phy.need_vc_update) {
++	/* Stop even when the enabled virtual channels have not changed. */
++	if (!enable || csid->phy.need_vc_update) {
+ 		csid->res->hw_ops->configure_stream(csid, enable);
+-		csid->phy.need_vc_update = false;
++		csid->phy.need_vc_update = !enable;
+ 	}
+ 
+ 	return 0;
+-- 
+2.55.0
+
