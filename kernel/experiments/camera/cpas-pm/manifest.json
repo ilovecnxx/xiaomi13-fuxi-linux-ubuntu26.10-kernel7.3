@@ -1,0 +1,61 @@
+{
+  "status": "experimental-device-raw-passed-rgb-stop-failed",
+  "base_manifest": "../cpas-tests/manifest.json",
+  "base_manifest_sha256": "2b74dd2f621b4af292bf19ef9743259dec7e705e7ca75c77424aaca6e6fdf832",
+  "base_commit": "bb569ab46ebf23ca3b82c33b00f4dc57d8443008",
+  "base_tree": "6cd804d46058493551e8549948a270b3381dec38",
+  "source_commit": "7d9d247c3b71e1f3d862c8b1cb2ffbb0db39c054",
+  "result_tree": "44bb6caeb865585c4c1a4168dfd39aad2e9ece42",
+  "source_date_epoch": 1794740526,
+  "patches": [
+    {
+      "file": "0001-media-camss-hold-shared-clocks-across-Titan-780-Q-ch.patch",
+      "sha256": "2c605c15df2c5fbca7e8b48ab4f574402dfb2961f3cfa0a781ab84ab27600a13"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "patch_reconstruction_tree_verified": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
+    "checkpatch": {
+      "flags": ["--no-signoff"],
+      "errors": 0,
+      "warnings": 2,
+      "warning_detail": "New-file MAINTAINERS notice (existing CAMSS entry covers it), and British spelling acknowledgement"
+    },
+    "kunit": {
+      "arch": "x86_64",
+      "runner": "QEMU",
+      "kasan": true,
+      "debug_mutexes": true,
+      "config": "../cpas-tests/kunit.config",
+      "config_sha256": "1c3a8035334440a8599dfd1a91d14fe21f99e074927e26eec5dd2b4ec1432933",
+      "filter": "camss-*",
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "runtime_pm_cases": 14,
+      "diagnostic_cases": 14,
+      "csid_cases": 3
+    },
+    "host_script_tests_passed": 366,
+    "superterm_tests_passed": 62,
+    "host_tests_skipped": 0,
+    "report": "../../../../docs/相机CPAS运行时握手-20261115.md",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-cam9pm",
+    "package_sha256": "19c694b17b4866f8f2c433913f04e25c72c94eb49f83da75ab81b37d4e75ab6d",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "device_tested": true,
+    "device_boot_passed": true,
+    "device_raw_5_frame_cycles_passed": 2,
+    "device_rgb_frames_completed": 60,
+    "device_rgb_stop_passed": false,
+    "device_failure": "CPAS stop timed out with status 0x5; runtime PM error latched and shared clocks retained",
+    "qchannel_stop_handshake_validated": false,
+    "mm0_fixed": false,
+    "camera_accepted": false
+  }
+}

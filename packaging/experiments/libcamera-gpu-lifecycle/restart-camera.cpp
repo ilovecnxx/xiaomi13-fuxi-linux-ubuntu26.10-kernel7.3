@@ -110,18 +110,41 @@ try {
         return 2;
     }
     CameraManager manager;
-    if (manager.start() || manager.cameras().size() != 1)
+    int ret = manager.start();
+    if (ret || manager.cameras().size() != 1) {
+        std::cerr << "Camera discovery failed: start=" << ret
+                  << " cameras=" << manager.cameras().size() << '\n';
         return 1;
+    }
     auto camera = manager.cameras().front();
     auto model = camera->properties().get(properties::Model);
-    if (!model || *model != "ov13b10" || camera->acquire())
+    if (!model || *model != "ov13b10") {
+        std::cerr << "Unexpected camera model: " << model.value_or("<missing>") << '\n';
         return 1;
+    }
+    ret = camera->acquire();
+    if (ret) {
+        std::cerr << "Camera acquire failed: " << ret << '\n';
+        return 1;
+    }
     auto config = camera->generateConfiguration({StreamRole::Viewfinder});
-    if (!config || config->empty())
+    if (!config || config->empty()) {
+        std::cerr << "No viewfinder configuration\n";
+        camera->release();
         return 1;
+    }
     config->at(0).size = argc == 7 ? Size(number(argv[5]), number(argv[6])) : Size(2104, 1560);
-    if (config->validate() == CameraConfiguration::Invalid || camera->configure(config.get()))
+    if (config->validate() == CameraConfiguration::Invalid) {
+        std::cerr << "Invalid viewfinder configuration\n";
+        camera->release();
         return 1;
+    }
+    ret = camera->configure(config.get());
+    if (ret) {
+        std::cerr << "Camera configure failed: " << ret << '\n';
+        camera->release();
+        return 1;
+    }
     bool valid = true;
     unsigned int failures = 0, errors = 0;
     {
