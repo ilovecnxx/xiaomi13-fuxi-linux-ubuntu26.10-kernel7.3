@@ -25,7 +25,16 @@ Use four spaces for Python indentation, descriptive `snake_case` names, and stan
 
 ## Testing Guidelines
 
-Run the full unittest command above after changing scripts or build logic. For kernel changes, run the focused `W=1` build and report the exact target. Device checks are hardware-dependent; record the image name, relevant configuration, and observed result in the appropriate `docs/` or `work/` log. Never treat a successful build as device validation.
+User direction (2026-11-16): use rapid iteration. This supersedes earlier per-stage process requirements in project plans and handoffs. The camera task remains paused until the user resumes it; changing this workflow does not resume device work.
+
+- Work toward one observable IMX800 result per iteration: binding/identity, first RAW, clean stop, successful reopen, RGB, then preview and JPEG. Combine related changes in the existing candidate worktree. Preserve the latest passing baseline and shared fixes.
+- Briefly state the question, expected observation and stop condition, implement, run relevant checks, then obtain device evidence when ready. Unknown hardware parameters may be explicit hypotheses in a bounded experiment; do not require a complete theoretical explanation before first capture. Fix known correctness defects before deployment. After a hardware stall, stop additional captures; repeat only with a changed hypothesis or implementation and a recovered device.
+- During development, run affected script tests, focused kernel `W=1`, changed binding/DTB checks, and relevant lifecycle tests as applicable. Run the full script suite when shared script/build behavior changes or before deploying a candidate that changes those paths. Documentation-only changes need diff/link review, not builds. Do not repeat passing checks without a relevant change or unresolved concern.
+- Keep one active camera candidate. Do not add a worktree, manifest layer or standalone report for every small edit. Save the source diff/commit, config and artifact provenance before deployment; consolidate a reproducible recipe at meaningful validated milestones. Full ancestry replay is for recipe changes and consolidation, not every local source edit.
+- TASKS.md is the current-state entry: record candidate, result, next action and any blocker once. Keep raw logs in work/. Update the camera plan only when the plan changes; historical reports remain evidence. Signing, redistribution and upstream submission gates apply at their respective publication stages, not to local camera experiments.
+- Final stability acceptance remains required, but its loop counts and durations do not gate early experiments. Never treat a successful build or an OV13B10 capture as IMX800 device validation. Retain partition/data safety boundaries and a bootable recovery option; do not routinely revert a passing version.
+
+Device checks are hardware-dependent; record the image name, relevant configuration and observed result in TASKS.md with links to local evidence when needed.
 
 ## Commit & Pull Request Guidelines
 
