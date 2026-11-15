@@ -1,0 +1,257 @@
+From bb569ab46ebf23ca3b82c33b00f4dc57d8443008 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 18:34:24 +0800
+Subject: [PATCH] media: camss: release CSID parent reference on power-on
+ errors
+
+Unwind the parent reference after runtime PM, regulator, clock or reset
+failures. Keep the original error and release only resources acquired by
+the failing attempt.
+
+Exercise the actual power-on path with KUnit and the runtime PM core.
+Cover failed parent acquisition, repeated disabled-PM attempts and a
+failing runtime-resume callback. The tests do not validate hardware
+recovery.
+---
+ drivers/media/platform/qcom/camss/Kconfig     |  10 ++
+ .../platform/qcom/camss/camss-csid-test.c     | 132 ++++++++++++++++++
+ .../media/platform/qcom/camss/camss-csid.c    |  41 +++---
+ 3 files changed, 162 insertions(+), 21 deletions(-)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-csid-test.c
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index 8d381224c..3077ab691 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -20,3 +20,13 @@ config VIDEO_QCOM_CAMSS_CPAS_KUNIT_TEST
+ 	  test clock provider, including failure cleanup and concurrent VFEs.
+ 	  Verify balanced clock references without writing Q-channel requests.
+ 	  These tests do not validate hardware power sequencing or handshakes.
++
++config VIDEO_QCOM_CAMSS_CSID_KUNIT_TEST
++	bool "KUnit tests for CAMSS CSID power cleanup" if !KUNIT_ALL_TESTS
++	depends on KUNIT=y && VIDEO_QCOM_CAMSS=y && PM
++	default KUNIT_ALL_TESTS
++	help
++	  Exercise CSID parent reference cleanup after runtime PM failures.
++	  Use a counted parent and a test device with the real runtime PM core.
++	  Check failed parent acquisition, disabled PM, and failed resume.
++	  These tests do not access camera hardware or prove hardware recovery.
+diff --git a/drivers/media/platform/qcom/camss/camss-csid-test.c b/drivers/media/platform/qcom/camss/camss-csid-test.c
+new file mode 100644
+index 000000000..28534b1c4
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-csid-test.c
+@@ -0,0 +1,132 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Actual CSID power-on path, with a counted parent and real runtime PM errors. */
++#include <kunit/device.h>
++#include <kunit/test.h>
++
++struct csid_power_test_ctx {
++	struct camss camss;
++	struct csid_device csid;
++	unsigned int gets;
++	unsigned int puts;
++	unsigned int resumes;
++	int get_error;
++};
++
++static int csid_test_parent_get(struct camss *camss, int id)
++{
++	struct csid_power_test_ctx *ctx =
++		container_of(camss, struct csid_power_test_ctx, camss);
++
++	ctx->gets++;
++	return ctx->get_error;
++}
++
++static int csid_test_parent_put(struct camss *camss, int id)
++{
++	struct csid_power_test_ctx *ctx =
++		container_of(camss, struct csid_power_test_ctx, camss);
++
++	ctx->puts++;
++	return 0;
++}
++
++static int csid_test_runtime_resume(struct device *dev)
++{
++	struct csid_power_test_ctx *ctx = dev_get_drvdata(dev);
++
++	ctx->resumes++;
++	return -ETIMEDOUT;
++}
++
++static const struct dev_pm_ops csid_test_pm_ops = {
++	.runtime_resume = csid_test_runtime_resume,
++};
++
++static const struct parent_dev_ops csid_test_parent_ops = {
++	.get = csid_test_parent_get,
++	.put = csid_test_parent_put,
++};
++
++static const struct csid_subdev_resources csid_test_resources = {
++	.parent_dev_ops = &csid_test_parent_ops,
++};
++
++static int csid_power_test_init(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx;
++	struct device_driver *driver;
++	struct device *dev;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++	driver = kunit_driver_create(test, "camss-csid-power-test");
++	if (IS_ERR(driver))
++		return PTR_ERR(driver);
++	driver->pm = &csid_test_pm_ops;
++	dev = kunit_device_register_with_driver(test, "camss-csid-power-test", driver);
++	if (IS_ERR(dev))
++		return PTR_ERR(dev);
++	dev_set_drvdata(dev, ctx);
++	ctx->camss.dev = dev;
++	ctx->csid.camss = &ctx->camss;
++	ctx->csid.res = &csid_test_resources;
++	v4l2_set_subdevdata(&ctx->csid.subdev, &ctx->csid);
++	return 0;
++}
++
++static void csid_parent_failure_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++
++	ctx->get_error = -EIO;
++	KUNIT_EXPECT_EQ(test, csid_set_power(&ctx->csid.subdev, 1), -EIO);
++	KUNIT_EXPECT_EQ(test, ctx->gets, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->puts, 0U);
++	KUNIT_EXPECT_EQ(test, ctx->resumes, 0U);
++	KUNIT_EXPECT_EQ(test, atomic_read(&ctx->camss.dev->power.usage_count), 0);
++}
++
++static void csid_disabled_pm_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	unsigned int i;
++
++	for (i = 1; i <= 3; i++) {
++		KUNIT_EXPECT_EQ(test, csid_set_power(&ctx->csid.subdev, 1), -EACCES);
++		KUNIT_EXPECT_EQ(test, ctx->gets, i);
++		KUNIT_EXPECT_EQ(test, ctx->puts, i);
++		KUNIT_EXPECT_EQ(test, atomic_read(&ctx->camss.dev->power.usage_count), 0);
++	}
++	KUNIT_EXPECT_EQ(test, ctx->resumes, 0U);
++}
++
++static void csid_resume_failure_test(struct kunit *test)
++{
++	struct csid_power_test_ctx *ctx = test->priv;
++	struct device *dev = ctx->camss.dev;
++
++	pm_runtime_enable(dev);
++	KUNIT_EXPECT_EQ(test, csid_set_power(&ctx->csid.subdev, 1), -ETIMEDOUT);
++	KUNIT_EXPECT_EQ(test, ctx->gets, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->puts, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->resumes, 1U);
++	KUNIT_EXPECT_EQ(test, atomic_read(&dev->power.usage_count), 0);
++	pm_runtime_disable(dev);
++}
++
++static struct kunit_case csid_power_test_cases[] = {
++	KUNIT_CASE(csid_parent_failure_test),
++	KUNIT_CASE(csid_disabled_pm_test),
++	KUNIT_CASE(csid_resume_failure_test),
++	{}
++};
++
++static struct kunit_suite csid_power_test_suite = {
++	.name = "camss-csid-power",
++	.init = csid_power_test_init,
++	.test_cases = csid_power_test_cases,
++};
++
++kunit_test_suite(csid_power_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss-csid.c b/drivers/media/platform/qcom/camss/camss-csid.c
+index a00791b00..a288d7957 100644
+--- a/drivers/media/platform/qcom/camss/camss-csid.c
++++ b/drivers/media/platform/qcom/camss/camss-csid.c
+@@ -696,30 +696,20 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
+ 
+ 		ret = pm_runtime_resume_and_get(dev);
+ 		if (ret < 0)
+-			return ret;
++			goto parent_put;
+ 
+ 		ret = regulator_bulk_enable(csid->num_supplies,
+ 					    csid->supplies);
+-		if (ret < 0) {
+-			pm_runtime_put_sync(dev);
+-			return ret;
+-		}
++		if (ret < 0)
++			goto runtime_put;
+ 
+ 		ret = csid_set_clock_rates(csid);
+-		if (ret < 0) {
+-			regulator_bulk_disable(csid->num_supplies,
+-					       csid->supplies);
+-			pm_runtime_put_sync(dev);
+-			return ret;
+-		}
++		if (ret < 0)
++			goto regulator_disable;
+ 
+ 		ret = camss_enable_clocks(csid->nclocks, csid->clock, dev);
+-		if (ret < 0) {
+-			regulator_bulk_disable(csid->num_supplies,
+-					       csid->supplies);
+-			pm_runtime_put_sync(dev);
+-			return ret;
+-		}
++		if (ret < 0)
++			goto regulator_disable;
+ 
+ 		csid->phy.need_vc_update = true;
+ 
+@@ -729,10 +719,7 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
+ 		if (ret < 0) {
+ 			disable_irq(csid->irq);
+ 			camss_disable_clocks(csid->nclocks, csid->clock);
+-			regulator_bulk_disable(csid->num_supplies,
+-					       csid->supplies);
+-			pm_runtime_put_sync(dev);
+-			return ret;
++			goto regulator_disable;
+ 		}
+ 
+ 		csid->res->hw_ops->hw_version(csid);
+@@ -746,6 +733,14 @@ static int csid_set_power(struct v4l2_subdev *sd, int on)
+ 	}
+ 
+ 	return ret;
++
++regulator_disable:
++	regulator_bulk_disable(csid->num_supplies, csid->supplies);
++runtime_put:
++	pm_runtime_put_sync(dev);
++parent_put:
++	csid->res->parent_dev_ops->put(camss, csid->id);
++	return ret;
+ }
+ 
+ /*
+@@ -1445,3 +1440,7 @@ inline bool csid_is_lite(struct csid_device *csid)
+ {
+ 	return csid->camss->res->csid_res[csid->id].csid.is_lite;
+ }
++
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CSID_KUNIT_TEST)
++#include "camss-csid-test.c"
++#endif
+-- 
+2.55.0
+

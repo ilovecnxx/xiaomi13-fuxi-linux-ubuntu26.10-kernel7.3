@@ -1,0 +1,393 @@
+From fd955bc9244283faee56c3e022b0de362758ad8f Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 18:17:29 +0800
+Subject: [PATCH] media: camss: exercise CPAS diagnostics with KUnit clocks and
+ registers
+
+Run the real powered snapshot against RAM registers and a common-clock
+provider. Cover skipped diagnostics, acquisition failures, polling timeout
+and concurrent VFEs, checking reference balance and unchanged control
+registers. These tests do not establish hardware sequencing or MM0
+recovery.
+---
+ drivers/media/platform/qcom/camss/Kconfig     |  10 +
+ .../platform/qcom/camss/camss-cpas-test.c     | 333 ++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.c     |   4 +
+ 3 files changed, 347 insertions(+)
+ create mode 100644 drivers/media/platform/qcom/camss/camss-cpas-test.c
+
+diff --git a/drivers/media/platform/qcom/camss/Kconfig b/drivers/media/platform/qcom/camss/Kconfig
+index b18ae4405..8d381224c 100644
+--- a/drivers/media/platform/qcom/camss/Kconfig
++++ b/drivers/media/platform/qcom/camss/Kconfig
+@@ -10,3 +10,13 @@ config VIDEO_QCOM_CAMSS
+ 	select GENERIC_PHY
+ 	select GENERIC_PHY_MIPI_DPHY
+ 	imply PHY_QCOM_MIPI_CSI2
++
++config VIDEO_QCOM_CAMSS_CPAS_KUNIT_TEST
++	bool "KUnit tests for CAMSS CPAS diagnostics" if !KUNIT_ALL_TESTS
++	depends on KUNIT=y && VIDEO_QCOM_CAMSS=y && COMMON_CLK
++	default KUNIT_ALL_TESTS
++	help
++	  Exercise powered CPAS snapshots with memory-backed registers and a
++	  test clock provider, including failure cleanup and concurrent VFEs.
++	  Verify balanced clock references without writing Q-channel requests.
++	  These tests do not validate hardware power sequencing or handshakes.
+diff --git a/drivers/media/platform/qcom/camss/camss-cpas-test.c b/drivers/media/platform/qcom/camss/camss-cpas-test.c
+new file mode 100644
+index 000000000..954cb3e47
+--- /dev/null
++++ b/drivers/media/platform/qcom/camss/camss-cpas-test.c
+@@ -0,0 +1,333 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Exercise the real snapshot and common-clock paths without camera hardware. */
++#include <kunit/test.h>
++#include <linux/clk-provider.h>
++#include <linux/kthread.h>
++
++struct cpas_test_ctx {
++	struct camss camss;
++	struct device dev;
++	struct clk_hw hw;
++	struct clk *clk;
++	u32 regs[32];
++	u32 expected[32];
++	int prepare_error;
++	int enable_error;
++	unsigned int prepares;
++	unsigned int enables;
++	unsigned int disables;
++	unsigned int unprepares;
++	bool accept;
++	bool block_first_prepare;
++	struct completion prepared;
++	struct completion release_prepare;
++};
++
++static int cpas_test_prepare(struct clk_hw *hw)
++{
++	struct cpas_test_ctx *ctx = container_of(hw, struct cpas_test_ctx, hw);
++
++	ctx->prepares++;
++	if (ctx->block_first_prepare && ctx->prepares == 1) {
++		complete(&ctx->prepared);
++		if (!wait_for_completion_timeout(&ctx->release_prepare, HZ))
++			return -ETIMEDOUT;
++	}
++	return ctx->prepare_error;
++}
++
++static void cpas_test_unprepare(struct clk_hw *hw)
++{
++	struct cpas_test_ctx *ctx = container_of(hw, struct cpas_test_ctx, hw);
++
++	ctx->unprepares++;
++}
++
++static int cpas_test_enable(struct clk_hw *hw)
++{
++	struct cpas_test_ctx *ctx = container_of(hw, struct cpas_test_ctx, hw);
++
++	ctx->enables++;
++	if (ctx->enable_error)
++		return ctx->enable_error;
++	if (ctx->accept)
++		writel(BIT(0), ctx->camss.cpas_top_base + CPAS_QCHANNEL_STATUS);
++	return 0;
++}
++
++static void cpas_test_disable(struct clk_hw *hw)
++{
++	struct cpas_test_ctx *ctx = container_of(hw, struct cpas_test_ctx, hw);
++
++	ctx->disables++;
++}
++
++static unsigned long cpas_test_recalc_rate(struct clk_hw *hw,
++					 unsigned long parent_rate)
++{
++	return 19200000;
++}
++
++static const struct clk_ops cpas_test_clock_ops = {
++	.prepare = cpas_test_prepare,
++	.unprepare = cpas_test_unprepare,
++	.enable = cpas_test_enable,
++	.disable = cpas_test_disable,
++	.recalc_rate = cpas_test_recalc_rate,
++};
++
++static int cpas_test_init(struct kunit *test)
++{
++	struct clk_init_data init = {
++		.name = "camss-cpas-test-icp",
++		.ops = &cpas_test_clock_ops,
++	};
++	struct cpas_test_ctx *ctx;
++	int ret;
++
++	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
++	if (!ctx)
++		return -ENOMEM;
++	test->priv = ctx;
++	ctx->dev.init_name = "camss-cpas-test";
++	ctx->camss.dev = &ctx->dev;
++	ctx->camss.cpas_top_base = (void __iomem *)ctx->regs;
++	mutex_init(&ctx->camss.cpas_diag_lock);
++	init_completion(&ctx->prepared);
++	init_completion(&ctx->release_prepare);
++	ctx->regs[CPAS_CAMERA_VERSION / 4] = 0x00070800;
++	ctx->regs[CPAS_VERSION / 4] = 0x10000000;
++	ctx->regs[CPAS_QCHANNEL_CTRL / 4] = 1;
++	memcpy(ctx->expected, ctx->regs, sizeof(ctx->regs));
++	ctx->accept = true;
++	ctx->hw.init = &init;
++	ret = clk_hw_register(NULL, &ctx->hw);
++	if (ret)
++		return ret;
++	ctx->clk = clk_hw_get_clk(&ctx->hw, NULL);
++	if (IS_ERR(ctx->clk)) {
++		ret = PTR_ERR(ctx->clk);
++		clk_hw_unregister(&ctx->hw);
++		return ret;
++	}
++	ctx->camss.cpas_icp_clk = ctx->clk;
++	return 0;
++}
++
++static void cpas_test_exit(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++	bool unlocked = mutex_trylock(&ctx->camss.cpas_diag_lock);
++
++	KUNIT_EXPECT_TRUE(test, unlocked);
++	if (unlocked)
++		mutex_unlock(&ctx->camss.cpas_diag_lock);
++	KUNIT_EXPECT_FALSE(test, clk_hw_is_prepared(&ctx->hw));
++	KUNIT_EXPECT_FALSE(test, clk_hw_is_enabled(&ctx->hw));
++	KUNIT_EXPECT_MEMEQ(test, ctx->regs, ctx->expected, sizeof(ctx->regs));
++	clk_put(ctx->clk);
++	clk_hw_unregister(&ctx->hw);
++	mutex_destroy(&ctx->camss.cpas_diag_lock);
++}
++
++static void cpas_test_counts(struct kunit *test, unsigned int prepare,
++			     unsigned int enable, unsigned int disable,
++			     unsigned int unprepare)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++
++	KUNIT_EXPECT_EQ(test, ctx->prepares, prepare);
++	KUNIT_EXPECT_EQ(test, ctx->enables, enable);
++	KUNIT_EXPECT_EQ(test, ctx->disables, disable);
++	KUNIT_EXPECT_EQ(test, ctx->unprepares, unprepare);
++}
++
++static void cpas_missing_base_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++
++	ctx->camss.cpas_top_base = NULL;
++	camss_cpas_snapshot(&ctx->camss, 0, "reset-done");
++	cpas_test_counts(test, 0, 0, 0, 0);
++}
++
++static void cpas_missing_clock_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++
++	ctx->camss.cpas_icp_clk = NULL;
++	camss_cpas_snapshot(&ctx->camss, 0, "reset-done");
++	cpas_test_counts(test, 0, 0, 0, 0);
++}
++
++struct cpas_skip_case {
++	const char *name;
++	unsigned int reg;
++	u32 value;
++};
++
++static const struct cpas_skip_case cpas_skip_cases[] = {
++	{ "unknown-camera", CPAS_CAMERA_VERSION, 0x00070900 },
++	{ "unknown-cpas", CPAS_VERSION, 0x10010000 },
++	{ "stopped-control", CPAS_QCHANNEL_CTRL, 0 },
++	{ "reserved-control-bits", CPAS_QCHANNEL_CTRL, 3 },
++};
++
++static void cpas_skip_description(const struct cpas_skip_case *param, char *desc)
++{
++	strscpy(desc, param->name, KUNIT_PARAM_DESC_SIZE);
++}
++
++KUNIT_ARRAY_PARAM(cpas_skip, cpas_skip_cases, cpas_skip_description);
++
++static void cpas_skip_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++	const struct cpas_skip_case *param = test->param_value;
++
++	ctx->regs[param->reg / 4] = param->value;
++	ctx->expected[param->reg / 4] = param->value;
++	camss_cpas_snapshot(&ctx->camss, 0, "reset-done");
++	cpas_test_counts(test, 0, 0, 0, 0);
++}
++
++static void cpas_prepare_failure_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++
++	ctx->prepare_error = -EIO;
++	camss_cpas_snapshot(&ctx->camss, 0, "reset-error");
++	cpas_test_counts(test, 1, 0, 0, 0);
++	/* A later snapshot must be able to acquire both the mutex and clock. */
++	ctx->prepare_error = 0;
++	ctx->expected[CPAS_QCHANNEL_STATUS / 4] = BIT(0);
++	camss_cpas_snapshot(&ctx->camss, 1, "reset-done");
++	cpas_test_counts(test, 2, 1, 1, 1);
++}
++
++static void cpas_enable_failure_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++
++	ctx->enable_error = -EIO;
++	camss_cpas_snapshot(&ctx->camss, 0, "reset-error");
++	cpas_test_counts(test, 1, 1, 0, 1);
++	ctx->enable_error = 0;
++	ctx->expected[CPAS_QCHANNEL_STATUS / 4] = BIT(0);
++	camss_cpas_snapshot(&ctx->camss, 1, "reset-done");
++	cpas_test_counts(test, 2, 2, 1, 2);
++}
++
++static const char * const cpas_phases[] = {
++	"reset-done", "reset-error", "before-halt", "before-clock-off",
++};
++
++static void cpas_phase_description(const char * const *param, char *desc)
++{
++	strscpy(desc, *param, KUNIT_PARAM_DESC_SIZE);
++}
++
++KUNIT_ARRAY_PARAM(cpas_phase, cpas_phases, cpas_phase_description);
++
++static void cpas_accept_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++	const char * const *phase = test->param_value;
++
++	ctx->expected[CPAS_QCHANNEL_STATUS / 4] = BIT(0);
++	camss_cpas_snapshot(&ctx->camss, 0, *phase);
++	cpas_test_counts(test, 1, 1, 1, 1);
++}
++
++static void cpas_timeout_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++	ktime_t start;
++
++	ctx->accept = false;
++	/* QDENY alone must not satisfy the existing QACCEPTN observation. */
++	ctx->regs[CPAS_QCHANNEL_STATUS / 4] = BIT(1);
++	ctx->expected[CPAS_QCHANNEL_STATUS / 4] = BIT(1);
++	start = ktime_get();
++	camss_cpas_snapshot(&ctx->camss, 0, "before-clock-off");
++	KUNIT_EXPECT_GE(test, ktime_us_delta(ktime_get(), start), (s64)10000);
++	cpas_test_counts(test, 1, 1, 1, 1);
++	ctx->accept = true;
++	ctx->expected[CPAS_QCHANNEL_STATUS / 4] = BIT(0);
++	camss_cpas_snapshot(&ctx->camss, 1, "reset-done");
++	cpas_test_counts(test, 2, 2, 2, 2);
++}
++
++struct cpas_test_worker {
++	struct cpas_test_ctx *ctx;
++	struct completion started;
++	unsigned int vfe;
++};
++
++static int cpas_test_thread(void *data)
++{
++	struct cpas_test_worker *worker = data;
++	unsigned int i;
++
++	complete(&worker->started);
++	for (i = 0; i < 8; i++)
++		camss_cpas_snapshot(&worker->ctx->camss, worker->vfe, "before-halt");
++	while (!kthread_should_stop())
++		schedule_timeout_interruptible(HZ);
++	return 0;
++}
++
++static void cpas_concurrent_vfe_test(struct kunit *test)
++{
++	struct cpas_test_ctx *ctx = test->priv;
++	struct cpas_test_worker workers[2];
++	struct task_struct *tasks[2];
++	unsigned long ready;
++	unsigned int i;
++
++	ctx->accept = false;
++	ctx->block_first_prepare = true;
++	for (i = 0; i < ARRAY_SIZE(workers); i++) {
++		workers[i].ctx = ctx;
++		workers[i].vfe = i;
++		init_completion(&workers[i].started);
++	}
++	tasks[0] = kthread_run(cpas_test_thread, &workers[0], "cpas-test-0");
++	KUNIT_ASSERT_FALSE(test, IS_ERR(tasks[0]));
++	ready = wait_for_completion_timeout(&ctx->prepared, HZ);
++	KUNIT_EXPECT_NE(test, ready, 0UL);
++	tasks[1] = kthread_run(cpas_test_thread, &workers[1], "cpas-test-1");
++	KUNIT_EXPECT_FALSE(test, IS_ERR(tasks[1]));
++	if (!IS_ERR(tasks[1])) {
++		ready = wait_for_completion_timeout(&workers[1].started, HZ);
++		KUNIT_EXPECT_NE(test, ready, 0UL);
++	}
++	complete(&ctx->release_prepare);
++	/* Join every started worker before fixture memory and clocks are freed. */
++	for (i = 0; i < ARRAY_SIZE(tasks); i++)
++		if (!IS_ERR(tasks[i]))
++			KUNIT_EXPECT_EQ(test, kthread_stop(tasks[i]), 0);
++	if (!IS_ERR(tasks[1]))
++		cpas_test_counts(test, 16, 16, 16, 16);
++}
++
++static struct kunit_case cpas_test_cases[] = {
++	KUNIT_CASE(cpas_missing_base_test),
++	KUNIT_CASE(cpas_missing_clock_test),
++	KUNIT_CASE_PARAM(cpas_skip_test, cpas_skip_gen_params),
++	KUNIT_CASE(cpas_prepare_failure_test),
++	KUNIT_CASE(cpas_enable_failure_test),
++	KUNIT_CASE_PARAM(cpas_accept_test, cpas_phase_gen_params),
++	KUNIT_CASE(cpas_timeout_test),
++	KUNIT_CASE(cpas_concurrent_vfe_test),
++	{}
++};
++
++static struct kunit_suite cpas_test_suite = {
++	.name = "camss-cpas-diagnostic",
++	.init = cpas_test_init,
++	.exit = cpas_test_exit,
++	.test_cases = cpas_test_cases,
++};
++
++kunit_test_suite(cpas_test_suite);
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index e64ce01fe..e6bf45c3e 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -5972,6 +5972,10 @@ static struct platform_driver qcom_camss_driver = {
+ 
+ module_platform_driver(qcom_camss_driver);
+ 
++#if IS_ENABLED(CONFIG_VIDEO_QCOM_CAMSS_CPAS_KUNIT_TEST)
++#include "camss-cpas-test.c"
++#endif
++
+ MODULE_DESCRIPTION("Qualcomm Camera Subsystem driver");
+ MODULE_AUTHOR("Todor Tomov <todor.tomov@linaro.org>");
+ MODULE_LICENSE("GPL v2");
+-- 
+2.55.0
+

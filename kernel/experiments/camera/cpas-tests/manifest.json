@@ -1,0 +1,80 @@
+{
+  "status": "experimental-host-tested-not-device-tested",
+  "base_manifest": "../cpas-icp/manifest.json",
+  "base_manifest_sha256": "33ff0fd473c11e66e53633291986e8d09d3c1536505172cd2552a2e7ac6a7698",
+  "base_commit": "37328f87d17ce64cbee51bdbfe6abf89d77a23af",
+  "base_tree": "9f78c9163e7fce86fb1ba627a9b0380899da1156",
+  "source_commit": "bb569ab46ebf23ca3b82c33b00f4dc57d8443008",
+  "result_tree": "6cd804d46058493551e8549948a270b3381dec38",
+  "source_date_epoch": 1794738864,
+  "patches": [
+    {
+      "file": "0001-media-camss-exercise-CPAS-diagnostics-with-KUnit-clo.patch",
+      "sha256": "e6ba87dabd60655c2706d8b6cda96261156619b122164cc77a09aa40dd653c94"
+    },
+    {
+      "file": "0002-media-camss-release-CSID-parent-reference-on-power-o.patch",
+      "sha256": "a17616c103f8c8d9914130ac7c8776715bfe751f4807b86fafe6c8d3a9e900c0"
+    }
+  ],
+  "validation": {
+    "compiler": "aarch64-linux-gnu-gcc (Ubuntu 15.3.0-4ubuntu1) 15.3.0",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "extra_make_flags": ["ARCH=arm64", "CROSS_COMPILE=aarch64-linux-gnu-", "W=1", "-j4"],
+    "arm64_w1_passed": true,
+    "w1_warnings": [],
+    "patch_reconstruction_tree_verified": true,
+    "checkpatch": {
+      "flags": ["--no-signoff"],
+      "errors": 0,
+      "warnings": 2,
+      "warning_detail": "One new-file MAINTAINERS warning per patch; existing CAMSS entry covers both files"
+    },
+    "kunit": {
+      "arch": "x86_64",
+      "runner": "QEMU",
+      "kasan": true,
+      "debug_mutexes": true,
+      "config": "kunit.config",
+      "config_sha256": "1c3a8035334440a8599dfd1a91d14fe21f99e074927e26eec5dd2b4ec1432933",
+      "filter": "camss-*",
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "cpas_cases": 14,
+      "csid_cases": 3,
+      "counterexample": {
+        "mutation": "Restore immediate return after runtime PM acquisition failure",
+        "csid_passed": 1,
+        "csid_failed": 2,
+        "failure": "Missing parent puts on disabled PM and runtime resume failure"
+      }
+    },
+    "host_ci_mode": "host",
+    "host_script_tests_passed": 366,
+    "superterm_tests_passed": 62,
+    "host_tests_skipped": 0,
+    "full_phone_kernel_built": false,
+    "device_tested": false,
+    "qchannel_stop_handshake_validated": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "baseline_recheck": {
+      "date": "2026-11-15",
+      "scope": "Existing deb9 only; candidate not installed",
+      "kernel": "7.4.0-rc1-fuxi-deb9",
+      "default_kernel": "7.4.0-rc1-fuxi-deb9",
+      "fallback_kernel": "7.4.0-rc1-fuxi-deb8",
+      "installer_matches_repository": true,
+      "boot_counters_zero": true,
+      "d_state_processes": 0,
+      "failed_services": 0,
+      "health_failures": 2,
+      "health_failure_details": ["Bluetooth soft blocked", "Phosh NRestarts=1"],
+      "wifi_checks_passed": true,
+      "sensor_checks_passed": true
+    },
+    "report": "../../../../docs/相机CPAS回归与CSID引用修复-20261115.md"
+  }
+}
