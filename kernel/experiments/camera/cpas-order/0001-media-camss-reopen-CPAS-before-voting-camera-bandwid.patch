@@ -1,0 +1,215 @@
+From cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72 Mon Sep 17 00:00:00 2001
+From: Codex <codex@localhost>
+Date: Sun, 15 Nov 2026 20:28:57 +0800
+Subject: [PATCH] media: camss: reopen CPAS before voting camera bandwidth
+
+A traced cam11reset restart completes CPAS stop and removes MM0 bandwidth, but the next MM0 request times out before CPAS start. Move the shared-clock and idle handshake startup ahead of the bandwidth requests, while retaining the legacy DT path. Exercise ordering over twenty cycles and unwind after an injected bandwidth error. This is a host-tested candidate, not a hardware acceptance claim.
+---
+ .../platform/qcom/camss/camss-cpas-pm-test.c  | 63 +++++++++++++++++++
+ drivers/media/platform/qcom/camss/camss.c     | 53 ++++++++++------
+ 2 files changed, 97 insertions(+), 19 deletions(-)
+
+diff --git a/drivers/media/platform/qcom/camss/camss-cpas-pm-test.c b/drivers/media/platform/qcom/camss/camss-cpas-pm-test.c
+index ebb9cd9db..a7835eabf 100644
+--- a/drivers/media/platform/qcom/camss/camss-cpas-pm-test.c
++++ b/drivers/media/platform/qcom/camss/camss-cpas-pm-test.c
+@@ -23,6 +23,9 @@ struct cpas_pm_test {
+ 	u32 regs[32];
+ 	u32 response;
+ 	bool bad_clock_order;
++	unsigned int bw_on;
++	unsigned int bw_off;
++	int bw_failure;
+ };
+ 
+ static int cpas_pm_prepare(struct clk_hw *hw)
+@@ -226,6 +229,64 @@ static void cpas_pm_two_users_test(struct kunit *test)
+ 	}
+ }
+ 
++static int cpas_pm_bw_stub(struct camss *camss, int index, bool on)
++{
++	struct kunit *test = kunit_get_current_test();
++	struct cpas_pm_test *ctx = test->priv;
++
++	cpas_pm_expect_clocks(test, true);
++	KUNIT_EXPECT_EQ(test, ctx->regs[CPAS_QCHANNEL_CTRL / 4], on ? 1U : 0U);
++	if (on) {
++		ctx->bw_on++;
++		if (ctx->bw_failure == index + 1) {
++			ctx->response = 0;
++			return -EREMOTEIO;
++		}
++	} else {
++		ctx->bw_off++;
++	}
++	return 0;
++}
++
++static const struct camss_resources cpas_pm_bw_resources = {
++	.version = CAMSS_8550,
++	.icc_path_num = 2,
++};
++
++static void cpas_pm_bandwidth_order_test(struct kunit *test)
++{
++	struct cpas_pm_test *ctx = test->priv;
++	struct device *dev = ctx->camss.dev;
++	unsigned int i;
++
++	ctx->camss.res = &cpas_pm_bw_resources;
++	kunit_activate_static_stub(test, camss_set_icc_bw, cpas_pm_bw_stub);
++	for (i = 0; i < 20; i++) {
++		ctx->response = BIT(0);
++		KUNIT_ASSERT_GE(test, pm_runtime_resume_and_get(dev), 0);
++		ctx->response = 0;
++		KUNIT_ASSERT_GE(test, pm_runtime_put_sync(dev), 0);
++	}
++	KUNIT_EXPECT_EQ(test, ctx->bw_on, 40U);
++	KUNIT_EXPECT_EQ(test, ctx->bw_off, 40U);
++	cpas_pm_expect_clocks(test, false);
++}
++
++static void cpas_pm_bandwidth_failure_test(struct kunit *test)
++{
++	struct cpas_pm_test *ctx = test->priv;
++	struct device *dev = ctx->camss.dev;
++
++	ctx->camss.res = &cpas_pm_bw_resources;
++	ctx->bw_failure = 2;
++	kunit_activate_static_stub(test, camss_set_icc_bw, cpas_pm_bw_stub);
++	KUNIT_EXPECT_EQ(test, pm_runtime_resume_and_get(dev), -EREMOTEIO);
++	KUNIT_EXPECT_EQ(test, ctx->bw_on, 2U);
++	KUNIT_EXPECT_EQ(test, ctx->bw_off, 1U);
++	KUNIT_EXPECT_EQ(test, ctx->regs[CPAS_QCHANNEL_CTRL / 4], 0U);
++	cpas_pm_expect_clocks(test, false);
++}
++
+ struct cpas_pm_failure {
+ 	const char *name;
+ 	unsigned int clock;
+@@ -331,6 +392,8 @@ static void cpas_pm_stop_failure_test(struct kunit *test)
+ }
+ 
+ static struct kunit_case cpas_pm_test_cases[] = {
++	KUNIT_CASE(cpas_pm_bandwidth_order_test),
++	KUNIT_CASE(cpas_pm_bandwidth_failure_test),
+ 	KUNIT_CASE(cpas_pm_two_users_test),
+ 	KUNIT_CASE_PARAM(cpas_pm_resume_failure_test, cpas_pm_failure_gen_params),
+ 	KUNIT_CASE(cpas_pm_start_timeout_test),
+diff --git a/drivers/media/platform/qcom/camss/camss.c b/drivers/media/platform/qcom/camss/camss.c
+index e96e51953..baeb4b7dc 100644
+--- a/drivers/media/platform/qcom/camss/camss.c
++++ b/drivers/media/platform/qcom/camss/camss.c
+@@ -22,6 +22,7 @@
+ #include <linux/pm_clock.h>
+ #include <linux/slab.h>
+ #include <linux/videodev2.h>
++#include <kunit/static_stub.h>
+ 
+ #include <media/media-device.h>
+ #include <media/v4l2-async.h>
+@@ -5958,6 +5959,18 @@ static const struct of_device_id camss_dt_match[] = {
+ 
+ MODULE_DEVICE_TABLE(of, camss_dt_match);
+ 
++static int camss_set_icc_bw(struct camss *camss, int index, bool on)
++{
++	const struct resources_icc *res;
++
++	KUNIT_STATIC_STUB_REDIRECT(camss_set_icc_bw, camss, index, on);
++
++	res = &camss->res->icc_res[index];
++	return icc_set_bw(camss->icc_path[index],
++			  on ? res->icc_bw_tbl.avg : 0,
++			  on ? res->icc_bw_tbl.peak : 0);
++}
++
+ static int __maybe_unused camss_runtime_suspend(struct device *dev)
+ {
+ 	struct camss *camss = dev_get_drvdata(dev);
+@@ -5971,7 +5984,7 @@ static int __maybe_unused camss_runtime_suspend(struct device *dev)
+ 	}
+ 
+ 	for (i = 0; i < camss->res->icc_path_num; i++) {
+-		ret = icc_set_bw(camss->icc_path[i], 0, 0);
++		ret = camss_set_icc_bw(camss, i, false);
+ 		if (ret) {
+ 			if (camss->cpas_top_base)
+ 				goto cpas_failed;
+@@ -6000,7 +6013,6 @@ static int __maybe_unused camss_runtime_suspend(struct device *dev)
+ static int __maybe_unused camss_runtime_resume(struct device *dev)
+ {
+ 	struct camss *camss = dev_get_drvdata(dev);
+-	const struct resources_icc *icc_res = camss->res->icc_res;
+ 	int i;
+ 	int ret;
+ 
+@@ -6018,44 +6030,47 @@ static int __maybe_unused camss_runtime_resume(struct device *dev)
+ 	}
+ #endif
+ 
+-	for (i = 0; i < camss->res->icc_path_num; i++) {
+-		ret = icc_set_bw(camss->icc_path[i],
+-				 icc_res[i].icc_bw_tbl.avg,
+-				 icc_res[i].icc_bw_tbl.peak);
+-		if (ret) {
+-			if (camss->cpas_top_base)
+-				goto clear_bw;
+-			return ret;
+-		}
+-	}
+-
+ 	if (camss->cpas_top_base) {
++		/* Reopen the idle CAMNOC before requesting its MM0 bandwidth. */
+ 		ret = clk_set_rate(camss->cpas_clks[0].clk, 80000000);
+ 		if (ret)
+-			goto clear_bw;
++			goto disable_hf;
+ 		ret = clk_set_rate(camss->cpas_clks[1].clk, 300000000);
+ 		if (ret)
+-			goto clear_bw;
++			goto disable_hf;
+ 		ret = clk_bulk_prepare_enable(ARRAY_SIZE(camss->cpas_clks), camss->cpas_clks);
+ 		if (ret)
+-			goto clear_bw;
++			goto disable_hf;
+ 		ret = camss_cpas_handshake(camss, true);
++		if (ret)
++			goto disable_cpas;
++	}
++
++	for (i = 0; i < camss->res->icc_path_num; i++) {
++		ret = camss_set_icc_bw(camss, i, true);
+ 		if (ret) {
+-			clk_bulk_disable_unprepare(ARRAY_SIZE(camss->cpas_clks), camss->cpas_clks);
+-			goto clear_bw;
++			if (camss->cpas_top_base)
++				goto clear_bw;
++			return ret;
+ 		}
+ 	}
+ 
+ 	return 0;
+ 
+ clear_bw:
++	/* No producer has been enabled; report a failed idle handshake as well. */
++	if (camss_cpas_handshake(camss, false))
++		dev_err(dev, "CPAS resume cleanup handshake failed\n");
+ 	/* No producer has started yet. Preserve the original resume failure. */
+ 	while (--i >= 0) {
+-		int err = icc_set_bw(camss->icc_path[i], 0, 0);
++		int err = camss_set_icc_bw(camss, i, false);
+ 
+ 		if (err)
+ 			dev_err(dev, "CPAS resume bandwidth cleanup failed: %d\n", err);
+ 	}
++disable_cpas:
++	clk_bulk_disable_unprepare(ARRAY_SIZE(camss->cpas_clks), camss->cpas_clks);
++disable_hf:
+ 	clk_disable_unprepare(camss->cpas_hf_clk);
+ 	return ret;
+ }
+-- 
+2.55.0
+

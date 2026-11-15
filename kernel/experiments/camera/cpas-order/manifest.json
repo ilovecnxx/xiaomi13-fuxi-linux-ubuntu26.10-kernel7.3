@@ -1,0 +1,40 @@
+{
+  "status": "experimental-host-tested-device-pending",
+  "base_manifest": "../csid-reset/manifest.json",
+  "base_manifest_sha256": "1d7d6c4a62777ed4cf1fd2dff3eed03ce0d731cd61a4646a78d0e546281e66b9",
+  "base_commit": "b5d0f2923092bbcce9c52522cc2179f161b420a5",
+  "base_tree": "2927b16bd207008c1e5440655e962f4b774ad4bd",
+  "source_commit": "cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72",
+  "result_tree": "edfabc4cd0cf8c50b5578e85db8487b9080e17e8",
+  "source_date_epoch": 1794745737,
+  "patches": [
+    {
+      "file": "0001-media-camss-reopen-CPAS-before-voting-camera-bandwid.patch",
+      "sha256": "5d513a5af39ff2b707c132503b2ac26ae438ed7f226d6c9d3bf71b42b1a6167e"
+    }
+  ],
+  "validation": {
+    "arm64_w1_passed": true,
+    "make_targets": ["drivers/media/platform/qcom/camss/"],
+    "kunit_passed": 38,
+    "kunit_failed": 0,
+    "kunit_skipped": 0,
+    "kasan": true,
+    "debug_mutexes": true,
+    "checkpatch_errors": 0,
+    "checkpatch_warnings": 1,
+    "checkpatch_options": "--no-tree --no-signoff",
+    "checkpatch_warning": "Unwrapped commit description",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-cam12order",
+    "package_sha256": "1d74c0980ed0c30e40acf318085564f9bfa90cf7cdcf6562b7eafc7d2d7ad65e",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "config_sha256": "9d8c8497b051974e912e27eb46bddd54c22e59f3ad7c2429efcaa6dc6a5edb95",
+    "package_payload_matches_build": true,
+    "patch_reconstruction_tree_verified": true,
+    "device_tested": false,
+    "mm0_fixed": false,
+    "camera_accepted": false,
+    "report": "../../../../docs/相机CPAS启动顺序候选-20261115.md"
+  }
+}
