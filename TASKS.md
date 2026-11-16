@@ -31,9 +31,9 @@
 | 标准配方 | `kernel/manifest.json`，std2 | 可重建基准，不是手机运行版本 |
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
-| 手机运行/默认 | 本轮确认 `7.4.0-rc1-fuxi-cam12order`；extlinux 默认及 deb9 恢复文件均已核对 | MM 修复后多次挂起均同进程恢复移动数据；全 IRQ 测试仍提前返回，深睡驻留未验收 |
+| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend2`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | PSCI reset/resume 路径约 89 ms；RTC 尚余 19 秒即恢复，深睡驻留未验收 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
-| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | 本轮仅升级 modem 包、重启 MM；未重启桌面 |
+| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮升级诊断内核并正常重启，未单独重启桌面 |
 
 ## 整机体验进展
 
@@ -42,14 +42,15 @@
   signals=no。原始 LOC 20 秒收到 20 条 IN_PROGRESS、19 条卫星报告，仍是 0 有效位置/卫星 fix。
   MM 首次缺失 GPS_RAW 能力本轮再次出现，调试重启后恢复，根因未修；临时调试配置已清除。
   新会话选项已随 modem `0.20261116.0917` 安装；本轮未重做定位，不计有效 fix。
-- 挂起：新增 `scripts/fuxi-suspend-check.py`，等待 logind 实际 true→false 周期完成再清理 RTC；
-  请求超时后保留闹钟，修复了旧包装脚本提前清闹钟的问题。最新候选去除 IRQ 名称过滤，
-  补设备 PM 回调、RPMh/AOSS/SMP2P 事件及每 CPU 丢失计数；8 核均无 overrun/dropped。
-  一次 20 秒 RTC 保护实测中，logind 周期约 6.675 秒，BOOTTIME−MONOTONIC 增量约 4.304 秒，
-  恢复后 RTC 仍剩约 14 秒；success 累计 4/fail=0，USB/PCIe L2 错误仍在（本次 LTSSM 0x11）。
-  trace 确认执行平台挂起入口，syscore resume 后首个 IRQ 为 IPCC→MPSS glink；只证明恢复期
-  存在基带通信，尚不能认定为唤醒原因。跟踪配置改变，也不能据时间较前轮延长声称功耗改善。
-  深睡驻留和定时唤醒未通过。RTC 已清空，自动挂起仍关闭；没有新实现或假设不再重复挂起。
+- 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
+  捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P 及丢失计数。新内核加入默认关闭的 PSCI/GIC
+  只读边界诊断，配方见 `kernel/experiments/suspend/`。一次 20 秒测试中，logind 周期
+  2.529 秒，时间补偿 0.089761 秒，RTC 尚余 19 秒；8 核无 overrun/dropped，success=1/fail=0。
+  `cpu_ret=0/firmware_returned=0` 表示经 cpu_resume 恢复，非固件直接返回错误；物理计数器
+  间隔 0.088640 秒，仍不证明深睡。边界仅见 SPI261 pending，恢复首个 IPCC 为 LPASS glink，
+  前轮为 MPSS，不能固定归因。`pm_wakeup_irq=224` 对应 PCIe GPIO96 WAKE#，但首次 handler
+  在 noirq 恢复之后，约 0.400 秒触发 14,798 次；需排查恢复风暴，不能据此认定固件唤醒原因。
+  USB/PCIe L2 错误仍在（LTSSM 0x12）。深睡/定时唤醒未通过；RTC/trace 已清理，自动挂起关闭。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
@@ -62,17 +63,19 @@
   覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数及异常清理。
   MM 测试编译真实 watcher 和授权/清理回调，覆盖 10 个异步生命周期场景；来源/依赖检查、原生编译及打包通过。
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
-  最新诊断证据在 `work/fuxi-suspend-allirq-20261116/`、`work/suspend-allirq-*-20261116.log`；
+  新增内核开启/关闭诊断的相关对象 ARM64 W=1、完整 deb 构建、包载荷/来源及配方树重放通过；
+  checkpatch 0 错误、1 项新增头文件的 MAINTAINERS 提醒，未变更 DTB。
+  最新诊断证据在 `work/fuxi-suspend-diag2-20261116/`、`work/suspend2-*-20261116.log`；
   恢复后蜂窝接口 HTTPS=200、WiFi HTTPS 和六类传感器采样通过，关键服务 PID 未变、NRestarts=0。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
   [挂起证据](docs/驱动初始化与功耗验收-20261108.md#普通挂起与恢复检查)。
 
 ### 整机下一步
 
-1. 定位固件挂起入口提前返回：全 IRQ/平台事件已补齐且无丢失，仍不能确定唤醒来源；当前内核
-   无 `pm_wakeup_irq`、无 function tracer。下一候选需补内核 PM/IRQ 调试及 PSCI 返回/挂起边界的
-   pending IRQ 证据，区分固件拒绝与实际唤醒；先验证准确源码/配置和恢复入口，再做一次有界测试。
-   USB/PCIe L2 警告继续排查，尚无因果证据；MM 恢复还需稳定性验证。保持自动挂起关闭，不开始续航验收。
+1. 继续提前恢复定位：PSCI 已确认经 cpu_resume 返回，PM/IRQ 调试已可用。先审查 PCIe GPIO96
+   WAKE# 在 noirq 恢复后持续触发及 L2 失败的生命周期；同时考虑补 IPCC 具体 pending 来源及
+   平台睡眠证据，区分恢复通信与最早唤醒。未证明原因前不关闭基带或屏蔽 IRQ，不重复相同测试。
+   每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，保持自动挂起关闭，不开始续航验收。
 2. GNSS 首次能力、室外有效 fix、GeoClue；现场动作验证传感器轴向、亮度/旋转，耳机验证 A2DP。
 3. 核对 CS35L41 保护固件/标定与安全音量；识别 NFC 控制器和接线后实现驱动通路。
 
