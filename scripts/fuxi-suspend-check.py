@@ -12,7 +12,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import time
 
@@ -63,13 +62,19 @@ def wait_for_resume(cycle, dispatch, seconds, clock=None, pause=time.sleep):
         pause(0.05)
 
 
-def wake_irqs(interrupts):
-    pattern = re.compile(r"rtc_alarm|wakeup|phy_irq|dwc3|pwrkey|resin|PCIe PME|qcom_pcie")
-    return [int(match[1]) for line in interrupts.splitlines()
-            if (match := re.match(r"\s*(\d+):", line)) and pattern.search(line)]
-
-
 class WakeTrace:
+    REQUIRED_EVENTS = (
+        "power/suspend_resume", "power/wakeup_source_activate",
+        "power/wakeup_source_deactivate", "power/device_pm_callback_start",
+        "power/device_pm_callback_end", "irq/irq_handler_entry",
+        "irq/irq_handler_exit",
+    )
+    PLATFORM_EVENTS = (
+        "rpmh/rpmh_send_msg", "rpmh/rpmh_tx_done", "qcom_aoss/aoss_send",
+        "qcom_aoss/aoss_send_done", "qcom_smp2p/smp2p_notify_in",
+        "qcom_smp2p/smp2p_update_bits", "qcom_smp2p/smp2p_ssr_ack",
+    )
+
     def __init__(self, output):
         self.output = output
         self.path = TRACE / f"fuxi-suspend-{os.getpid()}"
@@ -81,16 +86,21 @@ class WakeTrace:
         try:
             self.write("tracing_on", "0")
             self.write("trace_clock", "boot")
-            self.write("buffer_size_kb", "1024")
-            for event in ("suspend_resume", "wakeup_source_activate",
-                          "wakeup_source_deactivate"):
-                self.write(f"events/power/{event}/enable", "1")
-            irqs = wake_irqs(Path("/proc/interrupts").read_text())
-            if not irqs:
-                raise RuntimeError("No RTC/USB/PCIe IRQs found")
-            self.write("events/irq/irq_handler_entry/filter",
-                       " || ".join(f"irq == {irq}" for irq in irqs))
-            self.write("events/irq/irq_handler_entry/enable", "1")
+            self.write("buffer_size_kb", "4096")
+            enabled = list(self.REQUIRED_EVENTS)
+            missing = []
+            for event in self.PLATFORM_EVENTS:
+                if (self.path / f"events/{event}/enable").exists():
+                    enabled.append(event)
+                else:
+                    missing.append(event)
+            for event in enabled:
+                self.write(f"events/{event}/enable", "1")
+            (self.output / "trace-config.json").write_text(json.dumps({
+                "irq_scope": "all handlers, including local timers",
+                "clock": "boot", "buffer_kb_per_cpu": 4096,
+                "enabled_events": enabled, "missing_platform_events": missing,
+            }, indent=2) + "\n")
             self.write("tracing_on", "1")
             return self
         except BaseException:
@@ -104,6 +114,10 @@ class WakeTrace:
         if self.created:
             try:
                 self.write("tracing_on", "0")
+                # Save loss counters before consuming the trace buffer.
+                for stats in sorted((self.path / "per_cpu").glob("cpu*/stats")):
+                    (self.output / f"trace-{stats.parent.name}-stats.txt").write_text(
+                        stats.read_text())
                 (self.output / "trace.txt").write_text((self.path / "trace").read_text())
             finally:
                 self.path.rmdir()

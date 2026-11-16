@@ -1,8 +1,10 @@
 """Guard the RTC until logind reports an actual completed sleep cycle."""
 
 import importlib.util
+import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -71,14 +73,37 @@ class SuspendCheckTest(unittest.TestCase):
             CHECK.wait_for_resume(cycle, dispatch, 65, clock=lambda: now[0])
         self.assertFalse(cycle.may_clear_alarm)
 
-    def test_irq_selection_includes_rtc_usb_pcie_not_network_traffic(self):
-        self.assertEqual(CHECK.wake_irqs("""
- 20: 1 0 pmic_arb 1 Edge pm8xxx_rtc_alarm
-223: 5 0 GICv3 165 Level dwc3
-228: 9 0 msmgpio 96 Level 0000:00:00.0:wakeup
-232: 8 0 ITS-MSI 1 Edge ath12k_pci
-IPI0: 1 1 Rescheduling interrupts
-"""), [20, 223, 228])
+    def test_trace_keeps_unanticipated_irqs_and_exports_loss_on_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "out"
+            output.mkdir()
+            trace = CHECK.WakeTrace(output)
+            trace.path = root / "instance"
+
+            def fake_write(name, value):
+                target = trace.path / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(value + "\n")
+
+            with mock.patch.object(trace, "write", side_effect=fake_write), \
+                    mock.patch.object(Path, "rmdir", side_effect=lambda: shutil.rmtree(trace.path)):
+                with self.assertRaisesRegex(RuntimeError, "experiment failed"):
+                    with trace:
+                        (trace.path / "trace").write_text(
+                            "irq_handler_entry: irq=8 name=arch_timer\n"
+                            "irq_handler_entry: irq=999 name=unanticipated\n")
+                        stats = trace.path / "per_cpu/cpu0/stats"
+                        stats.parent.mkdir(parents=True)
+                        stats.write_text("overrun: 42\n")
+                        self.assertFalse((trace.path / "events/irq/irq_handler_entry/filter").exists())
+                        self.assertEqual((trace.path / "events/irq/irq_handler_exit/enable").read_text(), "1\n")
+                        raise RuntimeError("experiment failed")
+            self.assertIn("irq=999", (output / "trace.txt").read_text())
+            self.assertEqual((output / "trace-cpu0-stats.txt").read_text(), "overrun: 42\n")
+            config = json.loads((output / "trace-config.json").read_text())
+            self.assertIn("qcom_smp2p/smp2p_notify_in", config["missing_platform_events"])
+            self.assertFalse(trace.path.exists())
 
     def test_main_cleanup_after_rtc_timeout_request_timeout_and_resume(self):
         for failure in ("rtcwake", "Suspend", None):
