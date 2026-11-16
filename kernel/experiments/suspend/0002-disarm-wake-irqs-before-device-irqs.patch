@@ -1,0 +1,15 @@
+diff --git a/drivers/base/power/main.c b/drivers/base/power/main.c
+index 88a31e09e4f3fa257f0dd7e4072efb84416eec30..20e01976b48e84d65d5be1269b73be94d96718d8 100644
+--- a/drivers/base/power/main.c
++++ b/drivers/base/power/main.c
+@@ -955,8 +955,9 @@ void dpm_resume_noirq(pm_message_t state)
+ {
+ 	dpm_noirq_resume_devices(state);
+ 
+-	resume_device_irqs();
+ 	device_wakeup_disarm_wake_irqs();
++	/* Keep system-sleep-only wake IRQs masked when restoring device IRQs. */
++	resume_device_irqs();
+ }
+ 
+ static void async_resume_early(void *data, async_cookie_t cookie);

@@ -26,7 +26,12 @@ at the reconstructed source, and a compatible `FUXI_KOUT`. Preserve the
 cam12order configuration additions from `../camera/cpas-order` and enable
 `PM_DEBUG`, `PM_SLEEP_DEBUG`, `GENERIC_IRQ_DEBUGFS` and
 `ARM_PSCI_SYSTEM_SUSPEND_DIAG`. IRQ debugfs also selects IRQ injection;
-this experiment does not use that interface. The standard recipe is unchanged.
+this experiment does not use that interface. The follow-up wake-order candidate
+adds `0002-disarm-wake-irqs-before-device-irqs.patch`. It disarms the
+system-sleep wake IRQs before restoring device IRQs during noirq resume, then
+restores device IRQs while those wake IRQs remain masked. This changes only
+Linux resume ordering; it does not mask a device IRQ by number or identify a
+wake cause.
 
 Before booting, compare the package Image/config/DTB with the build output
 and verify the installed entry and recovery checksums. Select the same
@@ -37,3 +42,11 @@ suspend disabled and use one RTC-guarded test through
 
 Validation and device evidence are recorded in the manifest and
 [the power report](../../../docs/驱动初始化与功耗验收-20261108.md).
+
+The first wake-order build (`7.4.0-rc1-fuxi-suspend3`) booted successfully and
+was tested once. It still resumed before the 20-second RTC alarm: the logind
+cycle was 4.142029 seconds, the BOOTTIME compensation was 2.051776 seconds,
+and 17 seconds remained on the RTC alarm. The PCIe WAKE# IRQ was IRQ225 in
+this boot and had zero trace entries during the resume; IRQ224 was a separate
+`dwc3` IRQ with 98 entries. This shows a changed resume interrupt pattern, not
+a confirmed wake cause.
