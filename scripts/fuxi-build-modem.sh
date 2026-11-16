@@ -1,8 +1,11 @@
 #!/bin/bash
-# Native arm64 build inside the pinned environment; no device access.
+# Native arm64 build; defaults to the pinned container's environment record.
+# Other native environments must provide their real dpkg inventory explicitly.
 set -euo pipefail
 B="$(cd "$(dirname "$0")/.." && pwd)"
 [ "$(dpkg --print-architecture)" = arm64 ] || { echo 'Run in the arm64 build environment' >&2; exit 1; }
+ENV_LOCK="${FUXI_BUILD_ENV_LOCK:-/build-environment.lock}"
+[ -s "$ENV_LOCK" ] || { echo "Missing build environment record: $ENV_LOCK" >&2; exit 1; }
 python3 "$B/scripts/fuxi-sources.py" check modemmanager 81voltd
 S="$B/build/sources"
 O="$B/work/kbuild/modem-source"
@@ -10,7 +13,7 @@ OUT="$B/work/modem-bin"
 mkdir -p "$O"
 exec 9>"$O/.lock"
 flock -n 9 || exit 1
-export SOURCE_DATE_EPOCH="$(git -C "$B" log -1 --format=%ct)"
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$B" log -1 --format=%ct)}"
 export CFLAGS="-O2 -ffile-prefix-map=$B=/usr/src/fuxi"
 export LDFLAGS='-Wl,--build-id=sha1'
 meson setup --wipe "$O/mm" "$S/modemmanager" --buildtype=release \
@@ -30,7 +33,7 @@ install -m755 "$O/81voltd/81voltd" "$T/81voltd-sub2"
 for name in modemmanager 81voltd; do
   cp "$S/$name/.fuxi-source.json" "$T/$name-source.json"
 done
-cp /build-environment.lock "$T/build-environment.lock"
+cp "$ENV_LOCK" "$T/build-environment.lock"
 (cd "$T" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS)
 [ ! -e "$OUT" ] || mv "$OUT" "$O/previous-$(date +%s)"
 mv "$T" "$OUT"

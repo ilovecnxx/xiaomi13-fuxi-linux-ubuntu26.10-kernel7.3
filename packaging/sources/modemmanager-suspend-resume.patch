@@ -1,0 +1,842 @@
+--- a/src/mm-base-manager.c
++++ b/src/mm-base-manager.c
+@@ -804,97 +804,114 @@
+     gchar *contents = NULL;
+     gchar *line;
+     GError *error = NULL;
+ 
+     if (!self->priv->initial_kernel_events)
+         return;
+ 
+     if (!g_file_get_contents (self->priv->initial_kernel_events, &contents, NULL, &error)) {
+         mm_obj_warn (self, "couldn't load initial kernel events: %s", error->message);
+         g_error_free (error);
+         return;
+     }
+ 
+     line = contents;
+     while (line) {
+         gchar *next;
+ 
+         next = strchr (line, '\n');
+         if (next) {
+             *next = '\0';
+             next++;
+         }
+ 
+         /* ignore empty lines */
+         if (line[0] != '\0') {
+             MMKernelEventProperties *properties;
+ 
+             properties = mm_kernel_event_properties_new_from_string (line, &error);
+             if (!properties) {
+                 mm_obj_warn (self, "couldn't parse line '%s' as initial kernel event %s", line, error->message);
+                 g_clear_error (&error);
+             } else if (!handle_kernel_event (self, properties, &error)) {
+                 mm_obj_warn (self, "couldn't process line '%s' as initial kernel event %s", line, error->message);
+                 g_clear_error (&error);
+             } else
+                 mm_obj_dbg (self, "processed initial kernel event:' %s'", line);
+             g_clear_object (&properties);
+         }
+ 
+         line = next;
+     }
+ 
+     g_free (contents);
+ }
+ 
++static void
++resume_authorization (MMBaseManager *self)
++{
++    /* Keep old requests cancelled, even if their callbacks have not run yet. */
++    if (g_cancellable_is_cancelled (self->priv->authp_cancellable)) {
++        g_clear_object (&self->priv->authp_cancellable);
++        self->priv->authp_cancellable = g_cancellable_new ();
++    }
++}
++
+ void
+ mm_base_manager_start (MMBaseManager *self,
+                        gboolean       manual_scan)
+ {
+     g_return_if_fail (self != NULL);
+     g_return_if_fail (MM_IS_BASE_MANAGER (self));
+ 
++    resume_authorization (self);
++
++#if defined WITH_QRTR
++    if (self->priv->qrtr_bus_watcher && (self->priv->auto_scan || manual_scan))
++        mm_qrtr_bus_watcher_scan (self->priv->qrtr_bus_watcher);
++#endif
++
+     if (!self->priv->auto_scan && !manual_scan) {
+         /* If we have a list of initial kernel events, process it now */
+         process_initial_kernel_events (self);
+         return;
+     }
+ 
+ #if defined WITH_UDEV
+     if (!mm_context_get_test_no_udev ()) {
+         mm_obj_dbg (self, "starting %s device scan...", manual_scan ? "manual" : "automatic");
+         process_scan (self, manual_scan);
+         mm_obj_dbg (self, "finished device scan...");
+     } else
+ #endif
+         mm_obj_dbg (self, "unsupported %s device scan...", manual_scan ? "manual" : "automatic");
+ }
+ 
+ /*****************************************************************************/
+ 
+ typedef enum {
+     DEVICE_CLEANUP_STEP_FIRST = 0,
+     DEVICE_CLEANUP_STEP_DISABLE,
+     DEVICE_CLEANUP_STEP_LOW_POWER,
+     DEVICE_CLEANUP_STEP_REMOVE,
+     DEVICE_CLEANUP_STEP_TERSE,
+     DEVICE_CLEANUP_STEP_LAST,
+ } DeviceCleanupStep;
+ 
+ typedef struct {
+     MMBaseModem               *modem;
+     MMBaseManagerCleanupFlags  flags;
+     DeviceCleanupStep          step;
+ } DeviceCleanupContext;
+ 
+ static void device_cleanup_step (GTask *task);
+ 
+ static DeviceCleanupContext *
+ device_cleanup_context_new (MMBaseModem *modem,
+                             MMBaseManagerCleanupFlags  flags)
+ {
+     DeviceCleanupContext *ctx;
+ 
+     ctx = g_slice_new0 (DeviceCleanupContext);
+     if (modem)
+         ctx->modem = g_object_ref (modem);
+     ctx->step = DEVICE_CLEANUP_STEP_FIRST;
+@@ -1080,146 +1097,150 @@
+ 
+     g_assert_not_reached ();
+ }
+ 
+ typedef struct {
+     MMBaseManager  *self;
+     GSList         *tasks;
+     GSList         *devices_to_remove;
+     MMSleepContext *sleep_ctx;
+ } ManagerCleanupContext;
+ 
+ static ManagerCleanupContext *
+ manager_cleanup_context_new (MMBaseManager  *self,
+                              MMSleepContext *sleep_ctx)
+ {
+     ManagerCleanupContext *ctx;
+ 
+     ctx = g_slice_new0 (ManagerCleanupContext);
+     ctx->self = g_object_ref (self);
+     ctx->sleep_ctx = g_object_ref (sleep_ctx);
+     return ctx;
+ }
+ 
+ static void
+ manager_cleanup_context_maybe_complete (ManagerCleanupContext *ctx,
+                                         GTask                  *task,
+                                         MMDevice               *device,
+                                         gboolean                remove)
+ {
+     if (task)
+         ctx->tasks = g_slist_remove (ctx->tasks, task);
+ 
+     if (remove) {
+         g_assert (device);
+         ctx->devices_to_remove = g_slist_append (ctx->devices_to_remove, device);
+     }
+ 
+     if (ctx->tasks == NULL) {
+         GSList *iter;
+ 
+         /* Remove devices at the end to avoid modifying the hash table
+          * during iteration, in case a device has no modem and the steps
+          * all fall through.
+          */
+         for (iter = ctx->devices_to_remove; iter; iter = iter->next)
+-            g_hash_table_remove (ctx->self->priv->devices, mm_device_get_uid (device));
++            g_hash_table_remove (ctx->self->priv->devices, mm_device_get_uid (iter->data));
+         g_slist_free (ctx->devices_to_remove);
+ 
+         mm_obj_dbg (ctx->self, "cleanup complete");
+         mm_sleep_context_complete (ctx->sleep_ctx, NULL);
+ 
+         g_object_unref (ctx->sleep_ctx);
+         g_object_unref (ctx->self);
+         g_slice_free (ManagerCleanupContext, ctx);
+     }
+ }
+ 
+ static void
+ device_cleanup_ready (MMDevice               *device,
+                       GAsyncResult           *res,
+                       ManagerCleanupContext *ctx)
+ {
+     GTask                 *task;
+     DeviceCleanupContext *dctx;
+     g_autoptr(GError)      error = NULL;
+     gboolean               remove;
+ 
+     task = G_TASK (res);
+ 
+     if (!g_task_propagate_boolean (task, &error)) {
+         mm_obj_info (ctx->self,
+                      "failed to cleanup device %s: %s",
+                      mm_device_get_uid (device),
+                      error->message);
+     }
+ 
+     dctx = g_task_get_task_data (task);
+     remove = has_cleanup_flag (dctx->flags, MM_BASE_MANAGER_CLEANUP_REMOVE);
+     manager_cleanup_context_maybe_complete (ctx, task, device, remove);
+ }
+ 
+ void
+ mm_base_manager_cleanup (MMBaseManager             *self,
+                          MMBaseManagerCleanupFlags  flags,
+                          MMSleepContext            *sleep_ctx)
+ {
+     ManagerCleanupContext *ctx;
+     GHashTableIter          iter;
+     MMDevice               *device;
+     gboolean                disable, remove, low_power, terse;
+     guint                   active_bearers = 0;
+ 
+     g_return_if_fail (self != NULL);
+     g_return_if_fail (MM_IS_BASE_MANAGER (self));
+ 
+     /* Cancel all ongoing auth requests */
+     g_cancellable_cancel (self->priv->authp_cancellable);
+ 
+     disable = has_cleanup_flag (flags, MM_BASE_MANAGER_CLEANUP_DISABLE);
+     low_power = has_cleanup_flag (flags, MM_BASE_MANAGER_CLEANUP_LOW_POWER);
+     remove = has_cleanup_flag (flags, MM_BASE_MANAGER_CLEANUP_REMOVE);
++#if defined WITH_QRTR
++    if (remove && self->priv->qrtr_bus_watcher)
++        mm_qrtr_bus_watcher_pause (self->priv->qrtr_bus_watcher);
++#endif
+     terse = has_cleanup_flag (flags, MM_BASE_MANAGER_CLEANUP_TERSE);
+     mm_obj_dbg (self,
+                 "manager shutting down... (%s%s%s%s%s%s%s)",
+                 disable ? "disable" : "",
+                 disable && (low_power || remove || terse) ? "," : "",
+                 low_power ? "low-power" : "",
+                 low_power && (remove || terse) ? "," : "",
+                 remove ? "remove" : "",
+                 (remove && terse) ? "," : "",
+                 terse ? "terse" : "");
+ 
+     ctx = manager_cleanup_context_new (self, sleep_ctx);
+ 
+     g_hash_table_iter_init (&iter, self->priv->devices);
+     while (g_hash_table_iter_next (&iter, NULL, (gpointer) &device)) {
+         DeviceCleanupContext *dctx;
+         GTask                *task;
+         MMBaseModem          *modem;
+ 
+         modem = mm_device_peek_modem (device);
+         if (modem) {
+             guint count = 0;
+ 
+             mm_iface_modem_count_bearers (MM_IFACE_MODEM (modem),
+                                           MM_IFACE_MODEM_COUNT_BEARERS_FLAG_ACTIVE,
+                                           &count,
+                                           NULL,
+                                           NULL);
+             active_bearers += count;
+         }
+ 
+         task = g_task_new (device,
+                            NULL,
+                            (GAsyncReadyCallback)device_cleanup_ready,
+                            ctx);
+         ctx->tasks = g_slist_append (ctx->tasks, task);
+ 
+         dctx = device_cleanup_context_new (modem, flags);
+         g_task_set_task_data (task, dctx, (GDestroyNotify)device_cleanup_context_free);
+ 
+         device_cleanup_step (task);
+     }
+ 
+     /* Increase cleanup timeout for each connected bearer; disconnecting a
+      * bearer can take many seconds.
+@@ -1237,90 +1258,92 @@
+     GHashTableIter iter;
+     gpointer key, value;
+     guint32 n;
+ 
+     g_return_val_if_fail (self != NULL, 0);
+     g_return_val_if_fail (MM_IS_BASE_MANAGER (self), 0);
+ 
+     n = 0;
+     g_hash_table_iter_init (&iter, self->priv->devices);
+     while (g_hash_table_iter_next (&iter, &key, &value)) {
+         n += !!mm_device_peek_modem (MM_DEVICE (value));
+     }
+ 
+     return n;
+ }
+ 
+ /*****************************************************************************/
+ /* Quick resume synchronization */
+ 
+ #if defined WITH_SUSPEND_RESUME
+ 
+ static void
+ base_modem_sync_ready (MMBaseModem  *self,
+                        GAsyncResult *res,
+                        gpointer      user_data)
+ {
+     g_autoptr(GError) error = NULL;
+ 
+     mm_base_modem_sync_finish (self, res, &error);
+     if (error) {
+         mm_obj_warn (self, "synchronization failed: %s", error->message);
+         return;
+     }
+     mm_obj_msg (self, "synchronization finished");
+ }
+ 
+ void
+ mm_base_manager_sync (MMBaseManager *self)
+ {
+     GHashTableIter iter;
+     gpointer       key, value;
+ 
+     g_return_if_fail (self != NULL);
+     g_return_if_fail (MM_IS_BASE_MANAGER (self));
+ 
++    resume_authorization (self);
++
+     /* Refresh each device */
+     g_hash_table_iter_init (&iter, self->priv->devices);
+     while (g_hash_table_iter_next (&iter, &key, &value)) {
+         MMBaseModem *modem;
+ 
+         modem = mm_device_peek_modem (MM_DEVICE (value));
+ 
+         /* We just want to start the synchronization, we don't need the result */
+         if (modem) {
+             mm_base_modem_sync (modem,
+                                 MM_OPERATION_LOCK_REQUIRED,
+                                 (GAsyncReadyCallback)base_modem_sync_ready,
+                                 NULL);
+         }
+     }
+ }
+ 
+ #endif
+ 
+ /*****************************************************************************/
+ /* Set logging */
+ 
+ typedef struct {
+     MMBaseManager *self;
+     GDBusMethodInvocation *invocation;
+     gchar *level;
+ } SetLoggingContext;
+ 
+ static void
+ set_logging_context_free (SetLoggingContext *ctx)
+ {
+     g_object_unref (ctx->invocation);
+     g_object_unref (ctx->self);
+     g_free (ctx->level);
+     g_free (ctx);
+ }
+ 
+ static void
+ set_logging_auth_ready (MMAuthProvider    *authp,
+                         GAsyncResult      *res,
+                         SetLoggingContext *ctx)
+ {
+     GError *error = NULL;
+ 
+     if (!mm_auth_provider_authorize_finish (authp, res, &error))
+--- a/src/mm-qrtr-bus-watcher.c
++++ b/src/mm-qrtr-bus-watcher.c
+@@ -1,354 +1,362 @@
+ /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+ /*
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2 of the License, or
+  * (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details:
+  *
+  * Copyright 2020 Google LLC
+  */
+ 
+ #include <ModemManager.h>
+ #include <libqrtr-glib.h>
+ #include <libqmi-glib.h>
+ 
+ #include "mm-utils.h"
+ 
+ #include "mm-qrtr-bus-watcher.h"
+ 
+ static void log_object_iface_init (MMLogObjectInterface *iface);
+ 
+ G_DEFINE_TYPE_EXTENDED (MMQrtrBusWatcher, mm_qrtr_bus_watcher, G_TYPE_OBJECT, 0,
+                         G_IMPLEMENT_INTERFACE (MM_TYPE_LOG_OBJECT, log_object_iface_init))
+ 
+ struct _MMQrtrBusWatcherPrivate {
+     QrtrBus *qrtr_bus;
+     guint    node_added_id;
+     guint    node_removed_id;
++    gboolean paused;
++    GCancellable *cancellable;
+ 
+     /* Map of NodeNumber -> QRTR nodes available */
+     GHashTable *nodes;
+ };
+ 
+ enum {
+     QRTR_DEVICE_ADDED,
+     QRTR_DEVICE_REMOVED,
+     LAST_SIGNAL,
+ };
+ 
+ static guint signals[LAST_SIGNAL] = { 0 };
+ 
+ /*****************************************************************************/
+ 
+ static gchar *
+ log_object_build_id (MMLogObject *_self)
+ {
+     return g_strdup ("qrtr-bus-watcher");
+ }
+ 
+ /*****************************************************************************/
+ 
+ typedef struct {
+     MMQrtrBusWatcher *self;
+     QrtrNode         *node;
++    GCancellable     *cancellable;
+ } DeviceContext;
+ 
+ static void
+ device_context_free (DeviceContext *ctx)
+ {
+     g_object_unref (ctx->self);
+     g_object_unref (ctx->node);
++    g_object_unref (ctx->cancellable);
+     g_slice_free (DeviceContext, ctx);
+ }
+ 
+ static void
+ qrtr_node_services_ready (QrtrNode      *node,
+                           GAsyncResult  *res,
+                           DeviceContext *ctx)
+ {
+     guint32 node_id;
++    gboolean ready;
+ 
+     node_id = qrtr_node_get_id (node);
+-    if (!qrtr_node_wait_for_services_finish (node, res, NULL)) {
++    ready = qrtr_node_wait_for_services_finish (node, res, NULL);
++
++    /* A removed node or a previous suspend cycle must not change current state. */
++    if (ctx->cancellable != ctx->self->priv->cancellable ||
++        g_cancellable_is_cancelled (ctx->cancellable) ||
++        g_hash_table_lookup (ctx->self->priv->nodes, GUINT_TO_POINTER (node_id)) != node) {
++        device_context_free (ctx);
++        return;
++    }
++
++    if (!ready) {
+         mm_obj_dbg (ctx->self,
+                     "qrtr node %u doesn't have required services to be considered a control node",
+                     node_id);
+         g_hash_table_remove (ctx->self->priv->nodes, GUINT_TO_POINTER (node_id));
+         device_context_free (ctx);
+         return;
+     }
+ 
+     mm_obj_dbg (ctx->self, "qrtr services ready for node %u", node_id);
+     g_signal_emit (ctx->self, signals[QRTR_DEVICE_ADDED], 0, node_id);
+     device_context_free (ctx);
+ }
+ 
+ static void
+ handle_qrtr_node_added (QrtrBus          *qrtr_bus,
+                         guint32           node_id,
+                         MMQrtrBusWatcher *self)
+ {
+     g_autoptr(QrtrNode)      node = NULL;
+     g_autoptr(GArray)        services = NULL;
+     DeviceContext           *ctx;
+     static const QmiService  required_services[] = {
+         QMI_SERVICE_WDS,
+         QMI_SERVICE_NAS,
+         QMI_SERVICE_DMS
+     };
+ 
++    if (self->priv->paused)
++        return;
++
+     mm_obj_dbg (self, "qrtr node %u added", node_id);
+ 
+     node = qrtr_bus_get_node (qrtr_bus, node_id);
+     if (!node) {
+         mm_obj_warn (self, "cannot find node %u", node_id);
+         return;
+     }
+ 
+-    if (g_hash_table_contains (self->priv->nodes, GUINT_TO_POINTER (node_id))) {
+-        mm_obj_warn (self, "qrtr node %u was previously added", node_id);
++    if (g_hash_table_contains (self->priv->nodes, GUINT_TO_POINTER (node_id)))
+         return;
+-    }
+ 
+     /* a full node reference now owned by the hash table */
+     g_hash_table_insert (self->priv->nodes, GUINT_TO_POINTER (node_id), g_object_ref (node));
+ 
+     mm_obj_dbg (self, "waiting for modem services on node %u", node_id);
+ 
+     /* Check if the node provides services to be sure the node represents a
+      * modem. */
+     services = g_array_sized_new (FALSE, FALSE, sizeof (QmiService), G_N_ELEMENTS (required_services));
+     g_array_append_vals (services, required_services, G_N_ELEMENTS (required_services));
+ 
+     /* Setup command context */
+     ctx       = g_slice_new0 (DeviceContext);
+     ctx->self = g_object_ref (self);
+     ctx->node = g_object_ref (node);
++    ctx->cancellable = g_object_ref (self->priv->cancellable);
+ 
+     qrtr_node_wait_for_services (node,
+                                  services,
+                                  4000, /* ms */
+-                                 NULL,
++                                 ctx->cancellable,
+                                  (GAsyncReadyCallback) qrtr_node_services_ready,
+                                  ctx);
+ }
+ 
+ static void
+ handle_qrtr_node_removed (QrtrBus          *qrtr_bus,
+                           guint32           node_id,
+                           MMQrtrBusWatcher *self)
+ {
+-    QrtrNode *node;
+-
+-    node = qrtr_bus_get_node (qrtr_bus, node_id);
+-    if (!node) {
+-        mm_obj_warn (self, "cannot find node %u", node_id);
++    if (!g_hash_table_remove (self->priv->nodes, GUINT_TO_POINTER (node_id)))
+         return;
+-    }
+ 
+-    g_hash_table_remove (self->priv->nodes, GUINT_TO_POINTER (node_id));
+     mm_obj_dbg (self, "qrtr node %u removed", node_id);
+ 
+     g_signal_emit (self, signals[QRTR_DEVICE_REMOVED], 0, node_id);
+ }
+ 
+ /*****************************************************************************/
+ 
+ QrtrNode *
+ mm_qrtr_bus_watcher_peek_node (MMQrtrBusWatcher *self,
+                                guint32           node_id)
+ {
+     g_assert (MM_IS_QRTR_BUS_WATCHER (self));
+ 
+     return g_hash_table_lookup (self->priv->nodes, GUINT_TO_POINTER (node_id));
+ }
+ 
+ /*****************************************************************************/
+ 
+ gboolean
+ mm_qrtr_bus_watcher_start_finish (MMQrtrBusWatcher  *self,
+                                   GAsyncResult      *res,
+                                   GError           **error)
+ {
+     return g_task_propagate_boolean (G_TASK (res), error);
+ }
+ 
+-typedef struct {
+-    MMQrtrBusWatcher *self;
+-    QrtrNode         *node;
+-} ProcessExistingNodes;
+-
+-static gboolean
+-process_existing_nodes_idle (ProcessExistingNodes *ctx)
++void
++mm_qrtr_bus_watcher_scan (MMQrtrBusWatcher *self)
+ {
+-    handle_qrtr_node_added (
+-        ctx->self->priv->qrtr_bus, qrtr_node_get_id (ctx->node), ctx->self);
++    GList *nodes, *l;
+ 
+-    g_object_unref (ctx->self);
+-    g_object_unref (ctx->node);
+-    g_slice_free (ProcessExistingNodes, ctx);
+-    return G_SOURCE_REMOVE;
+-}
++    self->priv->paused = FALSE;
++    if (g_cancellable_is_cancelled (self->priv->cancellable)) {
++        g_clear_object (&self->priv->cancellable);
++        self->priv->cancellable = g_cancellable_new ();
++    }
+ 
+-static void
+-process_existing_nodes (MMQrtrBusWatcher *self)
+-{
+-    GList                *nodes, *l;
+-    QrtrNode             *node;
+-    ProcessExistingNodes *ctx;
++    /* Startup may still be creating the bus; qrtr_bus_ready() scans it later. */
++    if (!self->priv->qrtr_bus)
++        return;
+ 
+     nodes = qrtr_bus_peek_nodes (self->priv->qrtr_bus);
+-    for (l = nodes; l; l = g_list_next (l)) {
+-        node      = l->data;
+-        ctx       = g_slice_new (ProcessExistingNodes);
+-        ctx->self = g_object_ref (self);
+-        ctx->node = g_object_ref (node);
+-        g_idle_add ((GSourceFunc) process_existing_nodes_idle, ctx);
+-    }
++    for (l = nodes; l; l = g_list_next (l))
++        handle_qrtr_node_added (self->priv->qrtr_bus, qrtr_node_get_id (l->data), self);
++}
++
++void
++mm_qrtr_bus_watcher_pause (MMQrtrBusWatcher *self)
++{
++    self->priv->paused = TRUE;
++    g_cancellable_cancel (self->priv->cancellable);
++    g_hash_table_remove_all (self->priv->nodes);
+ }
+ 
+ static void
+ qrtr_bus_ready (GObject      *source,
+                 GAsyncResult *res,
+                 GTask        *task)
+ {
+     MMQrtrBusWatcher *self;
+     GError           *error = NULL;
+ 
+     self = g_task_get_source_object (task);
+ 
+     self->priv->qrtr_bus = qrtr_bus_new_finish (res, &error);
+     if (!self->priv->qrtr_bus) {
+         g_task_return_error (task, error);
+         g_object_unref (task);
+         return;
+     }
+ 
+     /* Listen for bus events */
+     self->priv->node_added_id = g_signal_connect (self->priv->qrtr_bus,
+                                                   QRTR_BUS_SIGNAL_NODE_ADDED,
+                                                   G_CALLBACK (handle_qrtr_node_added),
+                                                   self);
+     self->priv->node_removed_id = g_signal_connect (self->priv->qrtr_bus,
+                                                     QRTR_BUS_SIGNAL_NODE_REMOVED,
+                                                     G_CALLBACK (handle_qrtr_node_removed),
+                                                     self);
+ 
+-    process_existing_nodes (self);
++    if (!self->priv->paused)
++        mm_qrtr_bus_watcher_scan (self);
+ 
+     g_task_return_boolean (task, TRUE);
+     g_object_unref (task);
+ }
+ 
+ void
+ mm_qrtr_bus_watcher_start (MMQrtrBusWatcher    *self,
+                            GAsyncReadyCallback  callback,
+                            gpointer             user_data)
+ {
+     GTask *task;
+ 
+     task = g_task_new (self, NULL, callback, user_data);
+ 
+     qrtr_bus_new (0, /* disable initial lookup wait */
+                   NULL,
+                   (GAsyncReadyCallback)qrtr_bus_ready,
+                   task);
+ }
+ 
+ /*****************************************************************************/
+ 
+ MMQrtrBusWatcher *
+ mm_qrtr_bus_watcher_new (void)
+ {
+     return MM_QRTR_BUS_WATCHER (g_object_new (MM_TYPE_QRTR_BUS_WATCHER, NULL));
+ }
+ 
+ static void
+ mm_qrtr_bus_watcher_init (MMQrtrBusWatcher *self)
+ {
+     /* Initialize opaque pointer to private data */
+     self->priv = G_TYPE_INSTANCE_GET_PRIVATE (self,
+                                               MM_TYPE_QRTR_BUS_WATCHER,
+                                               MMQrtrBusWatcherPrivate);
+     /* Setup internal lists of device and node objects */
++    self->priv->cancellable = g_cancellable_new ();
+     self->priv->nodes = g_hash_table_new_full (g_direct_hash,
+                                                g_direct_equal,
+                                                NULL,
+                                                (GDestroyNotify) g_object_unref);
+ }
+ 
+ static void
+ finalize (GObject *object)
+ {
+     MMQrtrBusWatcher *self = MM_QRTR_BUS_WATCHER (object);
+ 
+     g_hash_table_destroy (self->priv->nodes);
++    g_clear_object (&self->priv->cancellable);
+ 
+     if (self->priv->node_added_id)
+         g_signal_handler_disconnect (self->priv->qrtr_bus, self->priv->node_added_id);
+     if (self->priv->node_removed_id)
+         g_signal_handler_disconnect (self->priv->qrtr_bus, self->priv->node_removed_id);
+     g_clear_object (&self->priv->qrtr_bus);
+ 
+     G_OBJECT_CLASS (mm_qrtr_bus_watcher_parent_class)->finalize (object);
+ }
+ 
+ static void
+ log_object_iface_init (MMLogObjectInterface *iface)
+ {
+     iface->build_id = log_object_build_id;
+ }
+ 
+ static void
+ mm_qrtr_bus_watcher_class_init (MMQrtrBusWatcherClass *klass)
+ {
+     GObjectClass *object_class = G_OBJECT_CLASS (klass);
+ 
+     g_type_class_add_private (object_class, sizeof (MMQrtrBusWatcherPrivate));
+ 
+     /* Virtual methods */
+     object_class->finalize = finalize;
+ 
+     /**
+      * QrtrBusWatcher::qrtr-device-added:
+      * @self: the #QrtrBusWatcher
+      * @node: the node ID of the modem that is added
+      *
+      * The ::qrtr-device-added signal is emitted when a new qrtr modem is
+      * available on the QRTR bus.
+      */
+     signals[QRTR_DEVICE_ADDED] = g_signal_new (MM_QRTR_BUS_WATCHER_DEVICE_ADDED,
+                                                G_OBJECT_CLASS_TYPE (object_class),
+                                                G_SIGNAL_RUN_FIRST,
+                                                G_STRUCT_OFFSET (MMQrtrBusWatcherClass, qrtr_device_added),
+                                                NULL, /* accumulator      */
+                                                NULL, /* accumulator data */
+                                                g_cclosure_marshal_generic,
+                                                G_TYPE_NONE,
+                                                1,
+                                                G_TYPE_UINT);
+ 
+     /**
+      * QrtrBusWatcher::qrtr-device-removed:
+      * @self: the #QrtrBusWatcher
+      * @node: the node ID of the modem that is removed
+      *
+      * The ::qrtr-device-removed signal is emitted when a qrtr modem deregisters
+      * all services from the QRTR bus.
+      */
+     signals[QRTR_DEVICE_REMOVED] = g_signal_new (MM_QRTR_BUS_WATCHER_DEVICE_REMOVED,
+                                                  G_OBJECT_CLASS_TYPE (object_class),
+                                                  G_SIGNAL_RUN_FIRST,
+                                                  G_STRUCT_OFFSET (MMQrtrBusWatcherClass, qrtr_device_removed),
+                                                  NULL, /* accumulator      */
+                                                  NULL, /* accumulator data */
+                                                  g_cclosure_marshal_generic,
+                                                  G_TYPE_NONE,
+                                                  1,
+                                                  G_TYPE_UINT);
+ }
+--- a/src/mm-qrtr-bus-watcher.h
++++ b/src/mm-qrtr-bus-watcher.h
+@@ -1,69 +1,72 @@
+ /* -*- Mode: C; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+ /*
+  * This program is free software; you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License as published by
+  * the Free Software Foundation; either version 2 of the License, or
+  * (at your option) any later version.
+  *
+  * This program is distributed in the hope that it will be useful,
+  * but WITHOUT ANY WARRANTY; without even the implied warranty of
+  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  * GNU General Public License for more details:
+  *
+  * Copyright 2020 Google LLC
+  */
+ 
+ #ifndef MM_QRTR_BUS_WATCHER_H
+ #define MM_QRTR_BUS_WATCHER_H
+ 
+ #include <glib-object.h>
+ #include <glib.h>
+ 
+ #include <libqrtr-glib.h>
+ 
+ G_BEGIN_DECLS
+ 
+ #define MM_TYPE_QRTR_BUS_WATCHER            (mm_qrtr_bus_watcher_get_type ())
+ #define MM_QRTR_BUS_WATCHER(obj)            (G_TYPE_CHECK_INSTANCE_CAST ((obj), MM_TYPE_QRTR_BUS_WATCHER, MMQrtrBusWatcher))
+ #define MM_QRTR_BUS_WATCHER_CLASS(klass)    (G_TYPE_CHECK_CLASS_CAST ((klass),  MM_TYPE_QRTR_BUS_WATCHER, MMQrtrBusWatcherClass))
+ #define MM_IS_QRTR_BUS_WATCHER(obj)         (G_TYPE_CHECK_INSTANCE_TYPE ((obj), MM_TYPE_QRTR_BUS_WATCHER))
+ #define MM_IS_QRTR_BUS_WATCHER_CLASS(klass) (G_TYPE_CHECK_CLASS_TYPE ((klass),  MM_TYPE_QRTR_BUS_WATCHER))
+ #define MM_QRTR_BUS_WATCHER_GET_CLASS(obj)  (G_TYPE_INSTANCE_GET_CLASS ((obj),  MM_TYPE_QRTR_BUS_WATCHER, MMQrtrBusWatcherClass))
+ 
+ #define MM_QRTR_BUS_WATCHER_DEVICE_ADDED   "qrtr-device-added"
+ #define MM_QRTR_BUS_WATCHER_DEVICE_REMOVED "qrtr-device-removed"
+ 
+ typedef struct _MMQrtrBusWatcher        MMQrtrBusWatcher;
+ typedef struct _MMQrtrBusWatcherClass   MMQrtrBusWatcherClass;
+ typedef struct _MMQrtrBusWatcherPrivate MMQrtrBusWatcherPrivate;
+ 
+ struct _MMQrtrBusWatcher {
+     GObject                  parent;
+     MMQrtrBusWatcherPrivate *priv;
+ };
+ 
+ struct _MMQrtrBusWatcherClass {
+     GObjectClass parent;
+ 
+     void (* qrtr_device_added)   (MMQrtrBusWatcher *bus_watcher);
+     void (* qrtr_device_removed) (MMQrtrBusWatcher *bus_watcher);
+ };
+ 
+ GType mm_qrtr_bus_watcher_get_type (void);
+ G_DEFINE_AUTOPTR_CLEANUP_FUNC (MMQrtrBusWatcher, g_object_unref)
+ 
+ MMQrtrBusWatcher *mm_qrtr_bus_watcher_new (void);
+ 
+ void     mm_qrtr_bus_watcher_start        (MMQrtrBusWatcher    *self,
+                                            GAsyncReadyCallback  callback,
+                                            gpointer             user_data);
+ gboolean mm_qrtr_bus_watcher_start_finish (MMQrtrBusWatcher    *self,
+                                            GAsyncResult        *res,
+                                            GError             **error);
+ 
++void mm_qrtr_bus_watcher_pause (MMQrtrBusWatcher *self);
++void mm_qrtr_bus_watcher_scan  (MMQrtrBusWatcher *self);
++
+ QrtrNode *mm_qrtr_bus_watcher_peek_node (MMQrtrBusWatcher *self,
+                                          guint32           node_id);
+ 
+ G_END_DECLS
+ 
+ #endif /* MM_QRTR_BUS_WATCHER_H */
