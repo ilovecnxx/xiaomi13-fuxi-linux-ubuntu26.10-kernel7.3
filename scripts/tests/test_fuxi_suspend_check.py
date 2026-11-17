@@ -141,6 +141,53 @@ class SuspendCheckTest(unittest.TestCase):
             self.assertIn("qcom_smp2p/smp2p_notify_in", config["missing_platform_events"])
             self.assertFalse(trace.path.exists())
 
+    def test_glink_metadata_requires_complete_explicit_event_set(self):
+        for missing in (None, "tx_data"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / "out"
+                output.mkdir()
+                trace = CHECK.WakeTrace(output, glink_metadata=True)
+                trace.path = root / "instance"
+                mkdir = Path.mkdir
+
+                def populate(path, *args, **kwargs):
+                    new_instance = path == trace.path and not path.exists()
+                    mkdir(path, *args, **kwargs)
+                    if new_instance:
+                        for event in trace.GLINK_EVENTS:
+                            if event.endswith("_" + str(missing)):
+                                continue
+                            target = path / "events" / event / "enable"
+                            target.parent.mkdir(parents=True)
+                            target.touch()
+                        (path / "trace").touch()
+
+                def write(name, value):
+                    target = trace.path / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(value + "\n")
+
+                with mock.patch.object(Path, "mkdir", populate), \
+                        mock.patch.object(trace, "write", side_effect=write), \
+                        mock.patch.object(Path, "rmdir", side_effect=lambda: shutil.rmtree(trace.path)):
+                    if missing:
+                        with self.assertRaisesRegex(RuntimeError, "event unavailable"):
+                            with trace:
+                                self.fail("Incomplete metadata must fail before suspend")
+                        self.assertFalse((output / "trace-config.json").exists())
+                    else:
+                        with trace:
+                            config = json.loads((output / "trace-config.json").read_text())
+                            self.assertTrue(config["glink_metadata"])
+                            self.assertEqual(config["baseline_seconds"], 5)
+                            glink = [event for event in config["enabled_events"]
+                                     if event.startswith("qcom_glink/")]
+                            self.assertEqual(len(glink), 13)
+                            for event in glink:
+                                self.assertEqual((trace.path / "events" / event / "enable").read_text(), "1\n")
+                self.assertFalse(trace.path.exists())
+
     def test_main_cleanup_after_rtc_timeout_request_timeout_and_resume(self):
         for failure in ("rtcwake", "Suspend", None):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
@@ -148,6 +195,7 @@ class SuspendCheckTest(unittest.TestCase):
                 alarm = root / "wakealarm"
                 alarm.write_text("")
                 signals = []
+                baseline = []
 
                 def call(_name, _path, _iface, method, *_args):
                     if method == "Get":
@@ -163,6 +211,8 @@ class SuspendCheckTest(unittest.TestCase):
                     return 1
 
                 def rtcwake(*_args):
+                    if failure is None:
+                        self.assertEqual(baseline, [5])
                     alarm.write_text("123\n")
                     if failure == "rtcwake":
                         raise TimeoutError("armed RTC before timeout")
@@ -177,15 +227,18 @@ class SuspendCheckTest(unittest.TestCase):
                 glib = SimpleNamespace(Variant=lambda *_args: None,
                                        MainContext=SimpleNamespace(default=lambda: None))
                 trace = mock.MagicMock()
+                trace_type = mock.Mock(return_value=trace, GLINK_BASELINE_SECONDS=5)
                 descriptor = os.open(root / "lock", os.O_CREAT | os.O_RDWR, 0o600)
                 with mock.patch.dict("sys.modules", {
                     "gi": SimpleNamespace(repository=SimpleNamespace(Gio=gio, GLib=glib)),
                     "gi.repository": SimpleNamespace(Gio=gio, GLib=glib),
-                }), mock.patch("sys.argv", ["check", "--output", str(root / "out")]), \
+                }), mock.patch("sys.argv", ["check", "--output", str(root / "out")]
+                               + (["--glink-metadata"] if failure is None else [])), \
                         mock.patch.object(CHECK, "RTC", root), \
                         mock.patch.object(CHECK, "check_idle"), \
                         mock.patch.object(CHECK, "snapshot"), \
-                        mock.patch.object(CHECK, "WakeTrace", return_value=trace), \
+                        mock.patch.object(CHECK, "WakeTrace", trace_type), \
+                        mock.patch.object(CHECK.time, "sleep", side_effect=baseline.append), \
                         mock.patch.object(CHECK, "run", side_effect=rtcwake), \
                         mock.patch.object(CHECK.os, "geteuid", return_value=0), \
                         mock.patch.object(CHECK.os, "open", return_value=descriptor), \

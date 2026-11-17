@@ -13,6 +13,9 @@ SEND = re.compile(
     r"(\S+): tcs\(m\): (\d+) \[(sleep|wake|active)\] cmd\(n\): (\d+) "
     r"msgid: (\w+) addr: (\w+) data: (\w+) complete: ([01])$")
 LOSS_KEYS = ("overrun", "commit overrun", "dropped events")
+GLINK_DATA = re.compile(
+    r"(tx|rx) remote: (\S+) channel: (.*?)\[(\d+)/(\d+)\] "
+    r"iid: (-?\d+) chunk_size: (-?\d+) left_size: (-?\d+) cont: ([01])$")
 
 
 def command_db(text):
@@ -89,6 +92,41 @@ def trace_health(directory, warnings):
             "loss_detected": lost, "missing_audit_events": missing}
 
 
+def glink_data(directory, events, enter, leave, warnings):
+    path = directory / "trace-config.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = "qcom_glink/qcom_glink_cmd_tx_data" in config.get("enabled_events", [])
+    counts = Counter()
+    first_after = []
+    unparsed = 0
+    for event in events:
+        if event["event"] != "qcom_glink_cmd_tx_data":
+            continue
+        match = GLINK_DATA.fullmatch(event["body"])
+        if not match:
+            unparsed += 1
+            continue
+        direction, remote, channel, lcid, rcid, iid, size, left, cont = match.groups()
+        phase = ("before_entry" if event["line"] < enter["line"] else
+                 "after_return" if event["line"] > leave["line"] else "inside_machine_suspend")
+        counts[phase, direction, remote, channel] += 1
+        if phase == "after_return" and len(first_after) < 8:
+            first_after.append({"line": event["line"], "time": event["time"],
+                                "direction": direction, "remote": remote, "channel": channel,
+                                "lcid": int(lcid), "rcid": int(rcid), "iid": int(iid),
+                                "chunk_size": int(size), "left_size": int(left), "cont": bool(int(cont))})
+    if unparsed:
+        warnings.append(f"Unparsed glink data metadata events: {unparsed}")
+    if not enabled:
+        warnings.append("Glink data metadata is not recorded as enabled; absence is not evidence.")
+    warnings.append("Glink channel/length metadata and buffer IDs do not identify PMIC opcodes or RPC requests.")
+    return {"data_event_enabled": enabled, "unparsed_data_events": unparsed,
+            "counts": [{"phase": phase, "direction": direction, "remote": remote,
+                        "channel": channel, "count": count}
+                       for (phase, direction, remote, channel), count in sorted(counts.items())],
+            "first_data_after_return": first_after}
+
+
 def audit(directory, db_path=None):
     warnings = []
     events = read_events(directory / "trace.txt")
@@ -149,6 +187,7 @@ def audit(directory, db_path=None):
         "Trace timekeeping pauses during sleep; machine timestamps are not residency.",
     ])
     health = trace_health(directory, warnings)
+    glink = glink_data(directory, events, enter, leave, warnings)
     return {"trace_health": health, "syscore_suspend": {"begin": start, "end": end},
             "machine_suspend": {"begin": enter, "end": leave},
             "rpmh_syscore_commands": commands, "unparsed_rpmh_commands": unparsed,
@@ -156,7 +195,8 @@ def audit(directory, db_path=None):
             "sleep_commands_without_bcm_decode": unknown,
             "sleep_bcm_nonzero_votes": nonzero, "callback_errors_before_entry": errors,
             "aoss_events_before_entry": {key: aoss[key] for key in ("aoss_send", "aoss_send_done")},
-            "first_traced_irqs_after_return": irqs, "wake_cause": None, "warnings": warnings}
+            "first_traced_irqs_after_return": irqs, "glink_data": glink,
+            "wake_cause": None, "warnings": warnings}
 
 
 def main():

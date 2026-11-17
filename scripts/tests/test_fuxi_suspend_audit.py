@@ -21,7 +21,7 @@ def send(state, data="0x40000000", address="0x50000"):
 
 
 class SuspendAuditTest(unittest.TestCase):
-    def audit(self, commands=None, loss=0, missing_cpu=False, db=True, extra="", suffix=""):
+    def audit(self, commands=None, loss=0, missing_cpu=False, db=True, extra="", suffix="", glink=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             trace = (event("syscore_suspend[0] begin")
@@ -40,7 +40,8 @@ class SuspendAuditTest(unittest.TestCase):
             (root / "trace-config.json").write_text(json.dumps({
                 "clock": "boot", "irq_scope": "all handlers, including local timers", "enabled_events": [
                 "power/suspend_resume", "power/device_pm_callback_end", "irq/irq_handler_entry",
-                "rpmh/rpmh_send_msg", "qcom_aoss/aoss_send", "qcom_aoss/aoss_send_done"]}))
+                "rpmh/rpmh_send_msg", "qcom_aoss/aoss_send", "qcom_aoss/aoss_send_done"]
+                + (["qcom_glink/qcom_glink_cmd_tx_data"] if glink else [])}))
             if db:
                 (root / "before-cmd-db.txt").write_text(
                     "Slave ARC (v16.0)\n0x30000: cx.lvl [00 10]\n"
@@ -109,6 +110,36 @@ class SuspendAuditTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Ambiguous"):
             AUDIT.command_db("Slave ARC (v1.0)\n0x50000: cx.lvl\n"
                              "Slave BCM (v1.0)\n0x50000: MC0\n")
+
+    def test_glink_direction_and_phase_follow_line_order_not_equal_timestamps(self):
+        def packet(direction, channel, size):
+            return event(f"{direction} remote: lpass channel: {channel}[4/8] "
+                         f"iid: 2 chunk_size: {size} left_size: 0 cont: 0",
+                         "qcom_glink_cmd_tx_data")
+
+        report = self.audit(extra=packet("tx", "IPCRTR", 52),
+                            suffix=packet("rx", "PMIC_RTR_ADSP_APPS", 220), glink=True)
+        glink = report["glink_data"]
+        self.assertTrue(glink["data_event_enabled"])
+        self.assertEqual(glink["unparsed_data_events"], 0)
+        self.assertEqual(glink["counts"], [
+            {"phase": "after_return", "direction": "rx", "remote": "lpass",
+             "channel": "PMIC_RTR_ADSP_APPS", "count": 1},
+            {"phase": "before_entry", "direction": "tx", "remote": "lpass",
+             "channel": "IPCRTR", "count": 1}])
+        first = glink["first_data_after_return"][0]
+        self.assertEqual(first["chunk_size"], 220)
+        self.assertEqual(first["iid"], 2)
+        self.assertFalse(first["cont"])
+        self.assertIsNone(report["wake_cause"])
+
+    def test_glink_missing_coverage_and_malformed_metadata_are_explicit(self):
+        report = self.audit(suffix=event("truncated", "qcom_glink_cmd_tx_data"))
+        glink = report["glink_data"]
+        self.assertFalse(glink["data_event_enabled"])
+        self.assertEqual(glink["unparsed_data_events"], 1)
+        self.assertEqual(glink["first_data_after_return"], [])
+        self.assertTrue(any("absence is not evidence" in warning for warning in report["warnings"]))
 
 
 if __name__ == "__main__":

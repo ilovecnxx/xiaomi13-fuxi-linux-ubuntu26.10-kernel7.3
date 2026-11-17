@@ -77,9 +77,16 @@ class WakeTrace:
         "qcom_aoss/aoss_send_done", "qcom_smp2p/smp2p_notify_in",
         "qcom_smp2p/smp2p_update_bits", "qcom_smp2p/smp2p_ssr_ack",
     )
+    GLINK_EVENTS = tuple("qcom_glink/qcom_glink_cmd_" + command for command in (
+        "version", "version_ack", "open", "close", "open_ack", "intent",
+        "rx_done", "rx_intent_req", "rx_intent_req_ack", "tx_data",
+        "close_ack", "read_notif", "signal",
+    ))
+    GLINK_BASELINE_SECONDS = 5
 
-    def __init__(self, output):
+    def __init__(self, output, glink_metadata=False):
         self.output = output
+        self.glink_metadata = glink_metadata
         self.path = TRACE / f"fuxi-suspend-{os.getpid()}"
         self.created = False
 
@@ -91,6 +98,11 @@ class WakeTrace:
             self.write("trace_clock", "boot")
             self.write("buffer_size_kb", "4096")
             enabled = list(self.REQUIRED_EVENTS)
+            if self.glink_metadata:
+                for event in self.GLINK_EVENTS:
+                    if not (self.path / f"events/{event}/enable").exists():
+                        raise RuntimeError(f"Requested glink metadata event unavailable: {event}")
+                enabled.extend(self.GLINK_EVENTS)
             missing = []
             for event in self.PLATFORM_EVENTS:
                 if (self.path / f"events/{event}/enable").exists():
@@ -102,6 +114,8 @@ class WakeTrace:
             (self.output / "trace-config.json").write_text(json.dumps({
                 "irq_scope": "all handlers, including local timers",
                 "clock": "boot", "buffer_kb_per_cpu": 4096,
+                "glink_metadata": self.glink_metadata,
+                "baseline_seconds": self.GLINK_BASELINE_SECONDS if self.glink_metadata else 0,
                 "enabled_events": enabled, "missing_platform_events": missing,
             }, indent=2) + "\n")
             self.write("tracing_on", "1")
@@ -175,6 +189,8 @@ def main():
                         metavar="10..60")
     parser.add_argument("--output", required=True, type=Path,
                         help="new private evidence directory")
+    parser.add_argument("--glink-metadata", action="store_true",
+                        help="require glink command metadata events and a 5-second pre-alarm baseline")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("root required")
@@ -202,8 +218,11 @@ def main():
         report = {"seconds": args.seconds, "result": "incomplete"}
         armed = False
         try:
-            with WakeTrace(args.output) as trace:
+            with WakeTrace(args.output, glink_metadata=args.glink_metadata) as trace:
                 try:
+                    if args.glink_metadata:
+                        trace.write("trace_marker", "fuxi glink baseline begin")
+                        time.sleep(WakeTrace.GLINK_BASELINE_SECONDS)
                     # rtcwake uses the hardware clock, which need not match wall time.
                     # A timed-out rtcwake may already have programmed the alarm.
                     armed = True

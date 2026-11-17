@@ -31,9 +31,9 @@
 | 标准配方 | `kernel/manifest.json`，std2 | 可重建基准，不是手机运行版本 |
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
-| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend5`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | 返回边界捕捉 LPASS pending；时间补偿仅 6.73 ms，RTC 尚余 19 秒，深睡驻留未验收 |
+| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend5`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | glink 元数据复测关联 LPASS pending 与 PMIC 通道消息；时间补偿 2.508 秒、RTC 尚余 17 秒，深睡驻留未验收 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
-| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮升级诊断内核并正常重启，未单独重启桌面 |
+| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮仅增加采集元数据，未升级内核或重启 |
 
 ## 整机体验进展
 
@@ -48,16 +48,22 @@
   每次检查 CONFIG 的 CLEAR_ON_RECV_RD 位，关闭时才读 RECV_ID；移除与读取用 raw lock
   同步，不写寄存器/应答 IRQ。进入前无 pending（0xffffffff），cpu_suspend 返回后、IRQ
   handler 前为 0x30000，即 LPASS client3/signal0；两侧 CONFIG=0。随后 IRQ13→IRQ230
-  LPASS glink，与早期快照一致，但不能据此确认最早唤醒源。唯一一次 20 秒测试 logind
-  周期 1.998857 秒，时间补偿 6.730 ms，GIC 物理计数器区间 4.970 ms，RTC 尚余 19 秒。
-  APSS +1、记录 2.240 ms，AOSD/CXSD/DDR 仍全零；不能验收整机深睡或比较功耗改善。
+  LPASS glink，与早期快照一致，但不能据此确认最早唤醒源。本轮显式开启
+  `--glink-metadata`：要求全部 13 个协议元数据事件，先采集 5 秒基线再设 RTC。
+  此配置只做一次 20 秒测试：logind 周期 4.477211 秒，时间补偿 2.507613 秒，GIC 物理
+  计数器区间 2.505858 秒，RTC 尚余 17 秒。返回侧同一父 IRQ 中首先收到 LPASS
+  `PMIC_RTR_ADSP_APPS` 两条各 220 字节消息；进入前整个捕获窗口未见该通道数据。
+  通道复用多个 owner，不能凭长度归因电池通知，glink intent 也不是 RPC 请求编号。
+  挂起请求后向 LPASS IPCRTR 的 52 字节 TX 仅有传输确认，未证明 RPC 完成或未完成。
+  APSS +3、累计增加 2.517098 秒，最后区间 2.503017 秒；AOSD/CXSD/DDR 仍全零。
+  与先前补偿 6.730 ms 的测试相比追踪/时序不同，不能验收深睡或比较功耗改善。
   `cpu_ret=0/firmware_returned=0`，GIC after 仅 SPI261 pending；PDC 仍直通、pin1/109
-  使能且配置未变。8 核无丢失，success=1/fail=0；USB/PCIe L2 错误仍在（LTSSM 0x12）。
+  使能且配置未变。8 核无丢失，success=2/fail=0；USB/PCIe L2 错误仍在（LTSSM 0x12）。
   RTC/trace 和临时安装配置已清理，自动挂起关闭。离线审计再次确认 syscore 9 条 sleep、
   9 条 wake 命令；cmd-db 映射的 sleep
   BCM 投票 valid/x/y 全零，未观察到非零 PM 回调错误或 AOSS send。USB/PCIe L2 提示
   不直接中止回调，CONTROL_TCS=0；这些结果仍不能证明固件执行投票或排除硬件低功耗阻塞。
-  IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。本候选只测试一次。
+  IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。未重复同配置挂起。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
@@ -69,13 +75,14 @@
   加速度/磁场/陀螺仪仍有安装矩阵回退警告；轴向、标定、自动旋转和光照动态未验收。
 - 功耗：灭屏、USB 充电下 10 秒全核平均忙碌 0.16%，电量 81%；这不是电池续航或功耗改善证据。
   A2DP 需要耳机；CS35L41 扬声器保护仍缺标定验收；NFC 尚无设备通路。
-- 验证：GNSS 定向 22 项、全脚本 417 项通过（含未提交主摄生成器 4 项）；挂起工具 8 项
+- 验证：GNSS 定向 22 项、全脚本 420 项通过（含未提交主摄生成器 4 项）；挂起工具 9 项
   覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数、异常
   清理及平台统计缺失/权限失败，禁止触碰会发送 QMP 的 `ddr_stats`；新增只读 `ddr` 和
-  cmd-db 快照实机读取无错误，不触发挂起且 RTC/trace 未变。离线审计新增 10 项，覆盖阶段
-  边界、BCM 解码、丢失/缺失证据和拒绝多周期；原始证据重放通过。日志位于
-  `work/suspend-platform-audit-tests-20261117.log`、`work/suspend-readonly-snapshot-20261117.log`，
-  审计结果为 `work/suspend4-offline-audit-20261117.json`。
+  cmd-db 快照实机读取无错误，不触发挂起且 RTC/trace 未变；新增 glink 事件缺失拒绝/清理
+  及基线在 RTC 之前的检查。离线审计 12 项，覆盖阶段边界、BCM 解码、丢失/缺失证据、
+  拒绝多周期及 glink 通道/方向统计；不以相同时间戳混淆进入前与返回后事件。
+  日志为 `work/suspend-glink-script-tests-final-20261117.log`；采集/审计结果在
+  `work/fuxi-suspend-glink-20261117/`、`work/suspend-glink-offline-audit-20261117.json`。
   MM 测试编译真实 watcher 和授权/清理回调，覆盖 10 个异步生命周期场景；来源/依赖检查、原生编译及打包通过。
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
   内核诊断开启/关闭及 PDC 模块/禁用配置的相关对象 ARM64 W=1、完整 deb 构建、包载荷/
@@ -89,10 +96,12 @@
 
 ### 整机下一步
 
-1. 继续提前恢复定位：suspend5 已在 cpu_suspend 返回边界捕捉 LPASS pending，仍不能归因；
-   下一步核对 LPASS glink 通道/命令及挂起前未完成请求，设计仅记录协议元数据的有界追踪，
-   判断是否有可关联的通信；同时核实 AOSD/CXSD/DDR 统计有效性。Linux 零 BCM sleep 投票
-   不排除硬件阻塞，L2 提示仍在。跟进 MM registered 与 connected bearer 不一致。
+1. 继续提前恢复定位：已关联 LPASS pending 与 PMIC 通道的两条恢复消息，仍不能归因。
+   下一步设计仅记录 PMIC owner/type/opcode/len、TX 结果的追踪，区分电池、USB-C 等客户端；
+   不采集载荷、不停充电。现有 battmgr `diag` 读取会发请求，不把它作为被动计数使用。
+   完成源码/编译验证后再设计有新假设的实机实验；同时核实 AOSD/CXSD/DDR 统计有效性。
+   Linux 零 BCM sleep 投票不排除硬件阻塞，L2 提示仍在。
+   跟进 MM registered 与 connected bearer 不一致。
    不重复相同挂起、不关闭基带或屏蔽 IRQ。
    每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
    续航验收。
