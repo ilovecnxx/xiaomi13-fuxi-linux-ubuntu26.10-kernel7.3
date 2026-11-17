@@ -6,6 +6,10 @@
 ## 当前指令
 
 - 用户已恢复整机体验工作：GNSS、传感器、亮度/旋转、A2DP、扬声器保护、挂起/续航、NFC。
+- 用户要求按独立内核架构规范升级上游最新主线 `v7.4-rc3`；旧配方基线为 `v7.4-rc1`。
+  上游归档 SHA256 与标签提交根树相符，14 个项目补丁在隔离树重放；ARM64 deb 构建、载荷
+  校验后已安装并正常启动。`suspend6` 保留为已确认 fallback。RC 仍属实验版本，不等于正式
+  稳定版或 GitHub Release；24 小时稳定性、10 次重启及完整晋级检查尚未完成。
 - 最新要求“干别的”：转到自动亮度，保留手动让出修复，并消除当前 Phosh 的重复控制；
   充电有界排查已结束，快充未解决，保持停止，不追加充电诊断实验。
 - 用户暂时没有备用充电头；保留现有连接和净充电状态，不将换硬件作为本轮收尾前提，
@@ -32,10 +36,10 @@
 
 | 对象 | 最近确认状态 | 验证范围 |
 | --- | --- | --- |
-| 标准配方 | `kernel/manifest.json`，std2 | 可重建基准，不是手机运行版本 |
+| 标准配方 | `kernel/manifest.json`，上游 `7.4.0-rc3` | 归档 SHA256 `95c0eb4a…`，上游根树 `e5a64382…`，14 个补丁重放；最终树 `f4f8ed8b…`；包 `linux-image-7.4.0-rc3-fuxi-upstream74rc3` SHA256 `2f95708f…` |
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
-| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend6`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | PMIC 头追踪复测：恢复侧 MPSS pending，未见 220 字节 PMIC RX；时间补偿 4.241 秒、RTC 尚余 14 秒，深睡驻留未验收 |
+| 手机运行/默认 | `7.4.0-rc3-fuxi-upstream74rc3`；fallback `7.4.0-rc1-fuxi-suspend6` | 2026-11-18 安装并正常重启；bootcount `pending=0`；新内核和 fallback 的 Image、DTB、initrd、cmdline 校验通过 |
 | 离线挂起候选 | `7.4.0-rc1-fuxi-suspend7`，六补丁树 `1c836d26101571c017fe6bdfdf94e45c11c83091` | QRTR RX/候选 QMI 头追踪，完整包和主机验证通过；充电有界排查已结束，不自动部署，仍未安装、未启动、未挂起 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
 | 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917`；`fuxi-desktop 0.20261118.1901` | 本轮仅升级 desktop，载荷仅两份会话关系配置变化；停止重复亮度服务，Phosh/传感器代理 PID 未变 |
@@ -163,11 +167,19 @@
   五补丁配方重放通过；新补丁 checkpatch 0 错误、1 项新增头文件提醒。suspend6 已正常
   启动，bootcount pending=0、deb9 恢复文件校验通过，临时 kernel.conf 已清理。
   QRTR 开启/关闭事件追踪 ARM64 W=1、完整 suspend7 deb、Image/config/DTB 载荷核对和
-  六补丁重放通过；新补丁 checkpatch 0 错误、0 警告；本轮没有安装、重启或挂起。
+  六补丁重放通过；新补丁 checkpatch 0 错误、0 警告；该实验内核仍未部署。
   日志为 `work/suspend7-{build,arm64-w1,tracing-off-w1,checkpatch}-20261117.log`，供电证据
   为 `work/suspend7-power-{window,charge-counter}-20261117.jsonl`。
   最新诊断证据在 `work/fuxi-suspend-pmic-20261117/`、`work/suspend6-*-20261117.log`；
   恢复后蜂窝接口 HTTPS=200、WiFi HTTPS 和六类传感器采样通过，关键服务 PID 未变、NRestarts=0。
+  上游 `v7.4-rc3` 标准配方重建：归档 SHA256 与上游标签根树核对，14 个项目补丁隔离重放；
+  ARM64 deb、Image/config/DTB 载荷和 SHA256SUMS 校验通过。手机包哈希匹配，安装时旧
+  `suspend6` 自动保留为 fallback；正常启动已确认，systemd failed=0。新内核现场检查中
+  Phosh、触摸、WiFi 证书校验 HTTPS、CPU 调频、热区和六类传感器通过；唯一健康失败为用户
+  关闭的蓝牙。启动日志有 IPA、Ath12k、蓝牙及音频固件缺失提示，WiFi 实际可用；仍需后续
+  长稳、反复重启及音频/蜂窝等完整回归。设备证据：
+  `work/upstream74rc3-{install,reboot-request,boot-health,health}-20261118.log`。
+  完整晋级条件未完成，本版本尚非正式 GitHub Release。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
   [挂起证据](docs/驱动初始化与功耗验收-20261108.md#普通挂起与恢复检查)。
 

@@ -16,7 +16,7 @@ dpkg-dev and util-linux. Use the compiler version recorded in a build's
 ```bash
 python3 scripts/fuxi-kernel-source.py prepare
 # Offline, using the exact archive checksum in manifest.json:
-python3 scripts/fuxi-kernel-source.py prepare --archive /path/linux-7.4-rc1.tar.gz
+python3 scripts/fuxi-kernel-source.py prepare --archive /path/linux-7.4-rc3.tar.gz
 python3 scripts/fuxi-kernel-source.py check
 scripts/fuxi-build-deb.sh <unique-name>
 ```

@@ -1,10 +1,10 @@
 {
-  "version": "7.4.0-rc1",
-  "archive": "linux-7.4-rc1.tar.gz",
-  "archive_root": "linux-7.4-rc1",
-  "url": "https://codeload.github.com/torvalds/linux/tar.gz/refs/tags/v7.4-rc1",
-  "archive_sha256": "b19dd413fa7cc4059de8dab234320858e86abdc15c7c4d839eff15b0e2ac39ee",
-  "base_tree": "7edfdd0dec052f7d7336ba6b65a1a9cc78df95ca",
+  "version": "7.4.0-rc3",
+  "archive": "linux-7.4-rc3.tar.gz",
+  "archive_root": "linux-7.4-rc3",
+  "url": "https://codeload.github.com/torvalds/linux/tar.gz/refs/tags/v7.4-rc3",
+  "archive_sha256": "95c0eb4a051dd09983d6b7887bdd9d323559fccda163c627d398c0547b89f961",
+  "base_tree": "e5a64382f7926f5f6023e74c62216f1f9117bf84",
   "patches": [
     {
       "file": "0001-panel.patch",
@@ -149,7 +149,7 @@
       ]
     }
   ],
-  "tree": "90afc07da83d97efc71e2a2d2776e6a88681d242",
-  "source_commit": "a2b4fad3c54445ce42e79dfe0dc4b8569b5550ec",
-  "source_date_epoch": 1794058781
+  "tree": "f4f8ed8baf8d54b6c495b8722714736443c62827",
+  "source_commit": "01fcf82a7c23c11a622051155b335adf374e244f",
+  "source_date_epoch": 1794781811
 }
