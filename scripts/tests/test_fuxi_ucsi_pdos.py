@@ -18,6 +18,19 @@ def traces(length):
                             for n in pd.LENGTHS}}
 
 
+def status(rdo=0x130320c8, flags=11):
+    return bytes(2) + flags.to_bytes(2, 'little') + rdo.to_bytes(4, 'little') + b'\x01'
+
+
+def contract_reader(before=None, after=None, pdo=0x1912c):
+    reader = Mock()
+    reader.query.side_effect = [status() if before is None else before,
+                               bytes(4) + b'\x01' + bytes(11),
+                               pdo.to_bytes(4, 'little'),
+                               status() if after is None else after]
+    return reader
+
+
 class UcsiPdosTests(unittest.TestCase):
     def test_length_requires_one_unfiltered_and_one_filtered_completion(self):
         for length in pd.LENGTHS:
@@ -129,6 +142,75 @@ class UcsiPdosTests(unittest.TestCase):
                 raise RuntimeError('query failed')
         path.mkdir.assert_called_once()
         path.rmdir.assert_called_once()
+
+    def test_nine_byte_status_length_is_opt_in_and_not_a_pdo_length(self):
+        nine = {**traces(9), '9': EVENT}
+        self.assertEqual(pd.verified_length(nine, [STATS], (*pd.LENGTHS, 9)), 9)
+        with self.assertRaises(ValueError):
+            pd.verified_length(nine, [STATS])
+        for pages in ([bytes(9)], [(0x1912c).to_bytes(4, 'little') * 4, bytes(9)]):
+            reader = Mock()
+            reader.query.side_effect = [bytes(4) + b'\x01' + bytes(11), *pages]
+            with self.assertRaisesRegex(ValueError, 'Invalid PDO'):
+                pd.read_pdos(reader, 1)
+
+    def test_reported_fixed_request_is_not_measured_power(self):
+        reader = contract_reader()
+        report = pd.read_contract(reader, 1)
+        self.assertEqual([call.args for call in reader.query.call_args_list],
+                         [(0x10012, 16), (6, 16), (0x700810010, 16), (0x10012, 16)])
+        self.assertEqual(report['result'], 'firmware_contract_read')
+        request = report['reported_request']
+        self.assertEqual((request['voltage_mv'], request['operating_current_ma'],
+                          request['limit_current_ma']), (5000, 2000, 2000))
+        self.assertEqual(request['limit_kind'], 'maximum')
+        self.assertFalse(request['capability_mismatch'])
+        self.assertFalse(report['active_contract_verified'])
+        self.assertFalse(report['fast_charge_verified'])
+
+    def test_changed_disconnected_source_or_non_pd_status_is_unresolved(self):
+        for after in (status(rdo=0x13025896), status(flags=3), status(flags=27),
+                      status(flags=9)):
+            for before in (status(), after):
+                with self.subTest(before=before, after=after):
+                    report = pd.read_contract(contract_reader(before, after), 1)
+                    if before == after == status(rdo=0x13025896):
+                        self.assertEqual(report['result'], 'firmware_contract_read')
+                    else:
+                        self.assertEqual(report['result'], 'contract_unresolved')
+
+    def test_truncated_status_or_invalid_connector_stops_before_pdo_queries(self):
+        reader = contract_reader(before=bytes(8))
+        with self.assertRaisesRegex(ValueError, '9-byte'):
+            pd.read_contract(reader, 1)
+        self.assertEqual(reader.query.call_count, 1)
+        for connector in (0, 128):
+            with self.assertRaises(ValueError):
+                pd.read_contract(reader, connector)
+        self.assertEqual(reader.query.call_count, 1)
+
+    def test_unmapped_or_inconsistent_rdo_does_not_establish_contract(self):
+        for rdo, pdo in ((0, 0x1912c), (0x230320c8, 0x1912c), (0x930320c8, 0x1912c),
+                         (0x130640c8, 0x1912c), (0x13032064, 0x1912c),
+                         (0x130320c8, 2 << 30 | 300)):
+            report = pd.read_contract(contract_reader(status(rdo), status(rdo), pdo), 1)
+            self.assertEqual(report['result'], 'contract_unresolved')
+            self.assertIsNone(report['reported_request'])
+
+    def test_give_back_and_capability_mismatch_flags_are_preserved(self):
+        raw = status(rdo=0x1f032064)
+        report = pd.read_contract(contract_reader(raw, raw), 1)
+        request = report['reported_request']
+        self.assertEqual(report['result'], 'firmware_contract_read')
+        self.assertEqual((request['limit_kind'], request['limit_current_ma']), ('minimum', 1000))
+        self.assertTrue(request['capability_mismatch'])
+
+    def test_mismatch_can_request_a_maximum_above_source_capacity(self):
+        raw = status(rdo=0x17032190)
+        report = pd.read_contract(contract_reader(raw, raw), 1)
+        self.assertEqual(report['result'], 'firmware_contract_read')
+        self.assertEqual(report['reported_request']['limit_current_ma'], 4000)
+        self.assertTrue(report['reported_request']['capability_mismatch'])
 
 
 if __name__ == '__main__':

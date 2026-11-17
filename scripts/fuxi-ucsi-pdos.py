@@ -2,7 +2,8 @@
 """Read PDOs, validating reply length with UCSI event filters.
 
 Run as root with no other debugfs UCSI command writer. Only GET_CAPABILITY and
-GET_PDOS are issued; normal kernel ACKs still occur. This does not select a PDO.
+GET_PDOS are issued by default; --contract also reads GET_CONNECTOR_STATUS.
+Normal kernel ACKs still occur. This does not select a PDO or measure input power.
 """
 
 import argparse
@@ -33,7 +34,7 @@ def event_count(text):
                if not line.startswith('#'))
 
 
-def verified_length(traces, stats):
+def verified_length(traces, stats, lengths=LENGTHS):
     if not stats:
         raise ValueError('Missing per-CPU loss statistics')
     for text in stats:
@@ -43,7 +44,7 @@ def verified_length(traces, stats):
             raise ValueError('Incomplete or nonzero trace loss statistics')
     if event_count(traces['all']) != 1:
         raise ValueError('Expected exactly one command completion')
-    counts = {n: event_count(traces[str(n)]) for n in LENGTHS}
+    counts = {n: event_count(traces[str(n)]) for n in lengths}
     matches = [n for n, count in counts.items() if count == 1]
     if len(matches) != 1 or sum(counts.values()) != 1:
         raise ValueError('Reply length is ambiguous or outside supported lengths')
@@ -106,9 +107,10 @@ def trace_instance(path):
 
 
 class Reader:
-    def __init__(self, instances, output):
+    def __init__(self, instances, output, lengths=LENGTHS):
         self.instances = instances
         self.output = output
+        self.lengths = lengths
         self.index = 0
 
     def query(self, command, max_length):
@@ -146,7 +148,7 @@ class Reader:
         if not cpu_sets[0] or any(c != cpu_sets[0] for c in cpu_sets):
             raise ValueError('Incomplete CPU statistics across trace instances')
         (evidence / 'response.txt').write_text(response)
-        length = verified_length(traces, stats)
+        length = verified_length(traces, stats, self.lengths)
         (evidence / 'query.json').write_text(json.dumps({
             'command': f'0x{command:x}', 'response_length': length,
             'requested_length': max_length}, indent=2) + '\n')
@@ -161,9 +163,14 @@ def read_pdos(reader, connector, target='partner-source'):
         raise ValueError('Invalid capability length or connector number')
     features = int.from_bytes(capability[5:7], 'little')
     first = reader.query(pdo_command(connector, 0, 4, target), 16)
+    if len(first) not in LENGTHS:
+        raise ValueError('Invalid PDO page length')
     data = first
     if len(first) == 16:
-        data += reader.query(pdo_command(connector, 4, 3, target), 12)
+        tail = reader.query(pdo_command(connector, 4, 3, target), 12)
+        if len(tail) not in (0, 4, 8, 12):
+            raise ValueError('Invalid PDO tail length')
+        data += tail
     pdos = [decode_pdo(int.from_bytes(data[n:n + 4], 'little'),
                        source=target == 'partner-source')
             for n in range(0, len(data), 4)]
@@ -173,14 +180,76 @@ def read_pdos(reader, connector, target='partner-source'):
             'active_contract_verified': False, 'fast_charge_verified': False}
 
 
+def decode_status(data):
+    if not 9 <= len(data) <= 16:
+        raise ValueError('Connector status needs the complete 9-byte common prefix')
+    flags = int.from_bytes(data[2:4], 'little')
+    return {'raw': data.hex(), 'connected': bool(flags & 8),
+            'power_direction': 'source' if flags & 16 else 'sink',
+            'power_operation_mode': flags & 7,
+            'rdo': f'0x{int.from_bytes(data[4:8], "little"):08x}',
+            'battery_charging_status': data[8] & 3}
+
+
+def read_contract(reader, connector):
+    if not 1 <= connector <= 127:
+        raise ValueError('Invalid connector number')
+    command = 0x12 | connector << 16
+    before = decode_status(reader.query(command, 16))
+    report = read_pdos(reader, connector)
+    after = decode_status(reader.query(command, 16))
+    report.update(result='contract_unresolved', status_before=before, status_after=after,
+                  reported_request=None)
+    keys = ('connected', 'power_direction', 'power_operation_mode', 'rdo')
+    if any(before[key] != after[key] for key in keys):
+        report['reason'] = 'Connector state or RDO changed during the queries'
+        return report
+    if not after['connected'] or after['power_direction'] != 'sink' or after[
+            'power_operation_mode'] != 3:
+        report['reason'] = 'Connector does not report a connected PD sink'
+        return report
+    rdo = int(after['rdo'], 16)
+    position = (rdo >> 28) & 15
+    if not 1 <= position <= len(report['pdos']):
+        report['reason'] = 'RDO object position is outside the returned source PDOs'
+        return report
+    selected = report['pdos'][position - 1]
+    if selected['kind'] != 'fixed':
+        report['reason'] = 'Request decoding supports fixed source PDOs only'
+        return report
+    operating = ((rdo >> 10) & 1023) * 10
+    limit = (rdo & 1023) * 10
+    give_back = bool(rdo & (1 << 27))
+    mismatch = bool(rdo & (1 << 26))
+    if (not operating or operating > selected['max_current_ma']
+            or (not give_back and (not limit or
+                (limit > selected['max_current_ma'] and not mismatch)))
+            or (limit > operating if give_back else limit < operating)):
+        report['reason'] = 'RDO current fields are inconsistent with the source PDO'
+        return report
+    report.update(result='firmware_contract_read', reported_request={
+        'source_pdo_position': position, 'source_pdo': selected['raw'],
+        'voltage_mv': selected['voltage_mv'], 'operating_current_ma': operating,
+        'limit_current_ma': limit, 'limit_kind': 'minimum' if give_back else 'maximum',
+        'capability_mismatch': mismatch,
+        'usb_communications': bool(rdo & (1 << 25)),
+        'no_usb_suspend': bool(rdo & (1 << 24)),
+    })
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--connector', type=int, default=1)
     parser.add_argument('--target', choices=TARGETS, default='partner-source')
+    parser.add_argument('--contract', action='store_true',
+                        help='Read reported RDO before/after source PDOs; no contract selection')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if not 1 <= args.connector <= 127:
         parser.error('connector must be 1..127')
+    if args.contract and args.target != 'partner-source':
+        parser.error('--contract requires partner-source')
     args.output.mkdir(parents=True, exist_ok=False)
     report = {'result': 'insufficient_evidence'}
     try:
@@ -188,16 +257,19 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             (args.output / 'event-format.txt').write_text(
                 (TRACE.parent / EVENT / 'format').read_text())
+            lengths = (*LENGTHS, 9) if args.contract else LENGTHS
             instances = {
                 key: stack.enter_context(trace_instance(
                     TRACE / f'fuxi-pdos-{os.getpid()}-{key}'))
-                for key in ('all', *(str(n) for n in LENGTHS))}
-            report = read_pdos(Reader(instances, args.output), args.connector, args.target)
+                for key in ('all', *(str(n) for n in lengths))}
+            reader = Reader(instances, args.output, lengths)
+            report = (read_contract(reader, args.connector) if args.contract else
+                      read_pdos(reader, args.connector, args.target))
     except (OSError, ValueError) as error:
         report['error'] = str(error)
     (args.output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
-    return 0 if report['result'] == 'capabilities_read' else 1
+    return 0 if report['result'] in ('capabilities_read', 'firmware_contract_read') else 1
 
 
 if __name__ == '__main__':
