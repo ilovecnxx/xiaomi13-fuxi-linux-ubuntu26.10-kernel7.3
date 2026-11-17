@@ -228,6 +228,54 @@ class AmbientLightTest(unittest.TestCase):
             self.assertLess(int((root / "brightness").read_text()), first)
             self.assertEqual(controller.hold_until, 160)
 
+    def test_manual_hold_survives_screen_off_and_sensor_reconnection(self):
+        for interruption in ("screen_off", "owner_change"):
+            with self.subTest(interruption=interruption), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                controller = self.controller(root)
+                controller.property = lambda name: {
+                    "HasAmbientLight": True, "LightLevelUnit": "lux", "LightLevel": 100,
+                }[name]
+                (root / "brightness").write_text("2000")
+                with patch.object(light.time, "monotonic", return_value=100):
+                    controller.tick()
+                if interruption == "screen_off":
+                    (root / "bl_power").write_text("4")
+                    controller.tick()
+                    (root / "bl_power").write_text("0")
+                else:
+                    controller.owner_changed()
+                self.assertFalse(controller.claimed)
+                with patch.object(light.time, "monotonic", return_value=110):
+                    controller.tick()
+                self.assertTrue(controller.claimed)
+                with patch.object(light.time, "monotonic", return_value=113):
+                    controller.tick()
+                self.assertEqual(controller.hold_until, 160)
+                self.assertEqual((root / "brightness").read_text(), "2000")
+                with patch.object(light.time, "monotonic", return_value=160):
+                    controller.tick()
+                self.assertLess(int((root / "brightness").read_text()), 2000)
+
+    def test_expired_manual_hold_still_waits_for_sensor_after_reclaim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            controller = self.controller(root)
+            controller.hold_until = 99
+            controller.owner_changed()
+            controller.property = lambda name: {
+                "HasAmbientLight": True, "LightLevelUnit": "lux", "LightLevel": 100,
+            }[name]
+            with patch.object(light.time, "monotonic", return_value=100):
+                controller.tick()
+            self.assertEqual(controller.hold_until, 102)
+            with patch.object(light.time, "monotonic", return_value=101):
+                controller.tick()
+            self.assertEqual((root / "brightness").read_text(), "1000")
+            with patch.object(light.time, "monotonic", return_value=102):
+                controller.tick()
+            self.assertLess(int((root / "brightness").read_text()), 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

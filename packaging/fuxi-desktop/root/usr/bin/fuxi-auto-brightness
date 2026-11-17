@@ -81,7 +81,7 @@ class Controller:
                 self.claimed = True
                 self.sample = self.property("LightLevel")
                 self.last_observed = int((self.backlight / "brightness").read_text())
-                self.hold_until = time.monotonic() + 2
+                self.hold_until = max(self.hold_until, time.monotonic() + 2)
                 return True
             current = int((self.backlight / "brightness").read_text())
             now = time.monotonic()
