@@ -4,7 +4,7 @@
   "base_manifest_sha256": "97008dbda4188c7cfc0b03a321089c1e4d9d990757da7f25d2dffb0dc2ebe408",
   "base_commit": "cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72",
   "base_tree": "edfabc4cd0cf8c50b5578e85db8487b9080e17e8",
-  "result_tree": "8134a107b454825afc65117d8ef899eef65421d4",
+  "result_tree": "41486ba1a696117f1816e605493ae8c114f8a4a8",
   "source_date_epoch": 1794745737,
   "patches": [
     {
@@ -14,6 +14,10 @@
     {
       "file": "0002-disarm-wake-irqs-before-device-irqs.patch",
       "sha256": "36812d8f4b53abf54cb034d614f2369bc6fb14427fb385dc71fb6348ed9ab1f0"
+    },
+    {
+      "file": "0003-sm8550-pdc-boundary-snapshots.patch",
+      "sha256": "ea6a52a7c08ff000a53b72dd088618bc7c73eeee99ed33df36ac7258ddb4c50b"
     }
   ],
   "config_additions": [
@@ -25,17 +29,21 @@
   "validation": {
     "arm64_w1_passed": true,
     "diagnostics_disabled_arm64_w1_passed": true,
+    "pdc_module_arm64_w1_passed": true,
+    "pdc_disabled_arm64_w1_passed": true,
+    "psci_module_and_absent_pdc_symbol_independent": true,
     "make_targets": [
       "drivers/firmware/psci/psci.o",
-      "drivers/irqchip/irq-gic-v3.o"
+      "drivers/irqchip/irq-gic-v3.o",
+      "drivers/irqchip/qcom-pdc.o"
     ],
     "checkpatch_errors": 0,
-    "checkpatch_warnings": 1,
+    "checkpatch_warnings": 2,
     "checkpatch_options": "--no-tree --no-signoff",
-    "checkpatch_warning": "New experimental header; MAINTAINERS update reminder",
+    "checkpatch_warning": "Two new experimental headers; MAINTAINERS update reminders",
     "full_phone_kernel_built": true,
-    "kernel_release": "7.4.0-rc1-fuxi-suspend3",
-    "package_sha256": "37c44b84cefac7c92474a4cd5ec3ca38711577e4aa7e2bedc0354aa9a79320bf",
+    "kernel_release": "7.4.0-rc1-fuxi-suspend4",
+    "package_sha256": "6aa5b43a876910eea130b773d8a73dfb80e73f81ac69ad3bf7bbb2cb890a46e3",
     "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
     "config_sha256": "300ea87ca58ab6199c403b8f70daaf012d1376d179ee35eab8b3b35028f15fc5",
     "package_payload_matches_build": true,
@@ -43,19 +51,36 @@
     "device_boot_passed": true,
     "device_tested": true,
     "rtc_guard_seconds": 20,
-    "logind_cycle_seconds": 4.142028708,
-    "sleep_compensation_seconds": 2.051775938,
-    "physical_counter_delta_seconds": 2.050548854,
-    "rtc_remaining_seconds": 17,
+    "logind_cycle_seconds": 6.677162282,
+    "sleep_compensation_seconds": 4.596046405,
+    "physical_counter_delta_seconds": 4.594455573,
+    "rtc_remaining_seconds": 15,
     "cpu_suspend_return": 0,
     "firmware_returned_directly": false,
     "gic_pending_after": [261],
-    "resume_first_ipcc_client": "LPASS",
-    "pm_wakeup_irq": 225,
+    "resume_first_ipcc_client": "MPSS",
+    "pm_wakeup_irq": 228,
     "pcie_wake_resume_irq_entries": 0,
     "pcie_wake_irq_name": "0000:00:00.0:wakeup",
-    "dwc3_irq": 224,
-    "dwc3_trace_entries": 98,
+    "dwc3_irq": 223,
+    "dwc3_trace_entries": 5,
+    "pdc_snapshot_valid": true,
+    "pdc_mode": "passthrough",
+    "pdc_latched_status_available": false,
+    "pdc_enabled_pins": [1, 109],
+    "pdc_config_or_enable_changed": false,
+    "platform_stats": {
+      "apss_count_delta": 1,
+      "apss_duration_delta_ticks": 88163130,
+      "apss_duration_delta_seconds": 4.5918296875,
+      "aosd_count_before": 0,
+      "aosd_count_after": 0,
+      "cxsd_count_before": 0,
+      "cxsd_count_after": 0,
+      "modem_count_delta": 0,
+      "adsp_count_delta": 20,
+      "empty_stats": ["cdsp", "slpi"]
+    },
     "trace_loss_detected": false,
     "postresume_network_and_sensors_passed": true,
     "deep_suspend_accepted": false,

@@ -18,6 +18,8 @@ import time
 
 RTC = Path("/sys/class/rtc/rtc0")
 TRACE = Path("/sys/kernel/tracing/instances")
+PLATFORM_STATS = Path("/sys/kernel/debug/qcom_stats")
+SLEEP_STATS = ("aosd", "cxsd", "apss", "modem", "adsp", "cdsp", "slpi")
 LOGIN = "org.freedesktop.login1"
 MANAGER = LOGIN + ".Manager"
 OBJECT = "/org/freedesktop/login1"
@@ -123,6 +125,20 @@ class WakeTrace:
                 self.path.rmdir()
 
 
+def snapshot_platform_stats(output, phase):
+    report = {"boottime_begin": time.clock_gettime(time.CLOCK_BOOTTIME),
+              "stats": {}, "errors": {}}
+    # Do not read ddr_stats: that interface can send a QMP frequency-sync request.
+    for name in SLEEP_STATS:
+        try:
+            report["stats"][name] = (PLATFORM_STATS / name).read_text()
+        except OSError as error:
+            report["errors"][name] = {"errno": error.errno}
+    report["boottime_end"] = time.clock_gettime(time.CLOCK_BOOTTIME)
+    (output / f"{phase}-platform-sleep.json").write_text(
+        json.dumps(report, indent=2) + "\n")
+
+
 def snapshot(output, phase):
     for name, source in {
         "interrupts": "/proc/interrupts",
@@ -131,6 +147,7 @@ def snapshot(output, phase):
         "rtc-time": str(RTC / "since_epoch"),
     }.items():
         (output / f"{phase}-{name}.txt").write_text(Path(source).read_text())
+    snapshot_platform_stats(output, phase)
 
 
 def check_idle():

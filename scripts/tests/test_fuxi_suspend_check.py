@@ -1,6 +1,7 @@
 """Guard the RTC until logind reports an actual completed sleep cycle."""
 
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,30 @@ SPEC.loader.exec_module(CHECK)
 
 
 class SuspendCheckTest(unittest.TestCase):
+    def test_platform_stats_skip_active_ddr_interface_and_record_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stats = root / "stats"
+            stats.mkdir()
+            (stats / "aosd").write_text("Count: 0\n")
+            (stats / "cxsd").write_text("Count: 3\n")
+            original_read = Path.read_text
+
+            def read_stat(path, *args, **kwargs):
+                self.assertNotEqual(path.name, "ddr_stats")
+                if path.name == "modem":
+                    raise PermissionError(errno.EACCES, "unavailable")
+                return original_read(path, *args, **kwargs)
+
+            with mock.patch.object(CHECK, "PLATFORM_STATS", stats), \
+                    mock.patch.object(Path, "read_text", read_stat):
+                CHECK.snapshot_platform_stats(root, "before")
+            report = json.loads((root / "before-platform-sleep.json").read_text())
+            self.assertEqual(report["stats"], {"aosd": "Count: 0\n", "cxsd": "Count: 3\n"})
+            self.assertEqual(report["errors"]["modem"], {"errno": errno.EACCES})
+            self.assertEqual(report["errors"]["adsp"], {"errno": errno.ENOENT})
+            self.assertGreaterEqual(report["boottime_end"], report["boottime_begin"])
+
     def test_enqueue_is_not_resume(self):
         cycle = CHECK.SleepCycle()
         self.assertTrue(cycle.may_clear_alarm)

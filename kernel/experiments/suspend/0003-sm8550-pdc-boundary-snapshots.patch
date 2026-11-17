@@ -1,0 +1,233 @@
+diff --git a/drivers/firmware/psci/Kconfig b/drivers/firmware/psci/Kconfig
+index 5ac604f87c40e4604affaa304ee244d53935d7be..32dd7e5fa9a047f78cf8a046c4d9e0b0af775484 100644
+--- a/drivers/firmware/psci/Kconfig
++++ b/drivers/firmware/psci/Kconfig
+@@ -9,6 +9,8 @@ config ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ 	  Snapshot non-secure GIC pending/enabled state and the architectural
+ 	  counter around SYSTEM_SUSPEND. Report after device resume whether
+ 	  firmware returned directly or execution used the CPU resume entry.
++	  On SM8550 with built-in QCOM_PDC, also sample mapped PDC pin
++	  configuration and enables without acknowledging interrupts.
+ 	  This is a diagnostic aid, not a wakeup source attribution mechanism.
+ 
+ config ARM_PSCI_CHECKER
+diff --git a/drivers/firmware/psci/psci.c b/drivers/firmware/psci/psci.c
+index 232f16dba4073aef8e6d1ad54e9a8d2025ab027c..e537007c7ca68fe64f939359cb1dd698552c8519 100644
+--- a/drivers/firmware/psci/psci.c
++++ b/drivers/firmware/psci/psci.c
+@@ -22,6 +22,7 @@
+ 
+ #ifdef CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ #include <linux/irqchip/arm-gic-v3-suspend.h>
++#include <linux/irqchip/qcom-pdc-suspend.h>
+ #endif
+ 
+ #include <uapi/linux/psci.h>
+@@ -535,6 +536,8 @@ int psci_cpu_suspend_enter(u32 state)
+ static struct {
+ 	struct gic_v3_suspend_snapshot before;
+ 	struct gic_v3_suspend_snapshot after;
++	struct qcom_pdc_suspend_snapshot pdc_before;
++	struct qcom_pdc_suspend_snapshot pdc_after;
+ 	int raw_ret;
+ 	int cpu_ret;
+ 	bool firmware_returned;
+@@ -556,6 +559,37 @@ static void psci_suspend_diag_dump(const char *phase,
+ 	}
+ }
+ 
++static void psci_suspend_diag_dump_pdc(const char *phase,
++				     const struct qcom_pdc_suspend_snapshot *snapshot,
++				     const struct qcom_pdc_suspend_snapshot *other)
++{
++	unsigned int i;
++	bool enabled, changed, latched;
++
++	pr_info("suspend-diag pdc %s valid=%u version=%#x mode=%u gpio_status_mask=%#x num_spis=%u\n",
++		phase, snapshot->valid, snapshot->version, snapshot->mode,
++		snapshot->gpio_status_mask, snapshot->num_spis);
++	if (!snapshot->valid)
++		return;
++
++	pr_info("suspend-diag pdc %s counter_begin=%llu counter_end=%llu\n",
++		phase, snapshot->counter_begin, snapshot->counter_end);
++	for (i = 0; i < snapshot->nr_pins; i++) {
++		if (!(snapshot->mapped[i / 32] & BIT(i % 32)))
++			continue;
++		enabled = snapshot->enabled[i / 32] & BIT(i % 32);
++		changed = other->valid &&
++			(snapshot->cfg[i] != other->cfg[i] ||
++			 ((snapshot->enabled[i / 32] ^ other->enabled[i / 32]) & BIT(i % 32)));
++		latched = i >= snapshot->num_spis &&
++			(snapshot->cfg[i] & snapshot->gpio_status_mask);
++		if (enabled || changed || latched)
++			pr_info("suspend-diag pdc %s pin=%u intid=%u cfg=%#x enabled=%u changed=%u latched=%u\n",
++				phase, i, snapshot->parent_intid[i], snapshot->cfg[i],
++				enabled, changed, latched);
++	}
++}
++
+ static void psci_system_suspend_finish(void)
+ {
+ 	if (!psci_suspend_diag.sampled)
+@@ -566,6 +600,10 @@ static void psci_system_suspend_finish(void)
+ 		psci_suspend_diag.raw_ret, (unsigned long)read_sysreg(cntfrq_el0));
+ 	psci_suspend_diag_dump("before", &psci_suspend_diag.before);
+ 	psci_suspend_diag_dump("after", &psci_suspend_diag.after);
++	psci_suspend_diag_dump_pdc("before", &psci_suspend_diag.pdc_before,
++				 &psci_suspend_diag.pdc_after);
++	psci_suspend_diag_dump_pdc("after", &psci_suspend_diag.pdc_after,
++				 &psci_suspend_diag.pdc_before);
+ 	psci_suspend_diag.sampled = false;
+ }
+ #endif
+@@ -590,8 +628,10 @@ static int psci_system_suspend_enter(suspend_state_t state)
+ 
+ #ifdef CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ 	gic_v3_suspend_snapshot(&psci_suspend_diag.before);
++	qcom_pdc_suspend_snapshot(&psci_suspend_diag.pdc_before);
+ 	psci_suspend_diag.cpu_ret = cpu_suspend(0, psci_system_suspend);
+ 	gic_v3_suspend_snapshot(&psci_suspend_diag.after);
++	qcom_pdc_suspend_snapshot(&psci_suspend_diag.pdc_after);
+ 	psci_suspend_diag.sampled = true;
+ 	return psci_suspend_diag.cpu_ret;
+ #else
+diff --git a/drivers/irqchip/qcom-pdc.c b/drivers/irqchip/qcom-pdc.c
+index 29025a212ece362360dd7cf00a83f1c0ecbbce81..406191864c27cb2a4de28ffefa4ed032509c51b5 100644
+--- a/drivers/irqchip/qcom-pdc.c
++++ b/drivers/irqchip/qcom-pdc.c
+@@ -9,6 +9,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/irq.h>
+ #include <linux/irqchip.h>
++#include <linux/irqchip/qcom-pdc-suspend.h>
+ #include <linux/irqdomain.h>
+ #include <linux/io.h>
+ #include <linux/kernel.h>
+@@ -22,6 +23,10 @@
+ #include <linux/types.h>
+ #include <linux/firmware/qcom/qcom_scm.h>
+ 
++#ifdef CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG
++#include <asm/arch_timer.h>
++#endif
++
+ #define PDC_MAX_IRQS			256
+ #define IRQ_ENABLE_BANK_MAX		BITS_TO_BYTES(PDC_MAX_IRQS)
+ #define IRQ_ENABLE_BANK_INDEX_MASK	GENMASK(31, 5)
+@@ -202,6 +207,59 @@ static u32 pdc_reg_read(int reg, u32 i)
+ 	return readl_relaxed(pdc->base + reg + i * sizeof(u32));
+ }
+ 
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_PDC)
++/* Published only after successful SM8550 probe; this irqchip is not removed. */
++static struct pdc_desc *pdc_suspend_diag;
++static unsigned int pdc_suspend_nr_pins;
++
++void qcom_pdc_suspend_snapshot(struct qcom_pdc_suspend_snapshot *state)
++{
++	/* Pair with probe's release so descriptor and pin bounds are initialized. */
++	struct pdc_desc *desc = smp_load_acquire(&pdc_suspend_diag);
++	unsigned int r, pin, end, bank;
++	u32 cfg, enabled;
++
++	memset(state, 0, sizeof(*state));
++	if (!desc)
++		return;
++
++	state->counter_begin = arch_timer_read_cntpct_el0();
++	state->version = desc->version;
++	state->mode = desc->mode;
++	state->num_spis = desc->num_spis;
++	if (desc->version >= PDC_VERSION_3_0 && desc->mode == PDC_SECONDARY_MODE)
++		state->gpio_status_mask = BIT(desc->cfg_fields->gpio_irq_sts);
++
++	/* Only read mapped pins. No acknowledge, clear, mask or secure access. */
++	for (r = 0; r < desc->region_cnt; r++) {
++		const struct pdc_pin_region *region = &desc->region[r];
++
++		if (region->pin_base >= pdc_suspend_nr_pins ||
++		    region->cnt > pdc_suspend_nr_pins - region->pin_base)
++			return;
++		end = region->pin_base + region->cnt;
++		for (pin = region->pin_base; pin < end; pin++) {
++			bank = pin / 32;
++			cfg = readl(desc->base + desc->regs->irq_cfg_reg + pin * sizeof(u32));
++			if (desc->version >= PDC_VERSION_3_2)
++				enabled = cfg & BIT(desc->cfg_fields->irq_enable);
++			else
++				enabled = readl(desc->base + desc->regs->irq_en_reg +
++						bank * sizeof(u32)) & BIT(pin % 32);
++			state->mapped[bank] |= BIT(pin % 32);
++			if (enabled)
++				state->enabled[bank] |= BIT(pin % 32);
++			state->cfg[pin] = cfg;
++			/* DT parent SPI numbers exclude the first 32 GIC INTIDs. */
++			state->parent_intid[pin] = pin_to_hwirq(region, pin) + 32;
++		}
++		state->nr_pins = max(state->nr_pins, end);
++	}
++	state->counter_end = arch_timer_read_cntpct_el0();
++	state->valid = true;
++}
++#endif /* CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG && CONFIG_QCOM_PDC=y */
++
+ static inline bool pdc_pin_is_gpio(int pin_out)
+ {
+ 	/*
+@@ -757,6 +815,15 @@ static int qcom_pdc_probe(struct platform_device *pdev, struct device_node *pare
+ 
+ 	irq_domain_update_bus_token(pdc_domain, DOMAIN_BUS_WAKEUP);
+ 
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_PDC)
++	if (of_device_is_compatible(node, "qcom,sm8550-pdc")) {
++		pdc_suspend_nr_pins = min_t(unsigned int, QCOM_PDC_SUSPEND_MAX_IRQS,
++					   pdc->num_spis + FIELD_GET(GENMASK(15, 8), irq_param));
++		/* Publish the descriptor and bounds together to the suspend reader. */
++		smp_store_release(&pdc_suspend_diag, pdc);
++	}
++#endif
++
+ 	return 0;
+ }
+ 
+diff --git a/include/linux/irqchip/qcom-pdc-suspend.h b/include/linux/irqchip/qcom-pdc-suspend.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..7e14890321f212807b65a203c7a4af42b7022da5
+--- /dev/null
++++ b/include/linux/irqchip/qcom-pdc-suspend.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __LINUX_IRQCHIP_QCOM_PDC_SUSPEND_H
++#define __LINUX_IRQCHIP_QCOM_PDC_SUSPEND_H
++
++#include <linux/kconfig.h>
++#include <linux/types.h>
++
++#define QCOM_PDC_SUSPEND_MAX_IRQS 256
++
++struct qcom_pdc_suspend_snapshot {
++	u64 counter_begin;
++	u64 counter_end;
++	bool valid;
++	u8 mode;
++	u32 version;
++	u32 gpio_status_mask;
++	u32 num_spis;
++	u32 nr_pins;
++	u32 mapped[QCOM_PDC_SUSPEND_MAX_IRQS / 32];
++	u32 enabled[QCOM_PDC_SUSPEND_MAX_IRQS / 32];
++	u32 parent_intid[QCOM_PDC_SUSPEND_MAX_IRQS];
++	u32 cfg[QCOM_PDC_SUSPEND_MAX_IRQS];
++};
++
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_PDC)
++void qcom_pdc_suspend_snapshot(struct qcom_pdc_suspend_snapshot *state);
++#else
++static inline void qcom_pdc_suspend_snapshot(struct qcom_pdc_suspend_snapshot *state)
++{
++	state->valid = false;
++}
++#endif
++
++#endif

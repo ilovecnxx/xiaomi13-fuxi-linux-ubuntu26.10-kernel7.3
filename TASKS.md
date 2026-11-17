@@ -1,6 +1,6 @@
 # 当前任务
 
-更新：2026-11-16（Asia/Tokyo）。本文件是当前状态的唯一入口；通用规则见
+更新：2026-11-17（Asia/Tokyo）。本文件是当前状态的唯一入口；通用规则见
 [AGENTS.md](AGENTS.md)，安装/恢复见[操作文档](docs/内核维护与独立升级.md)。
 
 ## 当前指令
@@ -31,7 +31,7 @@
 | 标准配方 | `kernel/manifest.json`，std2 | 可重建基准，不是手机运行版本 |
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
-| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend3`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | PSCI reset/resume 路径约 2.05 s；RTC 尚余 17 秒即恢复，深睡驻留未验收 |
+| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend4`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | APSS 计数增加 1、记录约 4.592 s；AOSD/CXSD 为 0，RTC 尚余 15 秒即恢复，深睡驻留未验收 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
 | 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮升级诊断内核并正常重启，未单独重启桌面 |
 
@@ -43,15 +43,16 @@
   MM 首次缺失 GPS_RAW 能力本轮再次出现，调试重启后恢复，根因未修；临时调试配置已清除。
   新会话选项已随 modem `0.20261116.0917` 安装；本轮未重做定位，不计有效 fix。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
-  捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P 及丢失计数。PSCI/GIC 只读边界诊断和配方见
-  `kernel/experiments/suspend/`。最新 `suspend3` 只改变 noirq 恢复顺序：先撤防系统挂起
-  专用 wake IRQ，再恢复设备 IRQ。一次 20 秒测试中，logind 周期 4.142 秒，时间补偿
-  2.051776 秒，RTC 尚余 17 秒；8 核无 overrun/dropped，success=1/fail=0。`cpu_ret=0/
-  firmware_returned=0` 仍表示经 cpu_resume 恢复，非固件直接返回错误；PSCI 物理计数器间隔
-  2.050549 秒，仍不证明深睡。边界仅见 SPI261 pending，恢复首个 IPCC 为 LPASS glink。
-  本启动 PCIe GPIO96 WAKE# 为 IRQ225，恢复期间 0 次；IRQ224 是独立 `dwc3`，有 98 次，
-  因此不能把顺序变化直接解释为唤醒原因。USB/PCIe L2 错误仍在（LTSSM 0x12）。深睡/定时
-  唤醒未通过；RTC/trace 已清理，自动挂起关闭。
+  捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
+  边界诊断和配方见 `kernel/experiments/suspend/`。最新 `suspend4` 在已有 wake IRQ 恢复
+  顺序修复上增加 PDC 只读快照：直通模式，不能读取锁存唤醒来源；前后仅 pin1/109 使能，
+  配置/使能无变化。一次 20 秒测试中，logind 周期 6.677162 秒，时间补偿 4.596046 秒，
+  RTC 尚余 15 秒；8 核无 overrun/dropped，success=1/fail=0。APSS 计数 1020→1021，
+  记录区间 4.591830 秒，接近 PSCI 物理计数器 4.594456 秒；AOSD/CXSD 仍全零，不能据此
+  验收整机深睡或断言所有统计有效。`cpu_ret=0/firmware_returned=0`，边界仅 SPI261
+  pending；恢复首个 IPCC 为 MPSS glink，不能归因。PCIe GPIO96 WAKE# 本启动 IRQ228，
+  恢复期间 0 次；独立 `dwc3` IRQ223 有 5 次。USB/PCIe L2 错误仍在（LTSSM 0x12）。
+  深睡/定时唤醒未通过；RTC/trace 和临时安装配置已清理，自动挂起关闭。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
@@ -60,23 +61,25 @@
   加速度/磁场/陀螺仪仍有安装矩阵回退警告；轴向、标定、自动旋转和光照动态未验收。
 - 功耗：灭屏、USB 充电下 10 秒全核平均忙碌 0.16%，电量 81%；这不是电池续航或功耗改善证据。
   A2DP 需要耳机；CS35L41 扬声器保护仍缺标定验收；NFC 尚无设备通路。
-- 验证：GNSS 定向 22 项、全脚本 406 项通过（含未提交主摄生成器 4 项）；新增挂起工具 7 项
-  覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数及异常清理。
+- 验证：GNSS 定向 22 项、全脚本 407 项通过（含未提交主摄生成器 4 项）；挂起工具 8 项
+  覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数、异常
+  清理及平台统计缺失/权限失败，禁止触碰会发送 QMP 的 DDR 接口。
   MM 测试编译真实 watcher 和授权/清理回调，覆盖 10 个异步生命周期场景；来源/依赖检查、原生编译及打包通过。
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
-  新增内核开启/关闭诊断的相关对象 ARM64 W=1、完整 deb 构建、包载荷/来源及配方树重放通过；
-  checkpatch 0 错误、1 项新增头文件的 MAINTAINERS 提醒，未变更 DTB。
-  最新诊断证据在 `work/fuxi-suspend-diag2-20261116/`、`work/suspend2-*-20261116.log`；
+  内核诊断开启/关闭及 PDC 模块/禁用配置的相关对象 ARM64 W=1、完整 deb 构建、包载荷/
+  来源及配方树重放通过；新补丁 checkpatch 0 错误、1 项新增头文件提醒，未变更 DTB。
+  最新诊断证据在 `work/fuxi-suspend4-20261117/`、`work/suspend4-*-20261117.log`；
   恢复后蜂窝接口 HTTPS=200、WiFi HTTPS 和六类传感器采样通过，关键服务 PID 未变、NRestarts=0。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
   [挂起证据](docs/驱动初始化与功耗验收-20261108.md#普通挂起与恢复检查)。
 
 ### 整机下一步
 
-1. 继续提前恢复定位：suspend3 已消除上一轮 PCIe WAKE# 恢复风暴，但 RTC 仍提前返回。
-   需要在内核侧补齐 PM/IRQ、PSCI 返回和挂起边界 pending IRQ 证据，区分平台拒绝进入与实际
-   唤醒；未证明原因前不关闭基带或屏蔽 IRQ，不重复相同测试。每个新候选保留准确来源及
-   恢复入口；MM 还需多轮稳定性验证，保持自动挂起关闭，不开始续航验收。
+1. 继续提前恢复定位：suspend4 的 APSS 统计与 PSCI/时间补偿接近，但 AOSD/CXSD 未增加，
+   PDC 直通快照不能归因。下一步检查 USB/PCIe L2 失败及 RPMh/AOSS 平台低功耗阻塞条件，
+   核实统计有效性，再确定下一实验的可区分假设；不重复相同挂起、不关闭基带或屏蔽 IRQ。
+   每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
+   续航验收。
 2. GNSS 首次能力、室外有效 fix、GeoClue；现场动作验证传感器轴向、亮度/旋转，耳机验证 A2DP。
 3. 核对 CS35L41 保护固件/标定与安全音量；识别 NFC 控制器和接线后实现驱动通路。
 

@@ -16,8 +16,8 @@ Pending state observed after resume is not by itself a wake-cause attribution.
 Counter behavior across platform power states also needs independent evidence.
 Messages are printed in the platform finish callback after device resume.
 
-Verify the parent manifest hash, apply the patch to its `result_tree`, then
-compare this manifest's `result_tree`. Replay through a separate Git index
+Verify the parent manifest hash, apply the patches in order to its `result_tree`,
+then compare this manifest's `result_tree`. Replay through a separate Git index
 has reproduced the captured build tree. The maintained patch includes its
 new header; package provenance includes the complete dirty source state.
 
@@ -50,3 +50,22 @@ and 17 seconds remained on the RTC alarm. The PCIe WAKE# IRQ was IRQ225 in
 this boot and had zero trace entries during the resume; IRQ224 was a separate
 `dwc3` IRQ with 98 entries. This shows a changed resume interrupt pattern, not
 a confirmed wake cause.
+
+The PDC follow-up (`0003-sm8550-pdc-boundary-snapshots.patch`) publishes a
+descriptor only after successful SM8550 probe and reads only mapped pins
+within the hardware bounds. It samples raw configuration and enable state
+around `cpu_suspend()`, with physical-counter brackets for each read. The
+built-in PSCI diagnostic has no dependency on a modular or disabled PDC.
+SM8550 uses passthrough mode: its GPIO status bits are not treated as latched
+wake evidence. The suspend tool also saves read-only platform sleep statistics;
+it deliberately avoids `ddr_stats`, whose read can send a QMP request.
+
+`7.4.0-rc1-fuxi-suspend4` completed one 20-second RTC-guarded test but again
+returned early: logind cycle 6.677162 seconds, compensation 4.596046 seconds,
+RTC remaining 15 seconds. APSS count increased once with a 4.591830-second
+recorded interval; AOSD/CXSD stayed at zero. PDC pins 1 (PMIC arbiter) and 109
+(GPIO96 PCIe WAKE#) remained enabled without configuration changes. This
+supports an APSS sleep interval but does not establish whole-platform deep
+sleep, validate every firmware counter, or identify the wake cause. USB/PCIe
+L2 errors persisted. Further work should examine platform low-power blockers
+and correlate RPMh/AOSS evidence before another suspend experiment.
