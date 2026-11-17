@@ -92,3 +92,29 @@ while AOSD/CXSD/DDR remained zero. All eight trace buffers reported no loss.
 WiFi, connected-bearer HTTPS and sensor sampling passed after resume, but
 ModemManager reported registered despite connected bearers. This inconsistency
 and the LPASS message need further investigation; no wake source is confirmed.
+
+The PMIC follow-up (`0005-pmic-glink-header-metadata.patch`) adds default-off
+TX, transport-return and RX events. It reads only the common 12-byte header,
+using unaligned little-endian access, and records device, length, header validity,
+owner/type/opcode and transport result. Short headers are not decoded. It records
+no payload and changes no charging or message handling. A transport return is not
+firmware completion, and a header does not uniquely identify a request.
+
+The current candidate is `7.4.0-rc1-fuxi-suspend6`; the original suspend5
+validation is retained under `ipcc_validation`. Use the explicit suspend-check
+`--pmic-metadata` option to require all three PMIC events and the 13 glink events
+before arming the RTC. The five-second baseline also precedes the alarm.
+The PMIC object built with ARM64 `W=1` with event tracing enabled and disabled;
+all five patches replayed to the current result tree.
+
+One suspend6 test still returned early: logind cycle 6.355196 seconds,
+compensation 4.241335 seconds, RTC remaining 14 seconds. Two 220-byte baseline
+messages were BATTMGR owner 32778, type 1, opcode 0x50. No such RX message was
+recorded after return; the IPCC boundary snapshot instead showed MPSS
+client 2/signal 0, followed by IRQ13/IRQ231 and 92-byte IPCRTR data. The earlier
+LPASS/PMIC pattern therefore did not recur, and PMIC message length is not a
+general explanation for early return. The previous capture has no PMIC headers
+and cannot be retroactively decoded. All eight buffers reported no loss.
+WiFi, connected-bearer HTTPS and six sensor samples passed after resume;
+ModemManager reported connected and key services did not restart. Whole-platform
+deep sleep and RTC wake remain unaccepted, with no confirmed wake source.

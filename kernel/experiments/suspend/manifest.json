@@ -4,7 +4,7 @@
   "base_manifest_sha256": "97008dbda4188c7cfc0b03a321089c1e4d9d990757da7f25d2dffb0dc2ebe408",
   "base_commit": "cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72",
   "base_tree": "edfabc4cd0cf8c50b5578e85db8487b9080e17e8",
-  "result_tree": "e25ac016c7860c284008e4385dc97f998b173ec4",
+  "result_tree": "e6f7b2deac17b6564083ffd8d9d3460c6204e2e0",
   "source_date_epoch": 1794745737,
   "patches": [
     {
@@ -22,6 +22,10 @@
     {
       "file": "0004-sm8550-ipcc-boundary-snapshots.patch",
       "sha256": "2169b845da648ecf83a73047a7f74d923930cf6503d53ff67dd6afb83549926f"
+    },
+    {
+      "file": "0005-pmic-glink-header-metadata.patch",
+      "sha256": "3feda62c59f39267565e2dd48350006a74f4e8672120799fcf74159460a0e16c"
     }
   ],
   "config_additions": [
@@ -91,7 +95,7 @@
     "deep_suspend_accepted": false,
     "report": "../../../docs/驱动初始化与功耗验收-20261108.md"
   },
-  "validation": {
+  "ipcc_validation": {
     "arm64_w1_passed": true,
     "ipcc_module_arm64_w1_passed": true,
     "ipcc_disabled_arm64_w1_passed": true,
@@ -160,6 +164,69 @@
     "postresume_connected_bearer_https_passed": true,
     "postresume_modem_state_consistent": false,
     "deep_suspend_accepted": false,
+    "report": "../../../docs/驱动初始化与功耗验收-20261108.md"
+  },
+  "validation": {
+    "arm64_w1_passed": true,
+    "event_tracing_disabled_arm64_w1_passed": true,
+    "make_targets": ["drivers/soc/qcom/pmic_glink.o"],
+    "new_patch_checkpatch_errors": 0,
+    "new_patch_checkpatch_warnings": 1,
+    "checkpatch_options": "--no-tree --no-signoff",
+    "checkpatch_warning": "New experimental header; MAINTAINERS update reminder",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-suspend6",
+    "package_sha256": "854d72ed5d936edb10eeab79e9a3fa19b0ce46a43ea0b49e519fe161730c9db1",
+    "image_sha256": "76738280723b753accb8778bbdb23e06cda3d8785a6bbe6944117768c1162600",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "config_sha256": "300ea87ca58ab6199c403b8f70daaf012d1376d179ee35eab8b3b35028f15fc5",
+    "package_payload_matches_build": true,
+    "patch_reconstruction_tree_verified": true,
+    "device_boot_passed": true,
+    "device_tested": true,
+    "pmic_metadata_enabled": true,
+    "rtc_guard_seconds": 20,
+    "logind_cycle_seconds": 6.355195501,
+    "monotonic_delta_seconds": 2.113860659,
+    "sleep_compensation_seconds": 4.241334842,
+    "physical_counter_delta_seconds": 4.239237135,
+    "rtc_remaining_seconds": 14,
+    "cpu_suspend_return": 0,
+    "firmware_returned_directly": false,
+    "gic_pending_after": [261],
+    "ipcc_before_recv_id": "0xffffffff",
+    "ipcc_after_recv_id": "0x20000",
+    "ipcc_config_before_and_after": 0,
+    "resume_first_ipcc_irq": 231,
+    "resume_first_ipcc_client": "MPSS",
+    "resume_first_glink_channel": "IPCRTR",
+    "resume_first_glink_rx_length": 92,
+    "baseline_pmic_rx": {
+      "count": 2,
+      "length": 220,
+      "owner": 32778,
+      "type": 1,
+      "opcode": "0x50"
+    },
+    "postreturn_pmic_220_rx_count": 0,
+    "platform_stats": {
+      "apss_count_delta": 1,
+      "apss_duration_delta_ticks": 81326278,
+      "apss_duration_delta_seconds": 4.235743646,
+      "aosd_count_before": 0,
+      "aosd_count_after": 0,
+      "cxsd_count_before": 0,
+      "cxsd_count_after": 0,
+      "ddr_count_before": 0,
+      "ddr_count_after": 0
+    },
+    "trace_loss_detected": false,
+    "postresume_network_and_sensors_passed": true,
+    "postresume_modem_state": "connected",
+    "postresume_connected_bearer_https_passed": true,
+    "postresume_service_restarts": 0,
+    "deep_suspend_accepted": false,
+    "wake_cause": null,
     "report": "../../../docs/驱动初始化与功耗验收-20261108.md"
   }
 }

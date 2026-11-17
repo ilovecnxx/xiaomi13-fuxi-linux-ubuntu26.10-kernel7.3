@@ -21,7 +21,8 @@ def send(state, data="0x40000000", address="0x50000"):
 
 
 class SuspendAuditTest(unittest.TestCase):
-    def audit(self, commands=None, loss=0, missing_cpu=False, db=True, extra="", suffix="", glink=False):
+    def audit(self, commands=None, loss=0, missing_cpu=False, db=True, extra="", suffix="",
+              glink=False, pmic=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             trace = (event("syscore_suspend[0] begin")
@@ -41,7 +42,8 @@ class SuspendAuditTest(unittest.TestCase):
                 "clock": "boot", "irq_scope": "all handlers, including local timers", "enabled_events": [
                 "power/suspend_resume", "power/device_pm_callback_end", "irq/irq_handler_entry",
                 "rpmh/rpmh_send_msg", "qcom_aoss/aoss_send", "qcom_aoss/aoss_send_done"]
-                + (["qcom_glink/qcom_glink_cmd_tx_data"] if glink else [])}))
+                + (["qcom_glink/qcom_glink_cmd_tx_data"] if glink else [])
+                + (["pmic_glink/" + name for name in AUDIT.PMIC_EVENTS] if pmic else [])}))
             if db:
                 (root / "before-cmd-db.txt").write_text(
                     "Slave ARC (v16.0)\n0x30000: cx.lvl [00 10]\n"
@@ -140,6 +142,37 @@ class SuspendAuditTest(unittest.TestCase):
         self.assertEqual(glink["unparsed_data_events"], 1)
         self.assertEqual(glink["first_data_after_return"], [])
         self.assertTrue(any("absence is not evidence" in warning for warning in report["warnings"]))
+
+    def test_pmic_headers_keep_transport_results_and_equal_time_phases_separate(self):
+        def message(stage, owner, opcode, ret=0):
+            return event(f"dev=pmic-glink len=220 header_valid=1 owner={owner} "
+                         f"type=1 opcode={opcode} ret={ret}", "pmic_glink_" + stage)
+
+        report = self.audit(extra=message("tx", 32778, "0x30")
+                            + message("tx_done", 32778, "0x30", -110),
+                            suffix=message("rx", 32779, "0x11"), pmic=True)
+        pmic = report["pmic_messages"]
+        self.assertEqual(pmic["missing_events"], [])
+        self.assertEqual(pmic["unparsed_events"], 0)
+        before = pmic["last_messages_before_entry"]
+        self.assertEqual(before[0]["owner_name"], "BATTMGR")
+        self.assertEqual(before[1]["ret"], -110)
+        after = pmic["first_messages_after_return"]
+        self.assertEqual(after[0]["owner_name"], "USBC")
+        self.assertEqual(after[0]["opcode"], 17)
+        self.assertEqual(pmic["counts"][2]["phase"], "after_return")
+        self.assertIsNone(report["wake_cause"])
+
+    def test_pmic_truncated_headers_are_not_decoded_and_missing_events_are_explicit(self):
+        report = self.audit(suffix=event("dev=pmic-glink len=4 header_valid=0 "
+                                        "owner=0 type=0 opcode=0x0 ret=0", "pmic_glink_rx")
+                            + event("truncated", "pmic_glink_tx_done"))
+        pmic = report["pmic_messages"]
+        self.assertEqual(len(pmic["missing_events"]), 3)
+        self.assertEqual(pmic["unparsed_events"], 1)
+        self.assertIsNone(pmic["first_messages_after_return"][0]["owner"])
+        self.assertIsNone(pmic["first_messages_after_return"][0]["opcode"])
+        self.assertTrue(any("not firmware completion" in warning for warning in report["warnings"]))
 
 
 if __name__ == "__main__":

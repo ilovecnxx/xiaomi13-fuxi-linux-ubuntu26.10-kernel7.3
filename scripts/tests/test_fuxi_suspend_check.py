@@ -233,7 +233,7 @@ class SuspendCheckTest(unittest.TestCase):
                     "gi": SimpleNamespace(repository=SimpleNamespace(Gio=gio, GLib=glib)),
                     "gi.repository": SimpleNamespace(Gio=gio, GLib=glib),
                 }), mock.patch("sys.argv", ["check", "--output", str(root / "out")]
-                               + (["--glink-metadata"] if failure is None else [])), \
+                               + (["--pmic-metadata"] if failure is None else [])), \
                         mock.patch.object(CHECK, "RTC", root), \
                         mock.patch.object(CHECK, "check_idle"), \
                         mock.patch.object(CHECK, "snapshot"), \
@@ -249,6 +249,52 @@ class SuspendCheckTest(unittest.TestCase):
                     else:
                         CHECK.main()
                 self.assertEqual(alarm.read_text(), "123\n" if failure == "Suspend" else "0\n")
+
+    def test_pmic_metadata_implies_glink_and_rejects_missing_transport_results(self):
+        for missing in (None, "pmic_glink/pmic_glink_tx_done"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / "out"
+                output.mkdir()
+                trace = CHECK.WakeTrace(output, pmic_metadata=True)
+                trace.path = root / "instance"
+                mkdir = Path.mkdir
+
+                def populate(path, *args, **kwargs):
+                    new_instance = path == trace.path and not path.exists()
+                    mkdir(path, *args, **kwargs)
+                    if new_instance:
+                        for event in (*trace.GLINK_EVENTS, *trace.PMIC_EVENTS):
+                            if event == missing:
+                                continue
+                            target = path / "events" / event / "enable"
+                            target.parent.mkdir(parents=True)
+                            target.touch()
+                        (path / "trace").touch()
+
+                def write(name, value):
+                    target = trace.path / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(value + "\n")
+
+                with mock.patch.object(Path, "mkdir", populate), \
+                        mock.patch.object(trace, "write", side_effect=write), \
+                        mock.patch.object(Path, "rmdir", side_effect=lambda: shutil.rmtree(trace.path)):
+                    if missing:
+                        with self.assertRaisesRegex(RuntimeError, "PMIC metadata event unavailable"):
+                            with trace:
+                                self.fail("Missing TX result coverage must refuse the experiment")
+                        self.assertFalse((output / "trace-config.json").exists())
+                    else:
+                        with trace:
+                            config = json.loads((output / "trace-config.json").read_text())
+                            self.assertTrue(config["pmic_metadata"])
+                            self.assertTrue(config["glink_metadata"])
+                            self.assertEqual(config["baseline_seconds"], 5)
+                            for event in trace.PMIC_EVENTS:
+                                self.assertIn(event, config["enabled_events"])
+                                self.assertEqual((trace.path / "events" / event / "enable").read_text(), "1\n")
+                self.assertFalse(trace.path.exists())
 
 
 if __name__ == "__main__":

@@ -16,6 +16,11 @@ LOSS_KEYS = ("overrun", "commit overrun", "dropped events")
 GLINK_DATA = re.compile(
     r"(tx|rx) remote: (\S+) channel: (.*?)\[(\d+)/(\d+)\] "
     r"iid: (-?\d+) chunk_size: (-?\d+) left_size: (-?\d+) cont: ([01])$")
+PMIC_HEADER = re.compile(
+    r"dev=(\S+) len=(\d+) header_valid=([01]) owner=(\d+) type=(\d+) "
+    r"opcode=0x([0-9a-fA-F]+) ret=(-?\d+)$")
+PMIC_EVENTS = ("pmic_glink_tx", "pmic_glink_tx_done", "pmic_glink_rx")
+PMIC_OWNERS = {32778: "BATTMGR", 32779: "USBC", 32780: "USBC_PAN"}
 
 
 def command_db(text):
@@ -127,6 +132,51 @@ def glink_data(directory, events, enter, leave, warnings):
             "first_data_after_return": first_after}
 
 
+def pmic_messages(directory, events, enter, leave, warnings):
+    path = directory / "trace-config.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    missing = sorted({"pmic_glink/" + name for name in PMIC_EVENTS}
+                     - set(config.get("enabled_events", [])))
+    counts = Counter()
+    before, after = [], []
+    unparsed = 0
+    for event in events:
+        if event["event"] not in PMIC_EVENTS:
+            continue
+        match = PMIC_HEADER.fullmatch(event["body"])
+        if not match:
+            unparsed += 1
+            continue
+        dev, length, valid, owner, kind, opcode, ret = match.groups()
+        phase = ("before_entry" if event["line"] < enter["line"] else
+                 "after_return" if event["line"] > leave["line"] else "inside_machine_suspend")
+        message = {"line": event["line"], "time": event["time"], "event": event["event"],
+                   "device": dev, "len": int(length), "header_valid": bool(int(valid)),
+                   "owner": int(owner) if valid == "1" else None,
+                   "type": int(kind) if valid == "1" else None,
+                   "opcode": int(opcode, 16) if valid == "1" else None,
+                   "ret": int(ret)}
+        message["owner_name"] = PMIC_OWNERS.get(message["owner"], "unknown")
+        counts[phase, event["event"], message["owner"], message["type"],
+               message["opcode"], message["ret"]] += 1
+        if phase == "before_entry":
+            before.append(message)
+        elif phase == "after_return" and len(after) < 16:
+            after.append(message)
+    if missing:
+        warnings.append("PMIC metadata events not recorded as enabled; absence is not evidence: "
+                        + ", ".join(missing))
+    if unparsed:
+        warnings.append(f"Unparsed PMIC metadata events: {unparsed}")
+    warnings.append("PMIC tx_done reports transport return, not firmware completion; "
+                    "headers have no unique request ID and do not establish wake causality.")
+    return {"missing_events": missing, "unparsed_events": unparsed,
+            "counts": [{"phase": phase, "event": name, "owner": owner, "type": kind,
+                        "opcode": opcode, "ret": ret, "count": count}
+                       for (phase, name, owner, kind, opcode, ret), count in counts.items()],
+            "last_messages_before_entry": before[-16:], "first_messages_after_return": after}
+
+
 def audit(directory, db_path=None):
     warnings = []
     events = read_events(directory / "trace.txt")
@@ -188,6 +238,7 @@ def audit(directory, db_path=None):
     ])
     health = trace_health(directory, warnings)
     glink = glink_data(directory, events, enter, leave, warnings)
+    pmic = pmic_messages(directory, events, enter, leave, warnings)
     return {"trace_health": health, "syscore_suspend": {"begin": start, "end": end},
             "machine_suspend": {"begin": enter, "end": leave},
             "rpmh_syscore_commands": commands, "unparsed_rpmh_commands": unparsed,
@@ -196,6 +247,7 @@ def audit(directory, db_path=None):
             "sleep_bcm_nonzero_votes": nonzero, "callback_errors_before_entry": errors,
             "aoss_events_before_entry": {key: aoss[key] for key in ("aoss_send", "aoss_send_done")},
             "first_traced_irqs_after_return": irqs, "glink_data": glink,
+            "pmic_messages": pmic,
             "wake_cause": None, "warnings": warnings}
 
 
