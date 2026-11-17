@@ -19,7 +19,8 @@ import time
 RTC = Path("/sys/class/rtc/rtc0")
 TRACE = Path("/sys/kernel/tracing/instances")
 PLATFORM_STATS = Path("/sys/kernel/debug/qcom_stats")
-SLEEP_STATS = ("aosd", "cxsd", "apss", "modem", "adsp", "cdsp", "slpi")
+CMD_DB = Path("/sys/kernel/debug/cmd-db")
+SLEEP_STATS = ("aosd", "cxsd", "ddr", "apss", "modem", "adsp", "cdsp", "slpi")
 LOGIN = "org.freedesktop.login1"
 MANAGER = LOGIN + ".Manager"
 OBJECT = "/org/freedesktop/login1"
@@ -134,6 +135,11 @@ def snapshot_platform_stats(output, phase):
             report["stats"][name] = (PLATFORM_STATS / name).read_text()
         except OSError as error:
             report["errors"][name] = {"errno": error.errno}
+    try:
+        (output / f"{phase}-cmd-db.txt").write_text(
+            CMD_DB.read_text())
+    except OSError as error:
+        report["errors"]["cmd-db"] = {"errno": error.errno}
     report["boottime_end"] = time.clock_gettime(time.CLOCK_BOOTTIME)
     (output / f"{phase}-platform-sleep.json").write_text(
         json.dumps(report, indent=2) + "\n")

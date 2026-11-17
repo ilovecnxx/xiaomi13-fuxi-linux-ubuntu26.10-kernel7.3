@@ -26,6 +26,9 @@ class SuspendCheckTest(unittest.TestCase):
             stats.mkdir()
             (stats / "aosd").write_text("Count: 0\n")
             (stats / "cxsd").write_text("Count: 3\n")
+            (stats / "ddr").write_text("Count: 4\n")
+            cmd_db = root / "cmd-db"
+            cmd_db.write_text("Slave BCM (v16.0)\n0x50000: MC0\n")
             original_read = Path.read_text
 
             def read_stat(path, *args, **kwargs):
@@ -35,13 +38,21 @@ class SuspendCheckTest(unittest.TestCase):
                 return original_read(path, *args, **kwargs)
 
             with mock.patch.object(CHECK, "PLATFORM_STATS", stats), \
+                    mock.patch.object(CHECK, "CMD_DB", cmd_db), \
                     mock.patch.object(Path, "read_text", read_stat):
                 CHECK.snapshot_platform_stats(root, "before")
+                cmd_db.unlink()
+                CHECK.snapshot_platform_stats(root, "after")
             report = json.loads((root / "before-platform-sleep.json").read_text())
-            self.assertEqual(report["stats"], {"aosd": "Count: 0\n", "cxsd": "Count: 3\n"})
+            self.assertEqual(report["stats"], {"aosd": "Count: 0\n", "cxsd": "Count: 3\n",
+                                              "ddr": "Count: 4\n"})
             self.assertEqual(report["errors"]["modem"], {"errno": errno.EACCES})
             self.assertEqual(report["errors"]["adsp"], {"errno": errno.ENOENT})
             self.assertGreaterEqual(report["boottime_end"], report["boottime_begin"])
+            self.assertEqual((root / "before-cmd-db.txt").read_text(),
+                             "Slave BCM (v16.0)\n0x50000: MC0\n")
+            after = json.loads((root / "after-platform-sleep.json").read_text())
+            self.assertEqual(after["errors"]["cmd-db"], {"errno": errno.ENOENT})
 
     def test_enqueue_is_not_resume(self):
         cycle = CHECK.SleepCycle()

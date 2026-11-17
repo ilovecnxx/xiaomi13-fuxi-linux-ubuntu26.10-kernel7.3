@@ -53,6 +53,10 @@
   pending；恢复首个 IPCC 为 MPSS glink，不能归因。PCIe GPIO96 WAKE# 本启动 IRQ228，
   恢复期间 0 次；独立 `dwc3` IRQ223 有 5 次。USB/PCIe L2 错误仍在（LTSSM 0x12）。
   深睡/定时唤醒未通过；RTC/trace 和临时安装配置已清理，自动挂起关闭。
+  后续离线审计确认 syscore 阶段写入 9 条 sleep、9 条 wake 命令；cmd-db 映射的 sleep
+  BCM 投票 valid/x/y 全零，未观察到非零 PM 回调错误或 AOSS send。USB/PCIe L2 提示
+  不直接中止回调，CONTROL_TCS=0；这些结果仍不能证明固件执行投票或排除硬件低功耗阻塞。
+  IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。未重复挂起或换内核。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
@@ -61,9 +65,13 @@
   加速度/磁场/陀螺仪仍有安装矩阵回退警告；轴向、标定、自动旋转和光照动态未验收。
 - 功耗：灭屏、USB 充电下 10 秒全核平均忙碌 0.16%，电量 81%；这不是电池续航或功耗改善证据。
   A2DP 需要耳机；CS35L41 扬声器保护仍缺标定验收；NFC 尚无设备通路。
-- 验证：GNSS 定向 22 项、全脚本 407 项通过（含未提交主摄生成器 4 项）；挂起工具 8 项
+- 验证：GNSS 定向 22 项、全脚本 417 项通过（含未提交主摄生成器 4 项）；挂起工具 8 项
   覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数、异常
-  清理及平台统计缺失/权限失败，禁止触碰会发送 QMP 的 DDR 接口。
+  清理及平台统计缺失/权限失败，禁止触碰会发送 QMP 的 `ddr_stats`；新增只读 `ddr` 和
+  cmd-db 快照实机读取无错误，不触发挂起且 RTC/trace 未变。离线审计新增 10 项，覆盖阶段
+  边界、BCM 解码、丢失/缺失证据和拒绝多周期；原始证据重放通过。日志位于
+  `work/suspend-platform-audit-tests-20261117.log`、`work/suspend-readonly-snapshot-20261117.log`，
+  审计结果为 `work/suspend4-offline-audit-20261117.json`。
   MM 测试编译真实 watcher 和授权/清理回调，覆盖 10 个异步生命周期场景；来源/依赖检查、原生编译及打包通过。
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
   内核诊断开启/关闭及 PDC 模块/禁用配置的相关对象 ARM64 W=1、完整 deb 构建、包载荷/
@@ -76,8 +84,10 @@
 ### 整机下一步
 
 1. 继续提前恢复定位：suspend4 的 APSS 统计与 PSCI/时间补偿接近，但 AOSD/CXSD 未增加，
-   PDC 直通快照不能归因。下一步检查 USB/PCIe L2 失败及 RPMh/AOSS 平台低功耗阻塞条件，
-   核实统计有效性，再确定下一实验的可区分假设；不重复相同挂起、不关闭基带或屏蔽 IRQ。
+   PDC 直通快照不能归因。Linux 已记录零 BCM sleep 投票，L2 提示不直接中止回调；下一步
+   核实固件统计有效性，以及 IPCC RECV_ID 在 CLEAR_ON_RECV_RD 关闭时能否无副作用读取。
+   只有确认安全后才设计 cpu_suspend 返回边界的 client 快照，区分早期 pending 与恢复后
+   handler；该证据仍不等于最早唤醒来源。不重复相同挂起、不关闭基带或屏蔽 IRQ。
    每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
    续航验收。
 2. GNSS 首次能力、室外有效 fix、GeoClue；现场动作验证传感器轴向、亮度/旋转，耳机验证 A2DP。
