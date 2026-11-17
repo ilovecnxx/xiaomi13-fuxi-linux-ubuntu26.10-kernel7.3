@@ -1,0 +1,185 @@
+diff --git a/drivers/firmware/psci/Kconfig b/drivers/firmware/psci/Kconfig
+index 32dd7e5fa..ccf9c53ad 100644
+--- a/drivers/firmware/psci/Kconfig
++++ b/drivers/firmware/psci/Kconfig
+@@ -11,6 +11,8 @@ config ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ 	  firmware returned directly or execution used the CPU resume entry.
+ 	  On SM8550 with built-in QCOM_PDC, also sample mapped PDC pin
+ 	  configuration and enables without acknowledging interrupts.
++	  With built-in QCOM_IPCC, sample CONFIG and, only when read-to-clear
++	  is disabled, the pending receive ID. No interrupt is cleared.
+ 	  This is a diagnostic aid, not a wakeup source attribution mechanism.
+ 
+ config ARM_PSCI_CHECKER
+diff --git a/drivers/firmware/psci/psci.c b/drivers/firmware/psci/psci.c
+index e537007c7..11721b4ce 100644
+--- a/drivers/firmware/psci/psci.c
++++ b/drivers/firmware/psci/psci.c
+@@ -23,6 +23,7 @@
+ #ifdef CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ #include <linux/irqchip/arm-gic-v3-suspend.h>
+ #include <linux/irqchip/qcom-pdc-suspend.h>
++#include <linux/soc/qcom/ipcc-suspend.h>
+ #endif
+ 
+ #include <uapi/linux/psci.h>
+@@ -538,6 +539,8 @@ static struct {
+ 	struct gic_v3_suspend_snapshot after;
+ 	struct qcom_pdc_suspend_snapshot pdc_before;
+ 	struct qcom_pdc_suspend_snapshot pdc_after;
++	struct qcom_ipcc_suspend_snapshot ipcc_before;
++	struct qcom_ipcc_suspend_snapshot ipcc_after;
+ 	int raw_ret;
+ 	int cpu_ret;
+ 	bool firmware_returned;
+@@ -590,6 +593,15 @@ static void psci_suspend_diag_dump_pdc(const char *phase,
+ 	}
+ }
+ 
++static void psci_suspend_diag_dump_ipcc(const char *phase,
++				      const struct qcom_ipcc_suspend_snapshot *snapshot)
++{
++	pr_info("suspend-diag ipcc %s valid=%u irq=%d config=%#x recv_valid=%u recv_id=%#x counter_begin=%llu counter_end=%llu\n",
++		phase, snapshot->valid, snapshot->irq, snapshot->config,
++		snapshot->recv_valid, snapshot->recv_id,
++		snapshot->counter_begin, snapshot->counter_end);
++}
++
+ static void psci_system_suspend_finish(void)
+ {
+ 	if (!psci_suspend_diag.sampled)
+@@ -604,6 +616,8 @@ static void psci_system_suspend_finish(void)
+ 				 &psci_suspend_diag.pdc_after);
+ 	psci_suspend_diag_dump_pdc("after", &psci_suspend_diag.pdc_after,
+ 				 &psci_suspend_diag.pdc_before);
++	psci_suspend_diag_dump_ipcc("before", &psci_suspend_diag.ipcc_before);
++	psci_suspend_diag_dump_ipcc("after", &psci_suspend_diag.ipcc_after);
+ 	psci_suspend_diag.sampled = false;
+ }
+ #endif
+@@ -629,7 +643,9 @@ static int psci_system_suspend_enter(suspend_state_t state)
+ #ifdef CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG
+ 	gic_v3_suspend_snapshot(&psci_suspend_diag.before);
+ 	qcom_pdc_suspend_snapshot(&psci_suspend_diag.pdc_before);
++	qcom_ipcc_suspend_snapshot(&psci_suspend_diag.ipcc_before);
+ 	psci_suspend_diag.cpu_ret = cpu_suspend(0, psci_system_suspend);
++	qcom_ipcc_suspend_snapshot(&psci_suspend_diag.ipcc_after);
+ 	gic_v3_suspend_snapshot(&psci_suspend_diag.after);
+ 	qcom_pdc_suspend_snapshot(&psci_suspend_diag.pdc_after);
+ 	psci_suspend_diag.sampled = true;
+diff --git a/drivers/mailbox/qcom-ipcc.c b/drivers/mailbox/qcom-ipcc.c
+index bb54295e0..531343901 100644
+--- a/drivers/mailbox/qcom-ipcc.c
++++ b/drivers/mailbox/qcom-ipcc.c
+@@ -9,9 +9,12 @@
+ #include <linux/irqdomain.h>
+ #include <linux/mailbox_controller.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/soc/qcom/ipcc-suspend.h>
+ #include <linux/spinlock.h>
+ 
++#include <clocksource/arm_arch_timer.h>
+ #include <dt-bindings/mailbox/qcom-ipcc.h>
+ 
+ /* IPCC Register offsets */
+@@ -61,6 +64,35 @@ struct qcom_ipcc {
+ 	int irq;
+ };
+ 
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_IPCC)
++static DEFINE_RAW_SPINLOCK(ipcc_suspend_lock);
++static struct qcom_ipcc *ipcc_suspend_diag;
++
++void qcom_ipcc_suspend_snapshot(struct qcom_ipcc_suspend_snapshot *state)
++{
++	unsigned long flags;
++	struct qcom_ipcc *ipcc;
++
++	memset(state, 0, sizeof(*state));
++	/* Serialize descriptor removal with these non-sleeping MMIO reads. */
++	raw_spin_lock_irqsave(&ipcc_suspend_lock, flags);
++	ipcc = ipcc_suspend_diag;
++	if (ipcc) {
++		state->counter_begin = arch_timer_read_cntpct_el0();
++		state->irq = ipcc->irq;
++		state->config = readl(ipcc->base + IPCC_REG_CONFIG);
++		/* Firmware may have changed CONFIG while Linux was suspended. */
++		if (!(state->config & IPCC_CLEAR_ON_RECV_RD)) {
++			state->recv_id = readl(ipcc->base + IPCC_REG_RECV_ID);
++			state->recv_valid = true;
++		}
++		state->counter_end = arch_timer_read_cntpct_el0();
++		state->valid = true;
++	}
++	raw_spin_unlock_irqrestore(&ipcc_suspend_lock, flags);
++}
++#endif
++
+ static inline struct qcom_ipcc *to_qcom_ipcc(struct mbox_controller *mbox)
+ {
+ 	return container_of(mbox, struct qcom_ipcc, mbox);
+@@ -333,6 +365,14 @@ static int qcom_ipcc_probe(struct platform_device *pdev)
+ 
+ 	platform_set_drvdata(pdev, ipcc);
+ 
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_IPCC)
++	if (of_machine_is_compatible("qcom,sm8550")) {
++		guard(raw_spinlock_irqsave)(&ipcc_suspend_lock);
++		if (!ipcc_suspend_diag)
++			ipcc_suspend_diag = ipcc;
++	}
++#endif
++
+ 	return 0;
+ 
+ err_mbox:
+@@ -345,6 +385,14 @@ static void qcom_ipcc_remove(struct platform_device *pdev)
+ {
+ 	struct qcom_ipcc *ipcc = platform_get_drvdata(pdev);
+ 
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_IPCC)
++	{
++		guard(raw_spinlock_irqsave)(&ipcc_suspend_lock);
++		if (ipcc_suspend_diag == ipcc)
++			ipcc_suspend_diag = NULL;
++	}
++#endif
++
+ 	irq_domain_remove(ipcc->irq_domain);
+ }
+ 
+diff --git a/include/linux/soc/qcom/ipcc-suspend.h b/include/linux/soc/qcom/ipcc-suspend.h
+new file mode 100644
+index 000000000..b7bc8f671
+--- /dev/null
++++ b/include/linux/soc/qcom/ipcc-suspend.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef __LINUX_SOC_QCOM_IPCC_SUSPEND_H
++#define __LINUX_SOC_QCOM_IPCC_SUSPEND_H
++
++#include <linux/kconfig.h>
++#include <linux/types.h>
++
++struct qcom_ipcc_suspend_snapshot {
++	u64 counter_begin;
++	u64 counter_end;
++	u32 config;
++	u32 recv_id;
++	int irq;
++	bool valid;
++	bool recv_valid;
++};
++
++#if defined(CONFIG_ARM_PSCI_SYSTEM_SUSPEND_DIAG) && IS_BUILTIN(CONFIG_QCOM_IPCC)
++void qcom_ipcc_suspend_snapshot(struct qcom_ipcc_suspend_snapshot *state);
++#else
++static inline void qcom_ipcc_suspend_snapshot(struct qcom_ipcc_suspend_snapshot *state)
++{
++	state->valid = false;
++}
++#endif
++
++#endif

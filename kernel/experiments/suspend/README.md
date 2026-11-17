@@ -67,5 +67,28 @@ recorded interval; AOSD/CXSD stayed at zero. PDC pins 1 (PMIC arbiter) and 109
 (GPIO96 PCIe WAKE#) remained enabled without configuration changes. This
 supports an APSS sleep interval but does not establish whole-platform deep
 sleep, validate every firmware counter, or identify the wake cause. USB/PCIe
-L2 errors persisted. Further work should examine platform low-power blockers
-and correlate RPMh/AOSS evidence before another suspend experiment.
+L2 errors persisted. The subsequent offline audit found nine sleep and nine
+wake BCM commands with zero sleep valid/x/y votes. This records Linux writes,
+not firmware execution or absence of hardware low-power blockers.
+
+The IPCC follow-up (`0004-sm8550-ipcc-boundary-snapshots.patch`) samples the
+SM8550 built-in controller immediately before and after `cpu_suspend()`,
+before the other return-side snapshots and interrupt handlers. It rechecks
+CONFIG and reads RECV_ID only when CLEAR_ON_RECV_RD is disabled. It never
+writes or acknowledges IPCC state. A raw lock protects the diagnostic pointer
+against removal; physical-counter brackets bound each snapshot. Modular and
+disabled IPCC configurations leave PSCI independent of the driver symbol.
+Only one pending ID is observed, and CONFIG/RECV_ID reads are not atomic;
+the result cannot identify the earliest wake source. The new candidate is
+`7.4.0-rc1-fuxi-suspend5`; prior device results remain separately recorded
+under `previous_validation` in the manifest.
+
+The single suspend5 test recorded no pending IPCC ID before entry and LPASS
+client 3/signal 0 immediately after return, before the first traced IRQ13 and
+LPASS glink IRQ230. CONFIG was zero on both reads. The logind cycle was
+1.998857 seconds, compensation 6.730 ms, and the RTC still had 19 seconds
+remaining; deep sleep and RTC wake are not accepted. APSS recorded 2.240 ms,
+while AOSD/CXSD/DDR remained zero. All eight trace buffers reported no loss.
+WiFi, connected-bearer HTTPS and sensor sampling passed after resume, but
+ModemManager reported registered despite connected bearers. This inconsistency
+and the LPASS message need further investigation; no wake source is confirmed.

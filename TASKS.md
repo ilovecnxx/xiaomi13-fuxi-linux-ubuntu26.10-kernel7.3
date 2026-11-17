@@ -31,7 +31,7 @@
 | 标准配方 | `kernel/manifest.json`，std2 | 可重建基准，不是手机运行版本 |
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
-| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend4`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | APSS 计数增加 1、记录约 4.592 s；AOSD/CXSD 为 0，RTC 尚余 15 秒即恢复，深睡驻留未验收 |
+| 手机运行/默认 | `7.4.0-rc1-fuxi-suspend5`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | 返回边界捕捉 LPASS pending；时间补偿仅 6.73 ms，RTC 尚余 19 秒，深睡驻留未验收 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
 | 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮升级诊断内核并正常重启，未单独重启桌面 |
 
@@ -44,23 +44,27 @@
   新会话选项已随 modem `0.20261116.0917` 安装；本轮未重做定位，不计有效 fix。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
-  边界诊断和配方见 `kernel/experiments/suspend/`。最新 `suspend4` 在已有 wake IRQ 恢复
-  顺序修复上增加 PDC 只读快照：直通模式，不能读取锁存唤醒来源；前后仅 pin1/109 使能，
-  配置/使能无变化。一次 20 秒测试中，logind 周期 6.677162 秒，时间补偿 4.596046 秒，
-  RTC 尚余 15 秒；8 核无 overrun/dropped，success=1/fail=0。APSS 计数 1020→1021，
-  记录区间 4.591830 秒，接近 PSCI 物理计数器 4.594456 秒；AOSD/CXSD 仍全零，不能据此
-  验收整机深睡或断言所有统计有效。`cpu_ret=0/firmware_returned=0`，边界仅 SPI261
-  pending；恢复首个 IPCC 为 MPSS glink，不能归因。PCIe GPIO96 WAKE# 本启动 IRQ228，
-  恢复期间 0 次；独立 `dwc3` IRQ223 有 5 次。USB/PCIe L2 错误仍在（LTSSM 0x12）。
-  深睡/定时唤醒未通过；RTC/trace 和临时安装配置已清理，自动挂起关闭。
-  后续离线审计确认 syscore 阶段写入 9 条 sleep、9 条 wake 命令；cmd-db 映射的 sleep
+  边界诊断和配方见 `kernel/experiments/suspend/`。最新 `suspend5` 增加 IPCC 只读快照：
+  每次检查 CONFIG 的 CLEAR_ON_RECV_RD 位，关闭时才读 RECV_ID；移除与读取用 raw lock
+  同步，不写寄存器/应答 IRQ。进入前无 pending（0xffffffff），cpu_suspend 返回后、IRQ
+  handler 前为 0x30000，即 LPASS client3/signal0；两侧 CONFIG=0。随后 IRQ13→IRQ230
+  LPASS glink，与早期快照一致，但不能据此确认最早唤醒源。唯一一次 20 秒测试 logind
+  周期 1.998857 秒，时间补偿 6.730 ms，GIC 物理计数器区间 4.970 ms，RTC 尚余 19 秒。
+  APSS +1、记录 2.240 ms，AOSD/CXSD/DDR 仍全零；不能验收整机深睡或比较功耗改善。
+  `cpu_ret=0/firmware_returned=0`，GIC after 仅 SPI261 pending；PDC 仍直通、pin1/109
+  使能且配置未变。8 核无丢失，success=1/fail=0；USB/PCIe L2 错误仍在（LTSSM 0x12）。
+  RTC/trace 和临时安装配置已清理，自动挂起关闭。离线审计再次确认 syscore 9 条 sleep、
+  9 条 wake 命令；cmd-db 映射的 sleep
   BCM 投票 valid/x/y 全零，未观察到非零 PM 回调错误或 AOSS send。USB/PCIe L2 提示
   不直接中止回调，CONTROL_TCS=0；这些结果仍不能证明固件执行投票或排除硬件低功耗阻塞。
-  IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。未重复挂起或换内核。
+  IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。本候选只测试一次。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
   恢复期间未人工扫描或重启来促成连接；该次通过不代表多轮稳定性验收。
+  suspend5 恢复时 MM 自动重建 modem 和 bearer；总状态仍 registered，但存在 connected
+  静态 IPv4 bearer，绑定接口、校验证书的 HTTPS=200。此前按总状态 connected 筛选的
+  检查因此失败，不能记作完整 MM 恢复通过；需修复状态与 bearer 不一致，无人工重连。
 - 恢复检查：WiFi HTTPS、六类传感器实际采样通过，失败服务 0；健康检查唯一失败为用户关闭蓝牙。
   加速度/磁场/陀螺仪仍有安装矩阵回退警告；轴向、标定、自动旋转和光照动态未验收。
 - 功耗：灭屏、USB 充电下 10 秒全核平均忙碌 0.16%，电量 81%；这不是电池续航或功耗改善证据。
@@ -76,18 +80,20 @@
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
   内核诊断开启/关闭及 PDC 模块/禁用配置的相关对象 ARM64 W=1、完整 deb 构建、包载荷/
   来源及配方树重放通过；新补丁 checkpatch 0 错误、1 项新增头文件提醒，未变更 DTB。
-  最新诊断证据在 `work/fuxi-suspend4-20261117/`、`work/suspend4-*-20261117.log`；
+  IPCC 内建/模块/禁用和诊断关闭配置 ARM64 W=1、完整 suspend5 deb、Image/config/DTB
+  载荷核对和四补丁配方重放通过；新补丁 checkpatch 0 错误、1 项新增头文件提醒。
+  最新诊断证据在 `work/fuxi-suspend5-20261117/`、`work/suspend5-*-20261117.log`；
   恢复后蜂窝接口 HTTPS=200、WiFi HTTPS 和六类传感器采样通过，关键服务 PID 未变、NRestarts=0。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
   [挂起证据](docs/驱动初始化与功耗验收-20261108.md#普通挂起与恢复检查)。
 
 ### 整机下一步
 
-1. 继续提前恢复定位：suspend4 的 APSS 统计与 PSCI/时间补偿接近，但 AOSD/CXSD 未增加，
-   PDC 直通快照不能归因。Linux 已记录零 BCM sleep 投票，L2 提示不直接中止回调；下一步
-   核实固件统计有效性，以及 IPCC RECV_ID 在 CLEAR_ON_RECV_RD 关闭时能否无副作用读取。
-   只有确认安全后才设计 cpu_suspend 返回边界的 client 快照，区分早期 pending 与恢复后
-   handler；该证据仍不等于最早唤醒来源。不重复相同挂起、不关闭基带或屏蔽 IRQ。
+1. 继续提前恢复定位：suspend5 已在 cpu_suspend 返回边界捕捉 LPASS pending，仍不能归因；
+   下一步核对 LPASS glink 通道/命令及挂起前未完成请求，设计仅记录协议元数据的有界追踪，
+   判断是否有可关联的通信；同时核实 AOSD/CXSD/DDR 统计有效性。Linux 零 BCM sleep 投票
+   不排除硬件阻塞，L2 提示仍在。跟进 MM registered 与 connected bearer 不一致。
+   不重复相同挂起、不关闭基带或屏蔽 IRQ。
    每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
    续航验收。
 2. GNSS 首次能力、室外有效 fix、GeoClue；现场动作验证传感器轴向、亮度/旋转，耳机验证 A2DP。
