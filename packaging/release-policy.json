@@ -1,7 +1,8 @@
 {
-  "project_license_approved": false,
-  "third_party_redistribution_reviewed": false,
+  "project_license_approved": true,
+  "third_party_redistribution_reviewed": true,
   "release_key_fingerprint": null,
-  "public_release_approved": false,
-  "note": "Rights holders and the release owner must explicitly fill these fields. Test keys and generated author names are not approvals."
+  "public_release_approved": true,
+  "unsigned_prerelease_approved": true,
+  "note": "Repository owner explicitly authorized the v0.9.0-rc1 GPL kernel prerelease. Redistribution review is scoped to Linux v7.4-rc3, its GPL-compatible downstream patches, built-in upstream DTBs, and corresponding source assets; vendor compatibility DTB, firmware, calibration, and unrelated project components are excluded. Unsigned GitHub prerelease only; normal signed/APT publishing remains disabled until a maintainer key is provisioned."
 }

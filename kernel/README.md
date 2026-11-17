@@ -70,6 +70,13 @@ camera series is recorded separately in [`experiments/camera/`](experiments/came
 including capture results and a blocking interconnect failure. Camera/voice
 experiments are intentionally not folded into this baseline.
 
+Experimental `build/linux-camera-*` worktrees are local build caches; manifests,
+patches and result-tree hashes under `kernel/experiments/` are the source of
+record. Keep the active worktree while it has uncommitted changes. A clean
+historical worktree may be removed after its `HEAD^{tree}` matches the recipe's
+`result_tree`; recreate it from that recipe before building again. Never remove
+a dirty worktree as part of routine cleanup.
+
 ## Update the Recipe
 
 At a validated milestone, commit the source changes and export against the same imported
