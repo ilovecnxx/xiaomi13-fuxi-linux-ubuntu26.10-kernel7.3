@@ -32,6 +32,7 @@
 | 主摄源码基准 | `imx800-power`，`9fc0f4316bc398ca0be035a4d0d71b71f6138701` | 148 项 KUnit、ARM64 W=1、binding/DTB schema、配方重放通过；未部署 |
 | 活跃主摄候选 | `build/linux-camera-imx800-mode`，基于上述提交的未提交修改 | 单模式 V4L2、控制/启停、采集 DT；尚有端点校验缺陷，不可直接部署 |
 | 手机运行/默认 | `7.4.0-rc1-fuxi-suspend6`；沿用 cam12order 源码基准及相同 DTB，deb9 恢复文件校验通过 | PMIC 头追踪复测：恢复侧 MPSS pending，未见 220 字节 PMIC RX；时间补偿 4.241 秒、RTC 尚余 14 秒，深睡驻留未验收 |
+| 离线挂起候选 | `7.4.0-rc1-fuxi-suspend7`，六补丁树 `1c836d26101571c017fe6bdfdf94e45c11c83091` | QRTR RX/候选 QMI 头追踪，完整包和主机验证通过；电池 12%、SDP 净放电，未安装、未启动、未挂起 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
 | 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917` | modem 恢复修复已部署；本轮安装 suspend6 并正常重启，未升级支持包 |
 
@@ -63,6 +64,11 @@
   BCM 投票 valid/x/y 全零，未观察到非零 PM 回调错误或 AOSS send。USB/PCIe L2 提示
   不直接中止回调，CONTROL_TCS=0；这些结果仍不能证明固件执行投票或排除硬件低功耗阻塞。
   IPCC/glink 使用 IRQF_NO_SUSPEND，不能用 wakeup disabled 排除它们。未重复同配置挂起。
+  新离线候选 `suspend7` 在 QRTR 校验后、socket 投递前记录包类型/路由，并仅对非控制端口
+  DATA 检查 7 字节 QMI 公共头的类型与精确长度，记录候选类型/消息编号/长度；不读 TLV、
+  事务号或业务载荷。匹配不证明 QMI、服务身份、投递成功或唤醒因果。`--qrtr-metadata`
+  要求 QRTR 和 13 个 glink 事件，PMIC 仍需显式开启；缺事件在设 RTC 前拒绝并清理。
+  审计按 trace 行顺序分类并拒绝不一致候选，不能回填旧 trace 的 92 字节消息内容。
 - MM 恢复修复：重建授权 cancellable、恢复 QRTR 扫描，处理异步旧回调及多设备清理。
   维护补丁已纳入配方并重放，手机 ARM64 原生构建记录真实软件环境。升级后同一 MM PID、
   NRestarts=0 自动重建 modem、恢复 connected/home，移动接口绑定 HTTPS=200；手工扫描成功。
@@ -75,13 +81,19 @@
   加速度/磁场/陀螺仪仍有安装矩阵回退警告；轴向、标定、自动旋转和光照动态未验收。
 - 功耗：灭屏、USB 充电下 10 秒全核平均忙碌 0.16%，电量 81%；这不是电池续航或功耗改善证据。
   A2DP 需要耳机；CS35L41 扬声器保护仍缺标定验收；NFC 尚无设备通路。
-- 验证：GNSS 定向 22 项、全脚本 423 项通过（含未提交主摄生成器 4 项）；挂起工具 10 项
+- 供电：最新电量 12%，虽显示 Charging，SDP 输入仅约 5.05–5.06 V / 350–353 mA；
+  50 秒六次电池电流均为负（-39 至 -103 mA），另 30 秒 charge_counter 从 382 降至
+  381 mAh，确认该窗口净放电。固件 current_max=500 mA、input_current_limit=100 mA
+  不等于实测输入。UCSI 的 3 A 是 Type-C 模式映射值，非电流实测。本轮只查询属性，未改
+  限流；查询会发送 PMIC GET，不属于完全被动统计。恢复稳定净充电且至少 20% 后再部署。
+- 验证：GNSS 定向 22 项、全脚本 428 项通过（含未提交主摄生成器 4 项）；挂起工具 11 项
   覆盖请求入队、迟到/完整信号、超时保留 RTC、包含睡眠的期限、未预选 IRQ/丢失计数、异常
   清理及平台统计缺失/权限失败，禁止触碰会发送 QMP 的 `ddr_stats`；新增只读 `ddr` 和
   cmd-db 快照实机读取无错误，不触发挂起且 RTC/trace 未变；新增 glink 事件缺失拒绝/清理
-  及基线在 RTC 之前的检查。离线审计 14 项，覆盖阶段边界、BCM 解码、丢失/缺失证据、
+  及基线在 RTC 之前的检查。离线审计 18 项，覆盖阶段边界、BCM 解码、丢失/缺失证据、
   拒绝多周期、glink 通道/方向及 PMIC 头/传输返回统计；短头不解码，不推断唤醒原因。
-  日志为 `work/suspend6-script-tests-20261117.log`；采集/审计结果在
+  新增 QRTR 缺事件清理、候选/非候选头、长度/控制端口不一致及损坏事件检查。
+  最新脚本日志为 `work/suspend7-script-tests-20261117.log`；最近实机采集/审计结果在
   `work/fuxi-suspend-pmic-20261117/`、`work/suspend6-offline-audit-20261117.json`。
   MM 测试编译真实 watcher 和授权/清理回调，覆盖 10 个异步生命周期场景；来源/依赖检查、原生编译及打包通过。
   实机证据在 `work/gnss-session/`、`work/whole-device-*-20261116.*`、`work/mm-resume-*-20261116.log`，不提交原始日志。
@@ -92,6 +104,10 @@
   PMIC 对象开启/关闭事件追踪 ARM64 W=1、完整 suspend6 deb、Image/config/DTB 核对和
   五补丁配方重放通过；新补丁 checkpatch 0 错误、1 项新增头文件提醒。suspend6 已正常
   启动，bootcount pending=0、deb9 恢复文件校验通过，临时 kernel.conf 已清理。
+  QRTR 开启/关闭事件追踪 ARM64 W=1、完整 suspend7 deb、Image/config/DTB 载荷核对和
+  六补丁重放通过；新补丁 checkpatch 0 错误、0 警告；本轮没有安装、重启或挂起。
+  日志为 `work/suspend7-{build,arm64-w1,tracing-off-w1,checkpatch}-20261117.log`，供电证据
+  为 `work/suspend7-power-{window,charge-counter}-20261117.jsonl`。
   最新诊断证据在 `work/fuxi-suspend-pmic-20261117/`、`work/suspend6-*-20261117.log`；
   恢复后蜂窝接口 HTTPS=200、WiFi HTTPS 和六类传感器采样通过，关键服务 PID 未变、NRestarts=0。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
@@ -99,10 +115,11 @@
 
 ### 整机下一步
 
-1. 继续提前恢复定位：PMIC 头追踪已完成，本次 MPSS/IPCRTR 恢复不伴随 220 字节 PMIC RX，
-   不能把此前 LPASS/PMIC 关联推广为共同原因。下一步先审计 QRTR/QMI 接收路径，设计只记录
-   包类型和协议头的分类，确认返回侧 92 字节 MPSS 消息的业务类别，不读取业务载荷或身份字段；
-   现有 QRTR trace 主要覆盖名称服务，不含数据包分类，需源码验证后再决定是否增加追踪。
+1. 先恢复供电：当前 SDP 输入不足，需接入此前验证可净充电的墙充并确认电荷持续增加，至少
+   20% 后再安装已构建的 suspend7，校验默认/恢复入口、正常启动及健康，再做一次有界
+   20 秒 RTC + QRTR/PMIC 元数据实验。假设是识别恢复侧 MPSS/IPCRTR 的包类型和候选消息
+   编号，停止条件是完成一次采集或出现异常；不凭消息头断言业务身份或最早唤醒源。
+   suspend6 不伴随 220 字节 PMIC RX，不能把此前 LPASS/PMIC 关联推广为共同原因。
    同时核实 AOSD/CXSD/DDR 统计有效性。现有 battmgr `diag` 读取会发请求，不作为被动统计。
    Linux 零 BCM sleep 投票不排除硬件阻塞，L2 提示仍在。
    跟进 MM registered 与 connected bearer 不一致。

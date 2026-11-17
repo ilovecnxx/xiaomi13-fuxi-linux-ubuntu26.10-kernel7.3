@@ -22,7 +22,7 @@ def send(state, data="0x40000000", address="0x50000"):
 
 class SuspendAuditTest(unittest.TestCase):
     def audit(self, commands=None, loss=0, missing_cpu=False, db=True, extra="", suffix="",
-              glink=False, pmic=False):
+              glink=False, pmic=False, qrtr=False):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             trace = (event("syscore_suspend[0] begin")
@@ -43,7 +43,8 @@ class SuspendAuditTest(unittest.TestCase):
                 "power/suspend_resume", "power/device_pm_callback_end", "irq/irq_handler_entry",
                 "rpmh/rpmh_send_msg", "qcom_aoss/aoss_send", "qcom_aoss/aoss_send_done"]
                 + (["qcom_glink/qcom_glink_cmd_tx_data"] if glink else [])
-                + (["pmic_glink/" + name for name in AUDIT.PMIC_EVENTS] if pmic else [])}))
+                + (["pmic_glink/" + name for name in AUDIT.PMIC_EVENTS] if pmic else [])
+                + (["qrtr/qrtr_packet_rx"] if qrtr else [])}))
             if db:
                 (root / "before-cmd-db.txt").write_text(
                     "Slave ARC (v16.0)\n0x30000: cx.lvl [00 10]\n"
@@ -173,6 +174,53 @@ class SuspendAuditTest(unittest.TestCase):
         self.assertIsNone(pmic["first_messages_after_return"][0]["owner"])
         self.assertIsNone(pmic["first_messages_after_return"][0]["opcode"])
         self.assertTrue(any("not firmware completion" in warning for warning in report["warnings"]))
+
+    def test_qrtr_candidate_headers_preserve_routes_and_line_order(self):
+        packet = event("ver=1 type=1 src=3:12 dst=1:16384 confirm_rx=0 size=60 "
+                       "qmi_candidate=1 qmi_type=4 qmi_msg_id=0x22 qmi_msg_len=53",
+                       "qrtr_packet_rx")
+        report = self.audit(extra=packet, suffix=packet, qrtr=True)
+        qrtr = report["qrtr_packets"]
+        self.assertTrue(qrtr["event_enabled"])
+        self.assertEqual(qrtr["unparsed_events"], 0)
+        self.assertEqual([item["phase"] for item in qrtr["counts"]],
+                         ["before_entry", "after_return"])
+        first = qrtr["first_packets_after_return"][0]
+        self.assertEqual(first["src_node"], 3)
+        self.assertEqual(first["src_port"], 12)
+        self.assertEqual(first["qmi_msg_id"], 0x22)
+        self.assertEqual(first["qmi_type"], 4)
+        self.assertIsNone(report["wake_cause"])
+
+    def test_qrtr_control_or_short_payload_is_not_decoded_as_qmi(self):
+        report = self.audit(suffix=event(
+            "ver=3 type=4 src=3:4294967294 dst=1:4294967294 confirm_rx=1 size=20 "
+            "qmi_candidate=0 qmi_type=0 qmi_msg_id=0x0 qmi_msg_len=0", "qrtr_packet_rx"))
+        qrtr = report["qrtr_packets"]
+        self.assertFalse(qrtr["event_enabled"])
+        first = qrtr["first_packets_after_return"][0]
+        self.assertIsNone(first["qmi_type"])
+        self.assertIsNone(first["qmi_msg_id"])
+        self.assertFalse(first["qmi_candidate"])
+        self.assertTrue(first["confirm_rx"])
+
+    def test_qrtr_inconsistent_lengths_types_and_control_candidates_are_rejected(self):
+        for kind, port, size, qmi_type, msg_len in (
+                (1, 12, 60, 4, 52), (1, 12, 3, 0, 0), (1, 12, 60, 1, 53),
+                (4, 12, 60, 4, 53), (1, 4294967294, 60, 4, 53), (1, 65535, 60, 4, 53)):
+            with self.subTest(kind=kind, port=port, size=size, qmi_type=qmi_type):
+                report = self.audit(suffix=event(
+                    f"ver=1 type={kind} src=3:{port} dst=1:16384 confirm_rx=0 size={size} "
+                    f"qmi_candidate=1 qmi_type={qmi_type} qmi_msg_id=0x22 qmi_msg_len={msg_len}",
+                    "qrtr_packet_rx"))
+                self.assertEqual(report["qrtr_packets"]["unparsed_events"], 1)
+                self.assertEqual(report["qrtr_packets"]["first_packets_after_return"], [])
+
+    def test_qrtr_old_evidence_and_malformed_headers_do_not_silently_claim_coverage(self):
+        report = self.audit(suffix=event("truncated", "qrtr_packet_rx"))
+        self.assertFalse(report["qrtr_packets"]["event_enabled"])
+        self.assertEqual(report["qrtr_packets"]["unparsed_events"], 1)
+        self.assertTrue(any("not service identity" in warning for warning in report["warnings"]))
 
 
 if __name__ == "__main__":

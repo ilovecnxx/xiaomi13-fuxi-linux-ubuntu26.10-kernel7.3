@@ -1,0 +1,90 @@
+diff --git a/include/trace/events/qrtr.h b/include/trace/events/qrtr.h
+index 14f822983..c9898733c 100644
+--- a/include/trace/events/qrtr.h
++++ b/include/trace/events/qrtr.h
+@@ -7,6 +7,62 @@
+ 
+ #include <linux/qrtr.h>
+ #include <linux/tracepoint.h>
++#include <linux/unaligned.h>
++
++TRACE_EVENT(qrtr_packet_rx,
++
++	TP_PROTO(unsigned int version, unsigned int type, u32 src_node,
++		 u32 src_port, u32 dst_node, u32 dst_port, bool confirm_rx,
++		 const void *data, size_t size),
++
++	TP_ARGS(version, type, src_node, src_port, dst_node, dst_port,
++		confirm_rx, data, size),
++
++	TP_STRUCT__entry(
++		__field(unsigned int, version)
++		__field(unsigned int, type)
++		__field(u32, src_node)
++		__field(u32, src_port)
++		__field(u32, dst_node)
++		__field(u32, dst_port)
++		__field(bool, confirm_rx)
++		__field(size_t, size)
++		__field(bool, qmi_candidate)
++		__field(u8, qmi_type)
++		__field(u16, qmi_msg_id)
++		__field(u16, qmi_msg_len)
++	),
++
++	TP_fast_assign(
++		const u8 *header = data;
++		bool candidate = false;
++
++		/* QRTR DATA is not necessarily QMI; match only its common header. */
++		if (type == QRTR_TYPE_DATA && src_port != QRTR_PORT_CTRL &&
++		    src_port != 0xffff && dst_port != QRTR_PORT_CTRL &&
++		    size >= 7 && (header[0] == 0 || header[0] == 2 ||
++				  header[0] == 4))
++			candidate = get_unaligned_le16(header + 5) == size - 7;
++		__entry->version = version;
++		__entry->type = type;
++		__entry->src_node = src_node;
++		__entry->src_port = src_port;
++		__entry->dst_node = dst_node;
++		__entry->dst_port = dst_port;
++		__entry->confirm_rx = confirm_rx;
++		__entry->size = size;
++		__entry->qmi_candidate = candidate;
++		__entry->qmi_type = candidate ? header[0] : 0;
++		__entry->qmi_msg_id = candidate ? get_unaligned_le16(header + 3) : 0;
++		__entry->qmi_msg_len = candidate ? get_unaligned_le16(header + 5) : 0;
++	),
++
++	TP_printk("ver=%u type=%u src=%u:%u dst=%u:%u confirm_rx=%u size=%zu qmi_candidate=%u qmi_type=%u qmi_msg_id=0x%x qmi_msg_len=%u",
++		  __entry->version, __entry->type, __entry->src_node,
++		  __entry->src_port, __entry->dst_node, __entry->dst_port,
++		  __entry->confirm_rx, __entry->size, __entry->qmi_candidate,
++		  __entry->qmi_type, __entry->qmi_msg_id, __entry->qmi_msg_len)
++);
+ 
+ TRACE_EVENT(qrtr_ns_service_announce_new,
+ 
+diff --git a/net/qrtr/af_qrtr.c b/net/qrtr/af_qrtr.c
+index 095726d4a..6c2cc46ca 100644
+--- a/net/qrtr/af_qrtr.c
++++ b/net/qrtr/af_qrtr.c
+@@ -12,6 +12,7 @@
+ #include <linux/workqueue.h>
+ 
+ #include <net/sock.h>
++#include <trace/events/qrtr.h>
+ 
+ #include "qrtr.h"
+ 
+@@ -538,6 +539,10 @@ int qrtr_endpoint_post(struct qrtr_endpoint *ep, const void *data, size_t len)
+ 	    cb->type != QRTR_TYPE_RESUME_TX)
+ 		goto err;
+ 
++	trace_qrtr_packet_rx(ver, cb->type, cb->src_node, cb->src_port,
++			     cb->dst_node, cb->dst_port, cb->confirm_rx,
++			     data + hdrlen, size);
++
+ 	skb_put_data(skb, data + hdrlen, size);
+ 
+ 	qrtr_node_assign(node, cb->src_node);

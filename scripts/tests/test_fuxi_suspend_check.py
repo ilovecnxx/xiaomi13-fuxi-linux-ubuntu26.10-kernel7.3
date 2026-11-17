@@ -233,7 +233,7 @@ class SuspendCheckTest(unittest.TestCase):
                     "gi": SimpleNamespace(repository=SimpleNamespace(Gio=gio, GLib=glib)),
                     "gi.repository": SimpleNamespace(Gio=gio, GLib=glib),
                 }), mock.patch("sys.argv", ["check", "--output", str(root / "out")]
-                               + (["--pmic-metadata"] if failure is None else [])), \
+                               + (["--qrtr-metadata"] if failure is None else [])), \
                         mock.patch.object(CHECK, "RTC", root), \
                         mock.patch.object(CHECK, "check_idle"), \
                         mock.patch.object(CHECK, "snapshot"), \
@@ -294,6 +294,50 @@ class SuspendCheckTest(unittest.TestCase):
                             for event in trace.PMIC_EVENTS:
                                 self.assertIn(event, config["enabled_events"])
                                 self.assertEqual((trace.path / "events" / event / "enable").read_text(), "1\n")
+                self.assertFalse(trace.path.exists())
+
+    def test_qrtr_metadata_requires_header_event_before_baseline_or_alarm(self):
+        for missing in (False, True):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / "out"
+                output.mkdir()
+                trace = CHECK.WakeTrace(output, qrtr_metadata=True)
+                trace.path = root / "instance"
+                mkdir = Path.mkdir
+
+                def populate(path, *args, **kwargs):
+                    new_instance = path == trace.path and not path.exists()
+                    mkdir(path, *args, **kwargs)
+                    if new_instance:
+                        for event in (*trace.GLINK_EVENTS,
+                                      *(trace.QRTR_EVENTS if not missing else ())):
+                            target = path / "events" / event / "enable"
+                            target.parent.mkdir(parents=True)
+                            target.touch()
+                        (path / "trace").touch()
+
+                def write(name, value):
+                    target = trace.path / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(value + "\n")
+
+                with mock.patch.object(Path, "mkdir", populate), \
+                        mock.patch.object(trace, "write", side_effect=write), \
+                        mock.patch.object(Path, "rmdir", side_effect=lambda: shutil.rmtree(trace.path)):
+                    if missing:
+                        with self.assertRaisesRegex(RuntimeError, "QRTR metadata event unavailable"):
+                            with trace:
+                                self.fail("Missing route headers must refuse the experiment")
+                        self.assertFalse((output / "trace-config.json").exists())
+                    else:
+                        with trace:
+                            config = json.loads((output / "trace-config.json").read_text())
+                            self.assertTrue(config["qrtr_metadata"])
+                            self.assertTrue(config["glink_metadata"])
+                            self.assertFalse(config["pmic_metadata"])
+                            self.assertEqual(config["baseline_seconds"], 5)
+                            self.assertIn("qrtr/qrtr_packet_rx", config["enabled_events"])
                 self.assertFalse(trace.path.exists())
 
 

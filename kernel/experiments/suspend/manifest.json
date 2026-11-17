@@ -4,7 +4,7 @@
   "base_manifest_sha256": "97008dbda4188c7cfc0b03a321089c1e4d9d990757da7f25d2dffb0dc2ebe408",
   "base_commit": "cd5ca4eecfdf2a119f1e38f1dd067f167ac84b72",
   "base_tree": "edfabc4cd0cf8c50b5578e85db8487b9080e17e8",
-  "result_tree": "e6f7b2deac17b6564083ffd8d9d3460c6204e2e0",
+  "result_tree": "1c836d26101571c017fe6bdfdf94e45c11c83091",
   "source_date_epoch": 1794745737,
   "patches": [
     {
@@ -26,6 +26,10 @@
     {
       "file": "0005-pmic-glink-header-metadata.patch",
       "sha256": "3feda62c59f39267565e2dd48350006a74f4e8672120799fcf74159460a0e16c"
+    },
+    {
+      "file": "0006-qrtr-receive-header-metadata.patch",
+      "sha256": "de39581b4977f7af25c5e3009d9744f5edd9d0c55ef3ff5ed3e7ac508054926b"
     }
   ],
   "config_additions": [
@@ -166,7 +170,8 @@
     "deep_suspend_accepted": false,
     "report": "../../../docs/驱动初始化与功耗验收-20261108.md"
   },
-  "validation": {
+  "pmic_validation": {
+    "source_tree": "e6f7b2deac17b6564083ffd8d9d3460c6204e2e0",
     "arm64_w1_passed": true,
     "event_tracing_disabled_arm64_w1_passed": true,
     "make_targets": ["drivers/soc/qcom/pmic_glink.o"],
@@ -225,6 +230,30 @@
     "postresume_modem_state": "connected",
     "postresume_connected_bearer_https_passed": true,
     "postresume_service_restarts": 0,
+    "deep_suspend_accepted": false,
+    "wake_cause": null,
+    "report": "../../../docs/驱动初始化与功耗验收-20261108.md"
+  },
+  "validation": {
+    "arm64_w1_passed": true,
+    "event_tracing_disabled_arm64_w1_passed": true,
+    "make_targets": ["net/qrtr/"],
+    "new_patch_checkpatch_errors": 0,
+    "new_patch_checkpatch_warnings": 0,
+    "checkpatch_options": "--no-tree --no-signoff",
+    "full_phone_kernel_built": true,
+    "kernel_release": "7.4.0-rc1-fuxi-suspend7",
+    "package_sha256": "718a29327593591165535d696a667fb6feb8bc2da5a1236432302f1f423e75e2",
+    "image_sha256": "29a19114d4f4d0dcbac4ba8a93736c2c9c3d909a461d0c2e1ff961edfaf2d18a",
+    "dtb_sha256": "dc6425353c4679e2a92ee3083a111ab21b01f14a790f9bfcbb78f37ec508b246",
+    "config_sha256": "300ea87ca58ab6199c403b8f70daaf012d1376d179ee35eab8b3b35028f15fc5",
+    "package_payload_matches_build": true,
+    "patch_reconstruction_tree_verified": true,
+    "script_tests_passed": 428,
+    "device_installed": false,
+    "device_tested": false,
+    "deployment_deferred_reason": "Battery at 12%, SDP input about 1.8 W; charge counter fell from 382 to 381 mAh in 30 seconds with negative battery current. Restore net charging and at least 20% before deployment.",
+    "device_running_kernel": "7.4.0-rc1-fuxi-suspend6",
     "deep_suspend_accepted": false,
     "wake_cause": null,
     "report": "../../../docs/驱动初始化与功耗验收-20261108.md"

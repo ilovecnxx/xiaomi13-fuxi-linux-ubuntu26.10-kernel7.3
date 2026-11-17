@@ -21,6 +21,10 @@ PMIC_HEADER = re.compile(
     r"opcode=0x([0-9a-fA-F]+) ret=(-?\d+)$")
 PMIC_EVENTS = ("pmic_glink_tx", "pmic_glink_tx_done", "pmic_glink_rx")
 PMIC_OWNERS = {32778: "BATTMGR", 32779: "USBC", 32780: "USBC_PAN"}
+QRTR_HEADER = re.compile(
+    r"ver=(1|3) type=(\d+) src=(\d+):(\d+) dst=(\d+):(\d+) "
+    r"confirm_rx=([01]) size=(\d+) qmi_candidate=([01]) qmi_type=(\d+) "
+    r"qmi_msg_id=0x([0-9a-fA-F]+) qmi_msg_len=(\d+)$")
 
 
 def command_db(text):
@@ -177,6 +181,59 @@ def pmic_messages(directory, events, enter, leave, warnings):
             "last_messages_before_entry": before[-16:], "first_messages_after_return": after}
 
 
+def qrtr_packets(directory, events, enter, leave, warnings):
+    path = directory / "trace-config.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    enabled = "qrtr/qrtr_packet_rx" in config.get("enabled_events", [])
+    before, after = [], []
+    counts = Counter()
+    unparsed = 0
+    for event in events:
+        if event["event"] != "qrtr_packet_rx":
+            continue
+        match = QRTR_HEADER.fullmatch(event["body"])
+        if not match:
+            unparsed += 1
+            continue
+        version, kind, src_node, src_port, dst_node, dst_port, confirm, size, candidate, \
+            qmi_type, msg_id, msg_len = match.groups()
+        kind, src_port, dst_port, size = map(int, (kind, src_port, dst_port, size))
+        qmi_type, msg_id, msg_len = int(qmi_type), int(msg_id, 16), int(msg_len)
+        if candidate == "1" and (kind != 1 or src_port in (65535, 4294967294)
+                                 or dst_port in (65535, 4294967294) or size < 7
+                                 or qmi_type not in (0, 2, 4) or msg_id > 65535
+                                 or msg_len > 65535 or msg_len != size - 7):
+            unparsed += 1
+            continue
+        phase = ("before_entry" if event["line"] < enter["line"] else
+                 "after_return" if event["line"] > leave["line"] else "inside_machine_suspend")
+        packet = {"line": event["line"], "time": event["time"], "version": int(version),
+                  "type": kind, "src_node": int(src_node), "src_port": src_port,
+                  "dst_node": int(dst_node), "dst_port": dst_port,
+                  "confirm_rx": confirm == "1", "size": size, "qmi_candidate": candidate == "1",
+                  "qmi_type": qmi_type if candidate == "1" else None,
+                  "qmi_msg_id": msg_id if candidate == "1" else None,
+                  "qmi_msg_len": msg_len if candidate == "1" else None}
+        key = (phase, kind, packet["src_node"], src_port, packet["dst_node"], dst_port,
+               packet["qmi_candidate"], packet["qmi_type"], packet["qmi_msg_id"])
+        counts[key] += 1
+        if phase == "before_entry":
+            before.append(packet)
+        elif phase == "after_return" and len(after) < 16:
+            after.append(packet)
+    if not enabled:
+        warnings.append("QRTR receive metadata not recorded as enabled; absence is not evidence.")
+    if unparsed:
+        warnings.append(f"Unparsed or inconsistent QRTR metadata events: {unparsed}")
+    warnings.append("QRTR RX is traced before socket delivery; a QMI candidate matches only header "
+                    "shape and length, not service identity, request completion or wake causality.")
+    keys = ("phase", "type", "src_node", "src_port", "dst_node", "dst_port",
+            "qmi_candidate", "qmi_type", "qmi_msg_id")
+    return {"event_enabled": enabled, "unparsed_events": unparsed,
+            "counts": [dict(zip(keys, key), count=count) for key, count in counts.items()],
+            "last_packets_before_entry": before[-16:], "first_packets_after_return": after}
+
+
 def audit(directory, db_path=None):
     warnings = []
     events = read_events(directory / "trace.txt")
@@ -239,6 +296,7 @@ def audit(directory, db_path=None):
     health = trace_health(directory, warnings)
     glink = glink_data(directory, events, enter, leave, warnings)
     pmic = pmic_messages(directory, events, enter, leave, warnings)
+    qrtr = qrtr_packets(directory, events, enter, leave, warnings)
     return {"trace_health": health, "syscore_suspend": {"begin": start, "end": end},
             "machine_suspend": {"begin": enter, "end": leave},
             "rpmh_syscore_commands": commands, "unparsed_rpmh_commands": unparsed,
@@ -247,7 +305,7 @@ def audit(directory, db_path=None):
             "sleep_bcm_nonzero_votes": nonzero, "callback_errors_before_entry": errors,
             "aoss_events_before_entry": {key: aoss[key] for key in ("aoss_send", "aoss_send_done")},
             "first_traced_irqs_after_return": irqs, "glink_data": glink,
-            "pmic_messages": pmic,
+            "pmic_messages": pmic, "qrtr_packets": qrtr,
             "wake_cause": None, "warnings": warnings}
 
 

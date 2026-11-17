@@ -100,7 +100,7 @@ owner/type/opcode and transport result. Short headers are not decoded. It record
 no payload and changes no charging or message handling. A transport return is not
 firmware completion, and a header does not uniquely identify a request.
 
-The current candidate is `7.4.0-rc1-fuxi-suspend6`; the original suspend5
+The PMIC candidate is `7.4.0-rc1-fuxi-suspend6`; the original suspend5
 validation is retained under `ipcc_validation`. Use the explicit suspend-check
 `--pmic-metadata` option to require all three PMIC events and the 13 glink events
 before arming the RTC. The five-second baseline also precedes the alarm.
@@ -118,3 +118,27 @@ and cannot be retroactively decoded. All eight buffers reported no loss.
 WiFi, connected-bearer HTTPS and six sensor samples passed after resume;
 ModemManager reported connected and key services did not restart. Whole-platform
 deep sleep and RTC wake remain unaccepted, with no confirmed wake source.
+
+The current host-validated candidate is `7.4.0-rc1-fuxi-suspend7`, adding
+`0006-qrtr-receive-header-metadata.patch`. It traces RX after the existing
+QRTR v1/v2 header and length checks, before socket lookup or delivery. It records
+version, packet type, route, confirm flag and unpadded payload length. For DATA
+on non-control ports only, it checks the seven-byte common QMI header's type and
+exact payload length before recording candidate type/message ID/length. It does
+not read TLVs, transaction IDs or business data. A matching header does not prove
+QMI, identify a service, confirm socket delivery or establish a wake cause.
+No send, receive, interrupt or charging behavior is changed when tracing is off.
+
+Use `--qrtr-metadata` to require the RX event and all 13 glink events before the
+five-second pre-alarm baseline; combine with `--pmic-metadata` to retain PMIC
+coverage. The offline audit groups routes and candidate headers by trace line
+order and reports missing or inconsistent metadata. It cannot decode old captures
+that did not record QRTR headers.
+
+All six patches replay to the manifest tree, the complete deb and its payloads
+have been verified, and QRTR objects passed ARM64 `W=1` with event tracing on and
+off. Suspend7 has not been installed or booted: the phone reported 12% battery,
+SDP input about 1.8 W and negative battery current during the preflight. Restore
+net charging and at least 20% before deployment, then verify boot and recovery
+files before one bounded RTC experiment. The running/default version remains
+suspend6; its evidence is retained under `pmic_validation`.

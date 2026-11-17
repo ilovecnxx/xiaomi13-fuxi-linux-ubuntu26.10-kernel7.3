@@ -84,12 +84,15 @@ class WakeTrace:
     ))
     PMIC_EVENTS = tuple("pmic_glink/pmic_glink_" + stage
                         for stage in ("tx", "tx_done", "rx"))
+    QRTR_EVENTS = ("qrtr/qrtr_packet_rx",)
     GLINK_BASELINE_SECONDS = 5
 
-    def __init__(self, output, glink_metadata=False, pmic_metadata=False):
+    def __init__(self, output, glink_metadata=False, pmic_metadata=False,
+                 qrtr_metadata=False):
         self.output = output
-        self.glink_metadata = glink_metadata or pmic_metadata
+        self.glink_metadata = glink_metadata or pmic_metadata or qrtr_metadata
         self.pmic_metadata = pmic_metadata
+        self.qrtr_metadata = qrtr_metadata
         self.path = TRACE / f"fuxi-suspend-{os.getpid()}"
         self.created = False
 
@@ -103,7 +106,8 @@ class WakeTrace:
             enabled = list(self.REQUIRED_EVENTS)
             for label, requested, events in (
                     ("glink", self.glink_metadata, self.GLINK_EVENTS),
-                    ("PMIC", self.pmic_metadata, self.PMIC_EVENTS)):
+                    ("PMIC", self.pmic_metadata, self.PMIC_EVENTS),
+                    ("QRTR", self.qrtr_metadata, self.QRTR_EVENTS)):
                 if not requested:
                     continue
                 for event in events:
@@ -123,6 +127,7 @@ class WakeTrace:
                 "clock": "boot", "buffer_kb_per_cpu": 4096,
                 "glink_metadata": self.glink_metadata,
                 "pmic_metadata": self.pmic_metadata,
+                "qrtr_metadata": self.qrtr_metadata,
                 "baseline_seconds": self.GLINK_BASELINE_SECONDS if self.glink_metadata else 0,
                 "enabled_events": enabled, "missing_platform_events": missing,
             }, indent=2) + "\n")
@@ -201,6 +206,8 @@ def main():
                         help="require glink command metadata events and a 5-second pre-alarm baseline")
     parser.add_argument("--pmic-metadata", action="store_true",
                         help="also require PMIC header/transport-result events; implies --glink-metadata")
+    parser.add_argument("--qrtr-metadata", action="store_true",
+                        help="also require validated QRTR receive headers; implies --glink-metadata")
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("root required")
@@ -229,9 +236,10 @@ def main():
         armed = False
         try:
             with WakeTrace(args.output, glink_metadata=args.glink_metadata,
-                           pmic_metadata=args.pmic_metadata) as trace:
+                           pmic_metadata=args.pmic_metadata,
+                           qrtr_metadata=args.qrtr_metadata) as trace:
                 try:
-                    if args.glink_metadata or args.pmic_metadata:
+                    if args.glink_metadata or args.pmic_metadata or args.qrtr_metadata:
                         trace.write("trace_marker", "fuxi glink baseline begin")
                         time.sleep(WakeTrace.GLINK_BASELINE_SECONDS)
                     # rtcwake uses the hardware clock, which need not match wall time.
