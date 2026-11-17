@@ -19,7 +19,10 @@ Private firmware, calibration data, captured proprietary protocol payloads,
 device backups and credentials are not licensed for redistribution by this
 project. Availability in another public repository is not evidence of permission.
 
-See `THIRD_PARTY.md` for the current inventory. Until the original project code
-and each included dependency have been cleared by their rights holders, public
-release approval remains outstanding. Local builds and tests do not assert that
-this approval has been obtained.
+See `THIRD_PARTY.md` for the current inventory. The scoped `v0.9.0-rc1`
+prerelease approval covers only the GPL Linux kernel package and its
+corresponding source inputs; it does not grant a blanket license for this
+repository or clear the excluded compatibility DTB, firmware, calibration data,
+or other project components. A release that includes those components still
+requires clearance from their rights holders. Local builds and tests do not
+assert that such clearance has been obtained.

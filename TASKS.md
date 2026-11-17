@@ -13,6 +13,13 @@
   (`build/edk2-msm/Platform/Xiaomi/sm8550/FdtBlob_compat/fuxi.dtb`) 和无关项目组件。
   本机没有维护者 GPG 私钥，按显式批准的无签名预发布流程交付并标明这一点；签名 APT 源和
   稳定版晋级仍需密钥及完整硬件验收。
+- [`v0.9.0-rc1` GitHub Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.9.0-rc1)
+  已创建并核验：tag 指向提交 `da0d94aa88f37c00e6c3114c91ed238f2927bcaf`，Release 为非 draft
+  prerelease，包含内核 deb、对应源码归档和 `SHA256SUMS`。三个远端资产 SHA256 为：deb
+  `2f95708f824ee66c89fb778b3d5f076887ccefa78eb4cfdfb20a3cf2645ba138`，源码归档
+  `49dede60ce91e84dbd554b404406ed4712ec43bcb168a658609850ef8b9cf13e`，`SHA256SUMS`
+  `db3d44638e8dbd894537e2c8fe0500d03fb378e84aebcc9ad2a2c43fecdd6b9a`；远端下载后复核通过。
+  不能把无签名预发布写成稳定版或签名发行物。
 - 24 小时稳定性、10 次重启及完整整机矩阵尚未完成。RC3 是实验性主用候选，不宣称稳定版。
 - 充电有界排查已停止，快充未解决；最新只读状态 92%、Charging，但 USB 仍为 SDP/500mA 档，
   电池电流瞬时为负，不能据此宣称充电或快充修好。当前目标聚焦新内核与预发布，不改充电控制。
@@ -182,7 +189,7 @@
   关闭的蓝牙。启动日志有 IPA、Ath12k、蓝牙及音频固件缺失提示，WiFi 实际可用；仍需后续
   长稳、反复重启及音频/蜂窝等完整回归。设备证据：
   `work/upstream74rc3-{install,reboot-request,boot-health,health}-20261118.log`。
-  完整晋级条件未完成，本版本尚非正式 GitHub Release。
+  完整晋级条件未完成；本版本是已发布的 GitHub prerelease，仍不是稳定版或正式签名发行物。
   技术细节见 [GNSS 验收](docs/GNSS按需会话验收-20261108.md)和
   [挂起证据](docs/驱动初始化与功耗验收-20261108.md#普通挂起与恢复检查)。
 

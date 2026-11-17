@@ -3,7 +3,8 @@
 在小米 13（SM8550）运行主线内核和完整 Ubuntu 用户空间，目标是一台日常可用的 Linux 手机。
 不使用 Android vendor kernel、Halium 或 Android HAL；保留 Android 双系统。
 引导链为 U-Boot、extlinux、initramfs-tools，日常内核通过 deb 升级。
-公开版本 v0.6.0 使用 Linux 7.4.0-rc1、Ubuntu 26.10；公开版本不代表手机当前运行版本。
+最新公开版本是无签名的开发者预览 `v0.9.0-rc1`，使用 Linux 7.4.0-rc3、Ubuntu 26.10；
+它不代表稳定版，也不代表手机已完成完整硬件验收。
 
 ## 开发入口
 
@@ -42,7 +43,8 @@
 
 **仓库 zip 是源码和工具，不是可刷镜像；Release 是开发者预览，不是一键安装包。**
 
-- [v0.6.0 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.6.0-uboot-20261107)：U-Boot、内核 deb、设备包、补丁和校验和。
+- [v0.9.0-rc1 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.9.0-rc1)：无签名 Linux 7.4-rc3 ARM64 内核 deb、匹配源码归档和校验和；不包含固件、校准数据、兼容 DTB 或引导镜像。
+- [v0.6.0 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.6.0-uboot-20261107)：历史 U-Boot、内核 deb、设备包、补丁和校验和。
 - [v0.5.0 历史 Release](https://github.com/ilovecnxx/xiaomi13-fuxi-linux-ubuntu26.10-kernel7.3/releases/tag/v0.5.0-dualboot-20261031)：旧引导路径，仅供历史复现。
 
 首次安装需要已解锁 bootloader，已经正确创建且位于 `/dev/sda33` 的 `linux` 分区，
@@ -56,7 +58,7 @@ BCB 残留 `boot-recovery` 时普通重启不保证返回 Android。
 
 ```bash
 python3 scripts/fuxi-kernel-source.py prepare
-# 离线：prepare --archive /path/linux-7.4-rc1.tar.gz
+# 离线：prepare --archive /path/linux-7.4-rc3.tar.gz
 scripts/fuxi-build-deb.sh <唯一名字>
 bash scripts/fuxi-ci.sh docs       # 活跃文档本地链接
 bash scripts/fuxi-ci.sh scripts    # 脚本回归，不下载内核
