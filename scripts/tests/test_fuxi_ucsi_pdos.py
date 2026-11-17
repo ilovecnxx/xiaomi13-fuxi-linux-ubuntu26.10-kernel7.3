@@ -42,12 +42,16 @@ class UcsiPdosTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pd.response_bytes(value)
 
-    def test_commands_only_encode_partner_source_get(self):
-        self.assertEqual(pd.source_command(1, 0, 4), 0x700810010)
-        self.assertEqual(pd.source_command(1, 4, 3), 0x604810010)
+    def test_commands_encode_only_supported_get_targets(self):
+        self.assertEqual(pd.pdo_command(1, 0, 4), 0x700810010)
+        self.assertEqual(pd.pdo_command(1, 4, 3), 0x604810010)
+        self.assertEqual(pd.pdo_command(1, 0, 4, 'local-sink'), 0x300010010)
+        self.assertEqual(pd.pdo_command(1, 4, 3, 'local-sink'), 0x204010010)
         for args in ((0, 0, 4), (128, 0, 4), (1, 8, 3), (1, 0, 5)):
             with self.assertRaises(ValueError):
-                pd.source_command(*args)
+                pd.pdo_command(*args)
+        with self.assertRaises(ValueError):
+            pd.pdo_command(1, 0, 4, 'set-contract')
 
     def test_fixed_pps_and_other_pdos_are_capabilities_only(self):
         fixed = pd.decode_pdo(0x2d12c)
@@ -65,7 +69,7 @@ class UcsiPdosTests(unittest.TestCase):
         reader = Mock()
         capability = bytes.fromhex('46400000011000') + bytes(9)
         reader.query.side_effect = [capability, (0x1912c).to_bytes(4, 'little')]
-        result = pd.read_source(reader, 1)
+        result = pd.read_pdos(reader, 1)
         self.assertEqual(reader.query.call_count, 2)
         self.assertEqual(len(result['pdos']), 1)
         self.assertTrue(result['pdo_details_advertised'])
@@ -76,7 +80,7 @@ class UcsiPdosTests(unittest.TestCase):
         reader = Mock()
         reader.query.side_effect = [bytes(4) + b'\x01' + bytes(11),
                                     (0x1912c).to_bytes(4, 'little') * 4, b'']
-        result = pd.read_source(reader, 1)
+        result = pd.read_pdos(reader, 1)
         self.assertEqual(reader.query.call_count, 3)
         self.assertEqual(reader.query.call_args.args, (0x604810010, 12))
         self.assertEqual(len(result['pdos']), 4)
@@ -87,8 +91,36 @@ class UcsiPdosTests(unittest.TestCase):
             reader = Mock()
             reader.query.return_value = capability
             with self.assertRaises(ValueError):
-                pd.read_source(reader, 1)
+                pd.read_pdos(reader, 1)
             self.assertEqual(reader.query.call_count, 1)
+
+    def test_local_sink_pagination_and_operational_fields(self):
+        reader = Mock()
+        reader.query.side_effect = [bytes(4) + b'\x01' + bytes(11),
+                                    (0x1912c).to_bytes(4, 'little') * 4,
+                                    (0x2d12c).to_bytes(4, 'little')]
+        result = pd.read_pdos(reader, 1, 'local-sink')
+        self.assertEqual([call.args for call in reader.query.call_args_list],
+                         [(6, 16), (0x300010010, 16), (0x204010010, 12)])
+        self.assertEqual(result['target'], 'local-sink')
+        self.assertEqual(result['pdos'][-1]['voltage_mv'], 9000)
+        self.assertEqual(result['pdos'][-1]['operational_current_ma'], 3000)
+        self.assertNotIn('max_current_ma', result['pdos'][-1])
+        self.assertFalse(result['active_contract_verified'])
+
+    def test_empty_local_reply_does_not_imply_five_volt_limit(self):
+        reader = Mock()
+        reader.query.side_effect = [bytes(4) + b'\x01' + bytes(11), b'']
+        result = pd.read_pdos(reader, 1, 'local-sink')
+        self.assertEqual(result['pdos'], [])
+        self.assertEqual(reader.query.call_count, 2)
+
+    def test_sink_battery_and_pps_fields(self):
+        battery = pd.decode_pdo(1 << 30 | 20, source=False)
+        self.assertEqual(battery['operational_power_mw'], 5000)
+        pps = pd.decode_pdo(3 << 30 | 110 << 17 | 33 << 8 | 60, source=False)
+        self.assertEqual(pps['max_current_ma'], 3000)
+        self.assertNotIn('operational_current_ma', pps)
 
     def test_instance_is_removed_when_query_raises(self):
         path = MagicMock()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read partner source PDOs, validating reply length with UCSI event filters.
+"""Read PDOs, validating reply length with UCSI event filters.
 
 Run as root with no other debugfs UCSI command writer. Only GET_CAPABILITY and
 GET_PDOS are issued; normal kernel ACKs still occur. This does not select a PDO.
@@ -18,6 +18,7 @@ TRACE = Path('/sys/kernel/tracing/instances')
 DEBUG = Path('/sys/kernel/debug/usb/ucsi/pmic_glink.ucsi.0')
 EVENT = 'events/ucsi/ucsi_run_command'
 LENGTHS = (0, 4, 8, 12, 16)
+TARGETS = {'partner-source': (1, 1), 'local-sink': (0, 0)}
 
 
 def response_bytes(text):
@@ -49,14 +50,17 @@ def verified_length(traces, stats):
     return matches[0]
 
 
-def source_command(connector, offset, count):
+def pdo_command(connector, offset, count, target='partner-source'):
     if not 1 <= connector <= 127 or not 0 <= offset <= 7 or not 1 <= count <= 4:
         raise ValueError('Invalid GET_PDOS parameters')
-    return (0x10 | connector << 16 | 1 << 23 | offset << 24 |
-            (count - 1) << 32 | 1 << 34)
+    if target not in TARGETS:
+        raise ValueError('Invalid PDO target')
+    partner, source = TARGETS[target]
+    return (0x10 | connector << 16 | partner << 23 | offset << 24 |
+            (count - 1) << 32 | source << 34)
 
 
-def decode_pdo(value):
+def decode_pdo(value, source=True):
     if not value:
         raise ValueError('Zero PDO inside the reported reply length')
     kind = value >> 30
@@ -78,6 +82,11 @@ def decode_pdo(value):
                       max_current_ma=(value & 127) * 50)
     else:
         result['kind'] = 'unsupported_apdo'
+    if not source and kind != 3:
+        for field in ('current_ma', 'power_mw'):
+            key = f'max_{field}'
+            if key in result:
+                result[f'operational_{field}'] = result.pop(key)
     return result
 
 
@@ -146,18 +155,20 @@ class Reader:
         return response_bytes(response)[:length]
 
 
-def read_source(reader, connector):
+def read_pdos(reader, connector, target='partner-source'):
     capability = reader.query(0x6, 16)
     if len(capability) != 16 or connector > (capability[4] & 127):
         raise ValueError('Invalid capability length or connector number')
     features = int.from_bytes(capability[5:7], 'little')
-    first = reader.query(source_command(connector, 0, 4), 16)
+    first = reader.query(pdo_command(connector, 0, 4, target), 16)
     data = first
     if len(first) == 16:
-        data += reader.query(source_command(connector, 4, 3), 12)
-    pdos = [decode_pdo(int.from_bytes(data[n:n + 4], 'little'))
+        data += reader.query(pdo_command(connector, 4, 3, target), 12)
+    pdos = [decode_pdo(int.from_bytes(data[n:n + 4], 'little'),
+                       source=target == 'partner-source')
             for n in range(0, len(data), 4)]
     return {'result': 'capabilities_read', 'connector': connector,
+            'target': target,
             'pdo_details_advertised': bool(features & 16), 'pdos': pdos,
             'active_contract_verified': False, 'fast_charge_verified': False}
 
@@ -165,6 +176,7 @@ def read_source(reader, connector):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--connector', type=int, default=1)
+    parser.add_argument('--target', choices=TARGETS, default='partner-source')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     if not 1 <= args.connector <= 127:
@@ -180,7 +192,7 @@ def main():
                 key: stack.enter_context(trace_instance(
                     TRACE / f'fuxi-pdos-{os.getpid()}-{key}'))
                 for key in ('all', *(str(n) for n in LENGTHS))}
-            report = read_source(Reader(instances, args.output), args.connector)
+            report = read_pdos(Reader(instances, args.output), args.connector, args.target)
     except (OSError, ValueError) as error:
         report['error'] = str(error)
     (args.output / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
