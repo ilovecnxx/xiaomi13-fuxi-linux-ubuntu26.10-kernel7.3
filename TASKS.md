@@ -101,6 +101,11 @@
   采样均正常；加速度计、磁力计、陀螺仪仍报告安装矩阵回退，陀螺仪单位与轴向尚未验收。证据为
   `work/claude-logs/health-20261118-212901.log`；运行时审计同时确认 TUN 可用，KVM/QEMU 未配置，
   与手机整机目标无关，证据为 `work/runtime-audit/20261118-212901.json`。
+  21:35 的只读蜂窝复核显示 MM 为 `connected/home/attached`，两个 bearer 都被 MM 标为 connected；
+  其中 `qmapmux0.0` 仍为 DOWN、无地址和默认路由，`qmapmux0.1` 有 IPv4/IPv6 地址及默认路由，
+  绑定该接口的 IPv4/IPv6 证书校验 HTTPS 均为 200。当前可用数据链路正常，但附加 bearer 的
+  connected 与内核接口状态不一致仍未定位；未断开、重连或重启。内核仍为
+  `7.4.0-rc3-fuxi-upstream74rc3`，运行约 20 小时 21 分。
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
