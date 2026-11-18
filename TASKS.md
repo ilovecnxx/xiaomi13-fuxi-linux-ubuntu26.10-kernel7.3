@@ -52,7 +52,7 @@
 | 手机运行/默认 | `7.4.0-rc3-fuxi-upstream74rc3`；fallback `7.4.0-rc1-fuxi-suspend6` | 2026-11-18 安装并正常重启；bootcount `pending=0`；新内核和 fallback 的 Image、DTB、initrd、cmdline 校验通过 |
 | 离线挂起候选 | `7.4.0-rc1-fuxi-suspend7`，六补丁树 `1c836d26101571c017fe6bdfdf94e45c11c83091` | QRTR RX/候选 QMI 头追踪，完整包和主机验证通过；比当前主用内核旧，保持离线实验包，不取代 rc3 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
-| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem` 与 `fuxi-geoclue 0.20261118.2101`；`fuxi-desktop 0.20261118.1901` | 原生 ARM64 包已安装；仅正常重启 MM，connected/home，GPS_RAW 按需启停及恢复通过；GeoClue inactive，桌面位置权限 false |
+| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261118.2101`；`fuxi-geoclue 0.20261118.2201`；`fuxi-desktop 0.20261118.1901` | 原生 ARM64 包已安装；MM `.2101` 的 GPS_RAW 按需启停及恢复通过；GeoClue `.2201` 修复配置读取期间取消，安装未重启服务，桌面位置权限 false |
 
 ## 整机体验进展
 
@@ -107,6 +107,12 @@
   安装后 15 秒 MM 会话 completed，恢复仅 lac-ci、signals=no；GeoClue inactive，桌面位置
   权限 false。绑定实际数据接口 qmapmux0.1 的 HTTPS=200，无人工重连；此前请求误绑到无地址、
   DOWN 的 qmapmux0.0 而失败，不能据此判定蜂窝回归。蓝牙只读检查 Powered=true，未改设置。
+  GeoClue 后续 `.2201` 已安装：修复 GetAll 尚未返回时请求已停止/取消却仍发出硬件 Setup 的
+  问题；7 个新用例覆盖 GPS/蜂窝、立即重启及保留其他活动源，原有 Setup 阶段测试改为等待
+  请求实际到达后再取消。amd64/ARM64 均为 4 个解析及 41 个 D-Bus 用例通过，源码重放、完整
+  构建与全脚本 469 项通过。安装前后 Phosh PID894、MM PID29044、配置/授权策略均未变，
+  GeoClue inactive，定位 false、自动挂起 nothing；只读 Phosh agent MaxAccuracyLevel=0。
+  源码确认该值在创建 locator 前拒绝客户端，但没有发起真实 Start，不能算桌面权限链路验收。
   下一步在保留用户隐私设置的前提下验证真实客户端权限链路，并完成室外有效 fix、误差/UTC、
   功耗及恢复验收；不得把原生隔离测试当成桌面或卫星验收。记录见 GNSS 验收文档及
   `work/{loc-radius,geoclue-raw}/`；主机测试不代表桌面定位已可用。
@@ -247,7 +253,7 @@
    不重复相同挂起、不关闭基带或屏蔽 IRQ。
    每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
    续航验收。
-3. GNSS `.2101` 已部署；下一次自然启动核对 GPS_RAW 能力与 LOC 分配警告，不为此主动重启。
+3. MM `.2101`、GeoClue `.2201` 已部署；下一次自然启动核对 GPS_RAW 能力与 LOC 分配警告，不为此主动重启。
    桌面位置开关当前 false，保留用户设置；真实客户端权限链路、室外有效 fix 和误差/UTC、
    功耗及恢复仍待验收。耳机验证 A2DP，操作前核对蓝牙当前用户设置。
 4. 核对 CS35L41 保护固件/标定与安全音量；识别 NFC 控制器和接线后实现驱动通路。

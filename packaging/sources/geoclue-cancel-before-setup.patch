@@ -1,0 +1,144 @@
+--- a/src/gclue-modem-manager.c
++++ b/src/gclue-modem-manager.c
+@@ -855,7 +855,12 @@
+                 g_object_unref (task);
+                 return;
+         }
+-        if (!location_state_from_reply (reply, &enabled, &signals_enabled, &error)) {
++        /* A stop during GetAll must not start hardware just to stop it again. */
++        if (!error && (g_object_get_data (G_OBJECT (task), "stopped") ||
++                       (g_task_get_cancellable (task) &&
++                        g_cancellable_is_cancelled (g_task_get_cancellable (task)))))
++                error = g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED, "Location source stopped");
++        if (error || !location_state_from_reply (reply, &enabled, &signals_enabled, &error)) {
+                 priv->setup_task = NULL;
+                 priv->caps &= ~requested;
+                 if (requested == MM_MODEM_LOCATION_SOURCE_GPS_RAW) {
+--- a/src/test-fuxi-modem.c
++++ b/src/test-fuxi-modem.c
+@@ -267,6 +267,81 @@
+ }
+ 
+ static void
++test_stop_before_setup (gconstpointer data)
++{
++        guint mode = GPOINTER_TO_UINT (data);
++        gboolean cell = mode == 3 || mode == 4;
++        gboolean other_active = mode == 5 || mode == 6;
++        Fixture f = { .capabilities = RAW | CELL, .enabled = CELL };
++        Fixture restarted = { 0 };
++        g_autoptr(GError) error = NULL;
++        g_autoptr(GCancellable) cancellable = g_cancellable_new ();
++        guint timeout;
++        MMModemLocationSource enabled;
++        gboolean signals_enabled;
++
++        fixture_start (&f);
++        timeout = g_timeout_add_seconds (5, timeout_cb, NULL);
++        if (other_active) {
++                enable_caps (f.manager, CELL, NULL, enabled_cb, &f);
++                while (!f.done)
++                        g_main_context_iteration (NULL, TRUE);
++                g_assert_true (f.success);
++                assert_setup (&f, CELL, TRUE);
++                f.done = FALSE;
++        }
++        if (cell)
++                enable_caps (f.manager, CELL, cancellable, enabled_cb, &f);
++        else
++                gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &f);
++        /* The GetAll reply has not been dispatched on this context yet. */
++        g_assert_nonnull (f.manager->priv->setup_task);
++        if (mode == 1 || mode == 4 || mode == 6)
++                g_cancellable_cancel (cancellable);
++        else {
++                if (cell)
++                        g_assert_true (clear_caps (f.manager, CELL, NULL, &error));
++                else
++                        g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++                g_assert_no_error (error);
++        }
++        if (mode == 2)
++                gclue_modem_enable_gps (GCLUE_MODEM (f.manager), NULL, enabled_cb, &restarted);
++        while (!f.done)
++                g_main_context_iteration (NULL, TRUE);
++        g_assert_false (f.success);
++        if (mode == 5)
++                assert_setup (&f, CELL, TRUE);
++        if (mode != 2) {
++                g_assert_cmpint (g_async_queue_length (f.calls), ==, 0);
++                g_assert_cmpuint (f.manager->priv->caps, ==, other_active ? CELL : 0);
++                g_assert_cmpint (f.manager->priv->baseline_valid, ==, other_active);
++                g_assert_false (f.manager->priv->clear_pending);
++                g_assert_cmpuint (f.manager->priv->raw_started_ms, ==, 0);
++                g_assert_false (f.manager->priv->raw_setup_pending);
++                gclue_modem_enable_gps (GCLUE_MODEM (f.manager), NULL, enabled_cb, &restarted);
++        }
++        while (!restarted.done)
++                g_main_context_iteration (NULL, TRUE);
++        g_assert_true (restarted.success);
++        assert_setup (&f, CELL | RAW, TRUE);
++        g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++        g_assert_no_error (error);
++        assert_setup (&f, CELL, other_active);
++        if (other_active) {
++                g_assert_true (clear_caps (f.manager, CELL, NULL, &error));
++                g_assert_no_error (error);
++                assert_setup (&f, CELL, FALSE);
++        }
++        g_assert_true (get_location_state_sync (f.manager, &enabled, &signals_enabled, NULL, &error));
++        g_assert_no_error (error);
++        g_assert_cmpuint (enabled, ==, CELL);
++        g_assert_false (signals_enabled);
++        g_source_remove (timeout);
++        fixture_stop (&f);
++}
++
++static void
+ test_session (gconstpointer data)
+ {
+         guint mode = GPOINTER_TO_UINT (data);
+@@ -281,7 +356,8 @@
+                 f.enabled |= RAW;
+         f.signals = mode == 1 || mode == 11;
+         f.fail_setup = mode == 4;
+-        f.hold_setup = mode == 16 || mode == 17;
++        f.hold_setup = mode == 3 || mode == 6 || mode == 12 || mode == 13 ||
++                       mode == 14 || mode == 16 || mode == 17;
+         if (mode == 5)
+                 f.capabilities |= NMEA;
+         if (mode == 9 || mode == 15 || mode == 18)
+@@ -298,6 +374,10 @@
+                 f.done = FALSE;
+         }
+         gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &f);
++        if (f.hold_setup) {
++                while (!g_async_queue_length (f.calls))
++                        g_main_context_iteration (NULL, TRUE);
++        }
+         if (mode == 16 || mode == 17) {
+                 while (!g_async_queue_length (f.calls))
+                         g_main_context_iteration (NULL, TRUE);
+@@ -325,6 +405,8 @@
+                 g_cancellable_cancel (cancellable);
+         if (mode == 7)
+                 disconnect_modem_location (f.manager);
++        if (mode == 3 || mode == 6 || mode == 12 || mode == 13 || mode == 14)
++                g_main_context_invoke (f.context, release_setup, &f);
+         while (!f.done)
+                 g_main_context_iteration (NULL, TRUE);
+         g_source_remove (timeout);
+@@ -610,6 +692,13 @@
+         bus = g_test_dbus_new (G_TEST_DBUS_NONE);
+         g_test_dbus_up (bus);
+         bus_address = g_test_dbus_get_bus_address (bus);
++        g_test_add_data_func ("/fuxi/before-setup/stop", GUINT_TO_POINTER (0), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/cancel", GUINT_TO_POINTER (1), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/restart", GUINT_TO_POINTER (2), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/stop-cell", GUINT_TO_POINTER (3), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/cancel-cell", GUINT_TO_POINTER (4), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/stop-preserves-cell", GUINT_TO_POINTER (5), test_stop_before_setup);
++        g_test_add_data_func ("/fuxi/before-setup/cancel-preserves-cell", GUINT_TO_POINTER (6), test_stop_before_setup);
+         g_test_add_data_func ("/fuxi/modem/session", GUINT_TO_POINTER (0), test_session);
+         g_test_add_data_func ("/fuxi/modem/restore-raw-signals", GUINT_TO_POINTER (1), test_session);
+         g_test_add_data_func ("/fuxi/modem/restore-raw-no-signals", GUINT_TO_POINTER (2), test_session);
