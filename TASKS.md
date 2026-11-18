@@ -118,8 +118,8 @@
   状态为何可能分离，不能证明 IMS 子接口保持 DOWN 一定符合预期；源码未发现足以支持修复的
   已证实缺陷。设备 uptime 达 24 小时后再只读复核；此前不改接口、bearer 或服务状态。
   22:29 的只读复核仍见 MM `connected`、`qmapmux0.0` DOWN 且无主机地址/路由，同时 IMSA 为
-  `registered`，SMS、语音和视频服务均 `available`。这说明当前基带 IMS 功能未因该主机接口
-  状态而失效，继续不据此修改 MM、rmnet 或 81voltd。
+  `registered`，SMS、语音和视频服务均 `available`。这仅记录两者在该时刻并存，不足以判断
+  IMS 子接口的预期状态，继续不据此修改 MM、rmnet 或 81voltd。
   22:33 经 Wi-Fi 对手机的只读复核显示仍为 `7.4.0-rc3-fuxi-upstream74rc3`，本次启动 uptime
   约 21 小时 15 分；五个相关服务均 active 且 NRestarts=0。MM `/Bearer/0` 仍为 IMS、profile 2、
   IPv6、`connected=yes`，但 `qmapmux0.0` 仍 DOWN、无地址/路由；`/Bearer/1` 的 `qmapmux0.1`
