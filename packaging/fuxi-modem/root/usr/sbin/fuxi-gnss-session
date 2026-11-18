@@ -155,11 +155,46 @@ def position_counts(report, output, satellite_mask):
     report["valid_position_reports"] += 1
     try:
         satellite = bool(int(output.get_technology_used()) & satellite_mask)
-        satellites = output.get_satellites_used()
-        if satellite and len(satellites) > 0:
+        if not satellite:
+            return
+    except Exception:
+        return
+    try:
+        if output.get_satellites_used():
             report["satellite_fix_reports"] += 1
     except Exception:
         pass
+    # The MM producer requires satellite technology, not the legacy SV list.
+    try:
+        radius = output.get_horizontal_uncertainty_circular()
+        if not math.isfinite(radius) or radius <= 0:
+            return
+        report["satellite_position_with_radius"] += 1
+        # Same timestamp bounds as mm_fuxi_loc_raw_dictionary().
+        if not 0 < output.get_utc_timestamp() <= 253402300799999:
+            return
+        report["satellite_position_with_radius_utc"] += 1
+        # Count field co-occurrence only: confidence refers to the ellipse if present.
+        if 0 < output.get_horizontal_confidence() <= 99:
+            report["satellite_position_with_radius_utc_confidence"] += 1
+    except Exception:
+        # Optional LOC fields raise GLib.Error when absent.
+        pass
+
+
+def sv_counts(report, output, snr_mask, missing_list):
+    report["sv_reports"] += 1
+    try:
+        entries = output.get_list()
+        if entries:
+            report["sv_reports_with_entries"] += 1
+            if any(int(sv.valid_information) & snr_mask
+                   and math.isfinite(sv.signal_to_noise_ratio_bhz)
+                   and sv.signal_to_noise_ratio_bhz > 0 for sv in entries):
+                report["sv_reports_with_signal"] += 1
+    except Exception as exc:
+        key = "sv_reports_without_legacy_list" if missing_list(exc) else "sv_reports_unreadable"
+        report[key] += 1
 
 
 class Transport:
@@ -223,9 +258,12 @@ class Transport:
         self.raw(0x21, [(0x01, struct.pack("<Q", mask)), (0x10, b"MHAL"),
                         (0x11, struct.pack("<I", 1)), (0x12, b"\x00")])
         satellite_mask = int(q.LocTechnologyUsed.SATELLITE)
+        snr_mask = int(q.LocSatelliteValidInformation.SIGNAL_TO_NOISE_RATIO)
+        def missing_list(exc):
+            return isinstance(exc, self.GLib.Error) and exc.matches(q.core_error_quark(), q.CoreError.TLVNOTFOUND)
         callbacks = {
             "position-report": lambda _, output: position_counts(report, output, satellite_mask),
-            "gnss-sv-info": lambda *_: self.increment(report, "sv_reports"),
+            "gnss-sv-info": lambda _, output: sv_counts(report, output, snr_mask, missing_list),
             "nmea": lambda *_: self.increment(report, "nmea_reports"),
         }
         for name, callback in callbacks.items():
@@ -273,6 +311,10 @@ def session(transport, node, seconds):
     report = {"schema_version": 1, "requested_seconds": seconds,
               "status": "failed", "position_reports": 0, "valid_position_reports": 0,
               "satellite_fix_reports": 0, "invalid_reports": 0,
+              "satellite_position_with_radius": 0, "satellite_position_with_radius_utc": 0,
+              "satellite_position_with_radius_utc_confidence": 0,
+              "sv_reports_with_entries": 0, "sv_reports_with_signal": 0,
+              "sv_reports_without_legacy_list": 0, "sv_reports_unreadable": 0,
               "sv_reports": 0, "nmea_reports": 0, "session_status_counts": {},
               "cleanup": {"stop": "not_needed", "release": False, "close": False}}
     start_attempted = False

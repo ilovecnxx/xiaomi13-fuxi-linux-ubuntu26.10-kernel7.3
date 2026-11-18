@@ -220,6 +220,34 @@ class GnssSessionTest(unittest.TestCase):
     def test_foreign_session_is_ignored(self):
         self.assertEqual(self.report(self.position(sid=1))["position_reports"], 0)
 
+    def test_precision_evidence_requires_fields_on_same_satellite_fix(self):
+        for status, tech, radius, utc, confidence, expected in (
+                (1, 1, 4.5, 1, 68, (0, 0, 0)), (0, 2, 4.5, 1, 68, (0, 0, 0)),
+                (0, 1, float('inf'), 1, 68, (0, 0, 0)), (0, 1, 0, 1, 68, (0, 0, 0)),
+                (0, 1, 4.5, 0, 68, (1, 0, 0)), (0, 1, 4.5, 1, 100, (1, 1, 0)),
+                (0, 1, 4.5, 1, 68, (1, 1, 1))):
+            output = self.position(status=status, technology=tech, satellites=())
+            output.get_horizontal_uncertainty_circular = lambda: radius
+            output.get_utc_timestamp = lambda: utc
+            output.get_horizontal_confidence = lambda: confidence
+            report = self.report(output)
+            self.assertEqual(tuple(report['satellite_position_with_radius' + suffix]
+                                   for suffix in ('', '_utc', '_utc_confidence')), expected)
+        self.assertEqual(self.report(self.position())['satellite_position_with_radius'], 0)
+
+    def test_sv_signal_requires_valid_flag_and_finite_positive_value(self):
+        report = GNSS.session(FakeTransport(), 0, 1)
+        for flags, snr in ((0, 24.5), (128, float('nan')), (128, 0), (128, 24.5)):
+            sv = SimpleNamespace(valid_information=flags, signal_to_noise_ratio_bhz=snr)
+            GNSS.sv_counts(report, SimpleNamespace(get_list=lambda: [sv]), 128, lambda _: False)
+        GNSS.sv_counts(report, SimpleNamespace(get_list=lambda: []), 128, lambda _: False)
+        GNSS.sv_counts(report, SimpleNamespace(), 128, lambda _: False)
+        GNSS.sv_counts(report, SimpleNamespace(), 128, lambda _: True)
+        self.assertEqual(tuple(report[k] for k in ('sv_reports', 'sv_reports_with_entries',
+                         'sv_reports_with_signal', 'sv_reports_unreadable',
+                         'sv_reports_without_legacy_list')), (7, 4, 1, 1, 1))
+        self.assertEqual(report['satellite_fix_reports'], 0)
+
     def preflight(self, enabled=None, loc="16 2 0 0 131"):
         def run(argv, **kwargs):
             self.assertEqual(kwargs["timeout"], 8)
@@ -253,6 +281,7 @@ class GnssSessionTest(unittest.TestCase):
         transport.handlers = []
         flags = SimpleNamespace(POSITION_REPORT=1, GNSS_SATELLITE_INFO=2, NMEA=4)
         transport.Qmi = SimpleNamespace(LocEventRegistrationFlag=flags,
+                                       LocSatelliteValidInformation=SimpleNamespace(SIGNAL_TO_NOISE_RATIO=128),
                                        LocTechnologyUsed=SimpleNamespace(SATELLITE=1))
         transport.client = SimpleNamespace(connect=lambda *args: 1)
         calls = []

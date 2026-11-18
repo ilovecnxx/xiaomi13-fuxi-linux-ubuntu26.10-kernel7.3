@@ -78,6 +78,9 @@
   更新前 rc3 上首次启动的 MM 只有 lac-ci，独立 LOC 查询成功；安装 `.1801` 后普通重启 MM，
   GPS_RAW 恢复，蜂窝 connected/home。标准 15 秒启停及清理通过，未读取坐标。33 项定向及全脚本
   460 项通过。下次自然启动先查能力和 LOC 分配警告；本轮没有证明首次能力缺失的根因。
+  原始 LOC 诊断已增加同一成功卫星定位报告的水平误差、UTC 和置信度计数。45 秒及 10 秒
+  实测均无有效定位；后一次 9 条卫星状态均缺旧列表，不能推断无卫星。462 项脚本测试通过。
+  下次在开阔环境确认有效报告的精度字段，并区分扩展卫星列表；GeoClue 尚未接通。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
   边界诊断和配方见 `kernel/experiments/suspend/`。当前 `suspend6` 在已有 IPCC 只读快照
