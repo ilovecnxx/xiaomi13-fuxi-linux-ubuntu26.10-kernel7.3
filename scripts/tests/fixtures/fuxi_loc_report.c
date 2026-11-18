@@ -63,11 +63,14 @@ int main (void)
     };
     const gchar *utc;
     gdouble value;
+    guint64 timestamp;
 
     loc_position_indication_cb (NULL, &valid, NULL);
     g_assert_nonnull (published);
     g_assert_true (g_variant_lookup (published, "utc-time", "&s", &utc));
     g_assert_cmpstr (utc, ==, "000001.001");
+    g_assert_true (g_variant_lookup (published, "x-fuxi-utc-ms", "t", &timestamp));
+    g_assert_cmpuint (timestamp, ==, valid.timestamp);
     g_assert_true (g_variant_lookup (published, "latitude", "d", &value));
     g_assert_cmpfloat (value, ==, 0.0);
     g_assert_true (g_variant_lookup (published, "altitude", "d", &value));

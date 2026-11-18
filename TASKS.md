@@ -86,8 +86,14 @@
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
-  尚未部署，手机仍为 modem `.1801`。下一步接入 GeoClue GPS_RAW 消费端，处理同报告精度及
-  完整日期的时效校验；系统 libmm-glib 没有该扩展 getter。记录见 GNSS 验收文档及 `work/loc-radius/`。
+  新候选增加同报告 `x-fuxi-utc-ms`（uint64）；固定 GeoClue 2.7.2 与 Ubuntu 2ubuntu3 三个补丁，
+  无 NMEA 时消费 RAW 字典中的坐标、实测误差和完整 UTC，拒绝会话前、重复、过期和过远未来报告。
+  RAW 停止恢复原 RAW/signals 设置并保留其他当前源；覆盖启动中停止、取消、失败和设备消失。
+  配方重放与已测树一致，amd64 MM/私有库及 GeoClue 完整守护进程构建通过；GeoClue 4 个解析与
+  10 个隔离 D-Bus 用例、MM 扩展 3 个用例及现有 common/pco 测试、463 项脚本测试通过。
+  尚未部署，手机仍为 modem `.1801`、系统 GeoClue。下一步完成 ARM64 打包与配置保留方案，
+  检查重复启停/多消费者和桌面权限链路，再做室外有效 fix 验收。记录见 GNSS 验收文档及
+  `work/{loc-radius,geoclue-raw}/`；主机测试不代表桌面定位已可用。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
   边界诊断和配方见 `kernel/experiments/suspend/`。当前 `suspend6` 在已有 IPCC 只读快照
