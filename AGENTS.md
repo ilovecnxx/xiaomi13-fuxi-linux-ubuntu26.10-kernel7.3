@@ -36,7 +36,6 @@ evidence, not current instructions. User instructions supersede repository rules
 | Documentation | Diff and local links: `bash scripts/fuxi-ci.sh docs` |
 | Isolated script/application | Affected tests; use the application's existing runner |
 | Shared scripts/build/installation behavior | Full script suite: `bash scripts/fuxi-ci.sh scripts` |
-| SuperTerm | `bash scripts/fuxi-ci.sh apps` |
 | Kernel/DT | Focused ARM64 `W=1`, affected DT/binding and lifecycle checks |
 
 Do not repeat passing checks without relevant changes or an unresolved concern.

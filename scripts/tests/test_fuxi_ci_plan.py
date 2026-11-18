@@ -19,9 +19,9 @@ class CiPlanTests(unittest.TestCase):
         self.assertEqual({"docs"}, self.selected("README.md", "AGENTS.md", "TASKS.md",
                                                "packaging/README.md", "docs/交接.md"))
 
-    def test_application_and_script_checks_are_independent(self):
-        self.assertEqual({"docs", "apps"}, self.selected("apps/superterm/terminal.py"))
+    def test_script_checks_and_unclassified_application_paths(self):
         self.assertEqual({"docs", "scripts"}, self.selected("scripts/fuxi-health.sh"))
+        self.assertEqual(set(PLAN.CHECKS), self.selected("apps/dsh-phone/dsh-web-window.py"))
         self.assertEqual({"docs", "scripts"}, self.selected("scripts/tests/fixture.md"))
 
     def test_shared_and_unknown_inputs_expand_coverage(self):
@@ -49,22 +49,22 @@ class CiPlanTests(unittest.TestCase):
         event = {"before": "0" * 40, "after": "a" * 40}
         self.assertTrue(all(PLAN.event_plan("push", event, Path(".")).values()))
 
-    def test_push_rename_out_of_code_still_selects_original_owner(self):
+    def test_push_rename_out_of_scripts_still_selects_original_owner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def git(*args):
                 return subprocess.check_output(["git", "-C", directory, *args]).decode().strip()
             git("init", "-q")
-            (root / "apps/superterm").mkdir(parents=True)
-            (root / "apps/superterm/code.py").write_text("code\n")
+            (root / "scripts").mkdir()
+            (root / "scripts/health.sh").write_text("#!/bin/sh\nexit 0\n")
             git("add", ".")
             git("-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "base")
             base = git("rev-parse", "HEAD")
-            git("mv", "apps/superterm/code.py", "README.md")
+            git("mv", "scripts/health.sh", "README.md")
             git("-c", "user.name=Test", "-c", "user.email=test@localhost", "commit", "-qm", "rename")
             head = git("rev-parse", "HEAD")
             result = PLAN.event_plan("push", {"before": base, "after": head}, root)
-            self.assertTrue(result["apps"])
+            self.assertTrue(result["scripts"])
             self.assertFalse(result["kernel"])
             pull_request = {"pull_request": {"base": {"sha": base}, "head": {"sha": head}}}
             self.assertEqual(result, PLAN.event_plan("pull_request", pull_request, root))

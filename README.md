@@ -62,7 +62,6 @@ python3 scripts/fuxi-kernel-source.py prepare
 scripts/fuxi-build-deb.sh <唯一名字>
 bash scripts/fuxi-ci.sh docs       # 活跃文档本地链接
 bash scripts/fuxi-ci.sh scripts    # 脚本回归，不下载内核
-bash scripts/fuxi-ci.sh apps       # SuperTerm 回归
 ```
 
 内核产物在 `work/kbuild/<名字>/`，包含 deb、配置、准确源码记录和校验和。

@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 
 
-CHECKS = ("docs", "scripts", "apps", "source", "third_party", "kernel", "userspace")
+CHECKS = ("docs", "scripts", "source", "third_party", "kernel", "userspace")
 
 
 def classify(paths, full=False):
@@ -18,7 +18,7 @@ def classify(paths, full=False):
                 or path in ("scripts/fuxi-ci.sh", "scripts/fuxi-ci-plan.py",
                             "scripts/fuxi-build-env.sh")):
             return dict.fromkeys(CHECKS, True)
-        if ((path.endswith(".md") and not path.startswith(("scripts/tests/", "apps/superterm/tests/")))
+        if ((path.endswith(".md") and not path.startswith("scripts/tests/"))
                 or path.startswith("docs/")):
             continue
         if path.startswith("scripts/tests/kernel/"):
@@ -32,8 +32,6 @@ def classify(paths, full=False):
             if path in ("scripts/fuxi-build-deb.sh", "scripts/fuxi-source-state.py",
                         "scripts/fuxi-kernel-source.py", "scripts/fuxi-kernel-benchmark.py"):
                 selected["source"] = selected["kernel"] = True
-        elif path.startswith("apps/superterm/"):
-            selected["apps"] = True
         elif path.startswith("kernel/experiments/"):
             selected["scripts"] = True
         elif path.startswith("kernel/"):
