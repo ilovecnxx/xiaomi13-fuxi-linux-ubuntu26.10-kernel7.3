@@ -94,9 +94,12 @@
    服务列表未记录。当前查询只能证明审计时 LOC 可见，不能还原启动时状态，故根因未定且不改初始化顺序。
    保留用户隐私设置；后续完成授权链路、室外有效 fix、误差/UTC、功耗和恢复验收；桌面 GeoClue 链路尚未完成。
 7. 桌面与传感器：04:20 SSC 清点获取多类传感器属性；线性加速度、气压、计步器探测返回
-   `constructor_type_error`，不能据此判定硬件缺失。测量流未启用，完整硬件清点、原始标定、轴向和单位
-   未验证。后续用 Phosh 实际亮度滑块完成亮度偏移、明暗响应和熄屏/亮屏验收；现场验证传感器轴向、
-   标定、陀螺仪单位及自动旋转；补做 A2DP 耳机验收。
+   `constructor_type_error`。固定 libssc 0.4.4 源码确认所用 `SSC.Sensor.new(data_type, ...)`
+   签名有效；当 SUID 查询没有返回目标 UID 时，库以 `FALSE` 完成初始化，GI 的 `new_finish()`
+   可表现为空对象/`TypeError`。当前工具未保存原始 SUID 响应或底层 GError，不能确认这三类各自命中
+   该分支，也不能据此判定硬件缺失。测量流未启用，完整硬件清点、原始标定、轴向和单位未验证。
+   后续用 Phosh 实际亮度滑块完成亮度偏移、明暗响应和熄屏/亮屏验收；现场验证传感器轴向、标定、
+   陀螺仪单位及自动旋转；补做 A2DP 耳机验收。
 8. 设备功能：完整厂商 DT 在 `i2c@a80000/nq@28` 声明 `qcom,sn-nci`。已审查公开 QTI
    驱动（`Pzqqt/android_kernel_xiaomi_marble`，提交
    `f53cb4935e8c44e9aeb02938a44a052a4ef8ddcb`）：GPIO 与 1.8V regulator 属性名称相符，
@@ -105,7 +108,9 @@
    它读取 `qcom,sn-irq/ven/firm/clkreq` 与 `qcom,sn-vdd-1p8-*`，但不使用候选 DT 声明的参考时钟、
    `qcom,sn-szone` 或显式 pinctrl 状态；probe 会切换 VEN 并立即访问芯片。仓库中没有对应的
    `/dev/nq-nci` 用户态 HAL/服务，因此不能原样移植或只加 compatible。下一步需取得匹配的厂商
-   HAL/控制器证据，再决定现代化厂商 ABI 还是实现主线 NCI transport；之后才能审查 binding、
+   HAL/控制器证据，再决定现代化厂商 ABI 还是实现主线 NCI transport。当前本地官方固件材料含
+   `vendor_boot.img` 和 `dtbo.img`，但缺少刷写清单引用的 `super.img`，无法核对 vendor/system
+   HAL；下一步先取得匹配版本的完整固件包并只读检查其中的 HAL、配置和权限，再审查 binding、
    GPIO/电源/时钟和总线行为。02:46 实机只读核对未发现 `/sys/class/nfc`、NFC 日志或已实例化的
    NQ-NCI 设备；通话无声及持续温度/充电验证也未完成。
 
