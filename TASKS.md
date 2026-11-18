@@ -117,6 +117,14 @@
   直接 WDS 数据路径会显式配置主机接口，但不负责这里的 MM IMS bearer。因此这些路径能解释
   状态为何可能分离，不能证明 IMS 子接口保持 DOWN 一定符合预期；源码未发现足以支持修复的
   已证实缺陷。设备 uptime 达 24 小时后再只读复核；此前不改接口、bearer 或服务状态。
+  22:29 的只读复核仍见 MM `connected`、`qmapmux0.0` DOWN 且无主机地址/路由，同时 IMSA 为
+  `registered`，SMS、语音和视频服务均 `available`。这说明当前基带 IMS 功能未因该主机接口
+  状态而失效，继续不据此修改 MM、rmnet 或 81voltd。
+  22:33 经 Wi-Fi 对手机的只读复核显示仍为 `7.4.0-rc3-fuxi-upstream74rc3`，本次启动 uptime
+  约 21 小时 15 分；五个相关服务均 active 且 NRestarts=0。MM `/Bearer/0` 仍为 IMS、profile 2、
+  IPv6、`connected=yes`，但 `qmapmux0.0` 仍 DOWN、无地址/路由；`/Bearer/1` 的 `qmapmux0.1`
+  仍为双栈并有默认路由，IMSA 仍 registered、SMS/voice/video 均 available。24 小时门槛尚未到，
+  不据此做接口、bearer 或服务变更。
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
