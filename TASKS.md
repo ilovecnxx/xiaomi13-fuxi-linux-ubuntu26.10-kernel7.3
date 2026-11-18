@@ -125,6 +125,13 @@
   IPv6、`connected=yes`，但 `qmapmux0.0` 仍 DOWN、无地址/路由；`/Bearer/1` 的 `qmapmux0.1`
   仍为双栈并有默认路由，IMSA 仍 registered、SMS/voice/video 均 available。24 小时门槛尚未到，
   不据此做接口、bearer 或服务变更。
+  23:00 的中间只读复核仍为同一 boot ID 和内核，设备 uptime 21 小时 42 分。ModemManager、
+  81voltd、rmtfs、keeper 与 SIM2 消息服务均 active、NRestarts=0，systemd failed units 为空；
+  modem 为 5G/home/attached。`/Bearer/0` 仍是 IMS、profile 2、IPv6、connected，MM 返回静态
+  IPv6 配置，计数器显示 attempts=1、duration=12089 秒；其 `qmapmux0.0` 仍 DOWN 且没有主机地址
+  或路由。`/Bearer/1` 的 `qmapmux0.1` 保持双栈、UP 并有默认路由；两个 mux 设备均 unmanaged。
+  IMSA 为 registered，SMS/voice/video 均 available。上述状态仅记录为同时存在，不能确定 IMS
+  子接口预期管理状态；24 小时门槛未到，未改设备状态。
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
