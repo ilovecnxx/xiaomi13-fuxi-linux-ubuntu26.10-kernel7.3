@@ -73,12 +73,17 @@
    恢复验收；桌面 GeoClue 链路尚未完成。
 7. 桌面与传感器：用 Phosh 实际亮度滑块完成亮度偏移、明暗响应和熄屏/亮屏验收；完成传感器轴向、
    标定、陀螺仪单位及自动旋转验证；补做 A2DP 耳机验收。
-8. 设备功能：完整厂商 DT 在 `i2c@a80000/nq@28` 声明 `qcom,sn-nci`。公开 Qualcomm QTI
-   NFC 驱动也匹配该 compatible，并读取 `qcom,sn-irq/ven/firm/clkreq` 及 `qcom,sn-vdd-1p8-*`
-   属性；当前标准内核树未包含这套驱动。候选节点还声明参考时钟、pinctrl 和 `qcom,sn-szone`，
-   这些属性与驱动的实际处理方式及完整绑定关系仍需核对，控制器具体型号也未确认。先完成驱动/属性
-   对照和 DT binding 审查，再验证总线实例、GPIO、电源、时钟和通信。02:46 实机只读核对未发现
-   `/sys/class/nfc`、NFC 日志或已实例化的 NQ-NCI 设备；通话无声及持续温度/充电验证也未完成。
+8. 设备功能：完整厂商 DT 在 `i2c@a80000/nq@28` 声明 `qcom,sn-nci`。已审查公开 QTI
+   驱动（`Pzqqt/android_kernel_xiaomi_marble`，提交
+   `f53cb4935e8c44e9aeb02938a44a052a4ef8ddcb`）：GPIO 与 1.8V regulator 属性名称相符，
+   但驱动属于厂商字符设备接口，注册 `/dev/nq-nci`，不接入主线 NCI 子系统；依赖当前树缺少的
+   `linux/nfcinfo.h` 和 `linux/ipc_logging.h`，且 `class_create()`、I2C remove 回调使用旧 API。
+   它读取 `qcom,sn-irq/ven/firm/clkreq` 与 `qcom,sn-vdd-1p8-*`，但不使用候选 DT 声明的参考时钟、
+   `qcom,sn-szone` 或显式 pinctrl 状态；probe 会切换 VEN 并立即访问芯片。仓库中没有对应的
+   `/dev/nq-nci` 用户态 HAL/服务，因此不能原样移植或只加 compatible。下一步需取得匹配的厂商
+   HAL/控制器证据，再决定现代化厂商 ABI 还是实现主线 NCI transport；之后才能审查 binding、
+   GPIO/电源/时钟和总线行为。02:46 实机只读核对未发现 `/sys/class/nfc`、NFC 日志或已实例化的
+   NQ-NCI 设备；通话无声及持续温度/充电验证也未完成。
 
 ### 暂停或明确停止
 
