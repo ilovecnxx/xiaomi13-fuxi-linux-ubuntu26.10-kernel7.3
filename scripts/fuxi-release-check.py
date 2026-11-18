@@ -44,9 +44,9 @@ def main():
                                 if line.startswith("fpr:")), "")
             if fingerprint.upper() != expected_key.upper():
                 missing.append("selected signing key matches approved fingerprint")
-    dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"], text=True)
+    dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain"], text=True)
     if dirty:
-        missing.append("clean tracked worktree")
+        missing.append("clean worktree")
     if missing:
         raise SystemExit("Public release blocked: " + ", ".join(missing))
     print("unsigned prerelease approved and clean-tree checks passed" if args.unsigned_prerelease

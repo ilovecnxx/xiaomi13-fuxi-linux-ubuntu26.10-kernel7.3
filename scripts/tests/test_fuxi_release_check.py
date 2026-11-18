@@ -1,5 +1,7 @@
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +37,20 @@ class ReleasePolicyTests(unittest.TestCase):
         self.approved["unsigned_prerelease_approved"] = True
         self.approved["third_party_redistribution_reviewed"] = False
         self.assertEqual(CHECK.policy_requirements(self.approved, True), ["third_party_redistribution_reviewed"])
+
+    def test_untracked_file_blocks_release_check(self):
+        self.approved["unsigned_prerelease_approved"] = True
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy_path = root / "packaging" / "release-policy.json"
+            policy_path.parent.mkdir()
+            policy_path.write_text(json.dumps(self.approved), encoding="utf-8")
+            with patch.object(CHECK, "ROOT", root), \
+                    patch.object(CHECK.subprocess, "check_output", return_value="?? new-file.txt\n") as status, \
+                    patch("sys.argv", ["fuxi-release-check.py", "--unsigned-prerelease"]):
+                with self.assertRaisesRegex(SystemExit, "clean worktree"):
+                    CHECK.main()
+            status.assert_called_once_with(["git", "-C", str(root), "status", "--porcelain"], text=True)
 
 
 if __name__ == "__main__":
