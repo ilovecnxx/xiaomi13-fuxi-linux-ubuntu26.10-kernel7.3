@@ -83,6 +83,11 @@
   增加扩展列表识别后，15 秒实测 14 条卫星报告均缺少旧版和扩展列表，解码错误为 0；
   15 条位置报告仍均为 IN_PROGRESS，463 项脚本测试通过。下次在开阔环境对照卫星报告，
   并确认有效定位的水平误差与 UTC；GeoClue 尚未接通。
+  主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
+  `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
+  固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
+  尚未部署，手机仍为 modem `.1801`。下一步接入 GeoClue GPS_RAW 消费端，处理同报告精度及
+  完整日期的时效校验；系统 libmm-glib 没有该扩展 getter。记录见 GNSS 验收文档及 `work/loc-radius/`。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
   边界诊断和配方见 `kernel/experiments/suspend/`。当前 `suspend6` 在已有 IPCC 只读快照

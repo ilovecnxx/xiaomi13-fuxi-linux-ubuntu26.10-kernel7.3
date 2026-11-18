@@ -30,7 +30,7 @@
       {"path": "work/patches/mm-netlink-uaf-20261101/mm-netlink-uaf.diff", "sha256": "c26de75d6bc86db7e8d30b221c51df338c0fb17934af53e7d84e041dbc024d68"},
       {"path": "work/patches/mm-sub-bind-20261106/0001-fuxi-dual-sim-subscription-bind.patch", "sha256": "0fe800df3f9aac3708701f82a8c76ad4b73021891e617d8adec2b684de2b8fbe"},
       {"path": "work/patches/mm-rsrp-quality-20261106/0002-fuxi-rsrp-signal-quality.patch", "sha256": "87b1a67b8b3d5edee0baee4bb72dca8cb32e469a23981d0dc7791ced0d8f8b76"},
-      {"path": "packaging/sources/modemmanager-fuxi-loc.patch", "sha256": "0921e0d7231a78f2b48926e72f137cdd5c07334f2a8239b6ac52c428555284b9"},
+      {"path": "packaging/sources/modemmanager-fuxi-loc.patch", "sha256": "331b8582ff152b8e98a7caa0e2c7b62d1a7cd5cf6eaf63ff3565bc3bf45f806d"},
       {"path": "packaging/sources/modemmanager-suspend-resume.patch", "sha256": "29fd06ea105ea357f2ea9147239b57459c19a01489bd3d44c94ae9ca16d09cd4"},
       {"path": "packaging/sources/modemmanager-loc-initialization.patch", "sha256": "89b88135fb7d3274dc7945e3ca50efbfa19c7cd9d69c519dda6b29902ff77139"}
     ]

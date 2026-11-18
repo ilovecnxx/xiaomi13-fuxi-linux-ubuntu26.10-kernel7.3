@@ -1,9 +1,177 @@
+diff --git a/libmm-glib/mm-location-gps-raw.c b/libmm-glib/mm-location-gps-raw.c
+index d776d1c..0b85e97 100644
+--- a/libmm-glib/mm-location-gps-raw.c
++++ b/libmm-glib/mm-location-gps-raw.c
+@@ -21,6 +21,7 @@
+  */
+ 
+ #include <string.h>
++#include <math.h>
+ #include <ctype.h>
+ #include <stdlib.h>
+ 
+@@ -47,6 +48,7 @@ G_DEFINE_TYPE (MMLocationGpsRaw, mm_location_gps_raw, G_TYPE_OBJECT)
+ #define PROPERTY_LATITUDE  "latitude"
+ #define PROPERTY_LONGITUDE "longitude"
+ #define PROPERTY_ALTITUDE  "altitude"
++#define PROPERTY_FUXI_RADIUS "x-fuxi-horizontal-radius-m"
+ 
+ struct _MMLocationGpsRawPrivate {
+     GRegex   *gga_regex;
+@@ -56,6 +58,7 @@ struct _MMLocationGpsRawPrivate {
+     gdouble  latitude;
+     gdouble  longitude;
+     gdouble  altitude;
++    gdouble  fuxi_radius;
+ };
+ 
+ /*****************************************************************************/
+@@ -235,6 +238,8 @@ mm_location_gps_raw_add_trace (MMLocationGpsRaw *self,
+                                              NULL);
+ 
+     if (g_regex_match (self->priv->gga_regex, trace, 0, &match_info)) {
++        /* A new GGA fix cannot inherit a previous LOC uncertainty. */
++        self->priv->fuxi_radius = 0;
+         /* UTC time */
+         g_free (self->priv->utc_time);
+         self->priv->utc_time = g_match_info_fetch (match_info, 1);
+@@ -314,6 +319,10 @@ mm_location_gps_raw_get_dictionary (MMLocationGpsRaw *self)
+                                PROPERTY_ALTITUDE,
+                                g_variant_new_double (self->priv->altitude));
+ 
++    if (isfinite (self->priv->fuxi_radius) && self->priv->fuxi_radius > 0)
++        g_variant_builder_add (&builder, "{sv}", PROPERTY_FUXI_RADIUS,
++                               g_variant_new_double (self->priv->fuxi_radius));
++
+     return g_variant_ref_sink (g_variant_builder_end (&builder));
+ }
+ 
+@@ -357,6 +366,8 @@ mm_location_gps_raw_new_from_dictionary (GVariant *dictionary,
+             self->priv->latitude = g_variant_get_double (value);
+         else if (g_str_equal (key, PROPERTY_ALTITUDE))
+             self->priv->altitude = g_variant_get_double (value);
++        else if (g_str_equal (key, PROPERTY_FUXI_RADIUS) && g_variant_is_of_type (value, G_VARIANT_TYPE_DOUBLE))
++            self->priv->fuxi_radius = g_variant_get_double (value);
+         g_free (key);
+         g_variant_unref (value);
+     }
+diff --git a/libmm-glib/tests/meson.build b/libmm-glib/tests/meson.build
+index 83dd80d..9c1be86 100644
+--- a/libmm-glib/tests/meson.build
++++ b/libmm-glib/tests/meson.build
+@@ -4,6 +4,7 @@
+ test_units = [
+   'common-helpers',
+   'pco',
++  'fuxi-loc',
+ ]
+ 
+ foreach test_unit: test_units
+diff --git a/libmm-glib/tests/test-fuxi-loc.c b/libmm-glib/tests/test-fuxi-loc.c
+new file mode 100644
+index 0000000..e7b3e6e
+--- /dev/null
++++ b/libmm-glib/tests/test-fuxi-loc.c
+@@ -0,0 +1,93 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#include <math.h>
++#include "mm-location-gps-raw.h"
++
++#define RADIUS "x-fuxi-horizontal-radius-m"
++
++static MMLocationGpsRaw *
++new_fix (GVariant *radius)
++{
++    GVariantBuilder builder;
++    g_autoptr(GVariant) dictionary = NULL;
++    g_autoptr(GError) error = NULL;
++    MMLocationGpsRaw *fix;
++
++    g_variant_builder_init (&builder, G_VARIANT_TYPE ("a{sv}"));
++    g_variant_builder_add (&builder, "{sv}", "utc-time", g_variant_new_string ("120000.000"));
++    g_variant_builder_add (&builder, "{sv}", "latitude", g_variant_new_double (0));
++    g_variant_builder_add (&builder, "{sv}", "longitude", g_variant_new_double (0));
++    if (radius)
++        g_variant_builder_add (&builder, "{sv}", RADIUS, radius);
++    dictionary = g_variant_ref_sink (g_variant_builder_end (&builder));
++    fix = mm_location_gps_raw_new_from_dictionary (dictionary, &error);
++    g_assert_no_error (error);
++    g_assert_nonnull (fix);
++    return fix;
++}
++
++static void
++assert_radius (MMLocationGpsRaw *fix, gboolean present)
++{
++    g_autoptr(GVariant) dictionary = mm_location_gps_raw_get_dictionary (fix);
++    g_autoptr(GVariant) radius = NULL;
++
++    g_assert_nonnull (dictionary);
++    radius = g_variant_lookup_value (dictionary, RADIUS, NULL);
++    if (present) {
++        g_assert_nonnull (radius);
++        g_assert_true (g_variant_is_of_type (radius, G_VARIANT_TYPE_DOUBLE));
++        g_assert_cmpfloat (g_variant_get_double (radius), ==, 7.25);
++    } else
++        g_assert_null (radius);
++}
++
++static void
++test_roundtrip (void)
++{
++    g_autoptr(MMLocationGpsRaw) fix = new_fix (g_variant_new_double (7.25));
++    g_autoptr(MMLocationGpsRaw) copy = NULL;
++    g_autoptr(GVariant) dictionary = mm_location_gps_raw_get_dictionary (fix);
++    g_autoptr(GError) error = NULL;
++
++    assert_radius (fix, TRUE);
++    copy = mm_location_gps_raw_new_from_dictionary (dictionary, &error);
++    g_assert_no_error (error);
++    assert_radius (copy, TRUE);
++    g_assert_cmpstr (mm_location_gps_raw_get_utc_time (copy), ==, "120000.000");
++    g_assert_cmpfloat (mm_location_gps_raw_get_latitude (copy), ==, 0);
++    g_assert_cmpfloat (mm_location_gps_raw_get_longitude (copy), ==, 0);
++
++    /* Each LOC report replaces the object, including a report without radius. */
++    g_clear_object (&copy);
++    copy = new_fix (NULL);
++    assert_radius (copy, FALSE);
++
++    /* NMEA updates the existing object instead. Use a synthetic zero-coordinate fix. */
++    g_assert_true (mm_location_gps_raw_add_trace (fix,
++        "$GPGGA,120001.00,0000.000,N,00000.000,E,1,08,1.0,0.0,M,0.0,M,,*57"));
++    g_assert_cmpstr (mm_location_gps_raw_get_utc_time (fix), ==, "120001.00");
++    assert_radius (fix, FALSE);
++}
++
++static void
++test_invalid_radius (void)
++{
++    const gdouble invalid[] = { NAN, INFINITY, -INFINITY, -1, 0 };
++    g_autoptr(MMLocationGpsRaw) wrong_type = new_fix (g_variant_new_string ("7.25"));
++    guint i;
++
++    assert_radius (wrong_type, FALSE);
++    for (i = 0; i < G_N_ELEMENTS (invalid); i++) {
++        g_autoptr(MMLocationGpsRaw) fix = new_fix (g_variant_new_double (invalid[i]));
++        assert_radius (fix, FALSE);
++    }
++}
++
++int
++main (int argc, char **argv)
++{
++    g_test_init (&argc, &argv, NULL);
++    g_test_add_func ("/fuxi/loc/roundtrip", test_roundtrip);
++    g_test_add_func ("/fuxi/loc/invalid-radius", test_invalid_radius);
++    return g_test_run ();
++}
 diff --git a/src/mm-fuxi-loc.h b/src/mm-fuxi-loc.h
 new file mode 100644
-index 0000000..767f52d
+index 0000000..e8fce06
 --- /dev/null
 +++ b/src/mm-fuxi-loc.h
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,44 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef MM_FUXI_LOC_H
 +#define MM_FUXI_LOC_H
@@ -14,12 +182,13 @@ index 0000000..767f52d
 +#define MM_FUXI_LOC_IDENTITY_FILE "/etc/fuxi/mm-loc-identity"
 +
 +/* LOC UTC timestamps are milliseconds since the Unix epoch. No NMEA is
-+ * synthesized: GPS_RAW has no satellite-count or accuracy fields. */
++ * synthesized. The optional local extension carries the measured radius in metres. */
 +static GVariant *
 +mm_fuxi_loc_raw_dictionary (guint64 timestamp,
 +                           gdouble latitude,
 +                           gdouble longitude,
-+                           gdouble altitude)
++                           gdouble altitude,
++                           gdouble radius)
 +{
 +    g_autoptr(GDateTime) date = NULL;
 +    g_autofree gchar *time = NULL;
@@ -41,6 +210,8 @@ index 0000000..767f52d
 +    g_variant_builder_add (&builder, "{sv}", "longitude", g_variant_new_double (longitude));
 +    if (isfinite (altitude))
 +        g_variant_builder_add (&builder, "{sv}", "altitude", g_variant_new_double (altitude));
++    if (isfinite (radius) && radius > 0)
++        g_variant_builder_add (&builder, "{sv}", "x-fuxi-horizontal-radius-m", g_variant_new_double (radius));
 +    return g_variant_ref_sink (g_variant_builder_end (&builder));
 +}
 +
@@ -97,7 +268,7 @@ index 0385c01..ada91ed 100644
  /* Update CDMA BS location */
  void mm_iface_modem_location_cdma_bs_update (MMIfaceModemLocation *self,
 diff --git a/src/mm-shared-qmi.c b/src/mm-shared-qmi.c
-index ba14f17..810927e 100644
+index ba14f17..db21c51 100644
 --- a/src/mm-shared-qmi.c
 +++ b/src/mm-shared-qmi.c
 @@ -33,6 +33,7 @@
@@ -136,7 +307,7 @@ index ba14f17..810927e 100644
          g_clear_object (&priv->loc_client);
      }
  
-@@ -5231,6 +5239,37 @@ pds_location_event_report_indication_cb (QmiClientPds                      *clie
+@@ -5231,6 +5239,40 @@ pds_location_event_report_indication_cb (QmiClientPds                      *clie
      }
  }
  
@@ -151,6 +322,7 @@ index ba14f17..810927e 100644
 +    guint64 timestamp;
 +    gdouble latitude, longitude;
 +    gfloat altitude = NAN;
++    gfloat radius;
 +    g_autoptr(GVariant) dictionary = NULL;
 +
 +    if (!qmi_indication_loc_position_report_output_get_session_id (output, &session, NULL) ||
@@ -166,7 +338,9 @@ index ba14f17..810927e 100644
 +        !qmi_indication_loc_position_report_output_get_longitude (output, &longitude, NULL))
 +        return;
 +    qmi_indication_loc_position_report_output_get_altitude_from_sealevel (output, &altitude, NULL);
-+    dictionary = mm_fuxi_loc_raw_dictionary (timestamp, latitude, longitude, altitude);
++    if (!qmi_indication_loc_position_report_output_get_horizontal_uncertainty_circular (output, &radius, NULL))
++        radius = NAN;
++    dictionary = mm_fuxi_loc_raw_dictionary (timestamp, latitude, longitude, altitude, radius);
 +    if (dictionary)
 +        mm_iface_modem_location_gps_raw_update (MM_IFACE_MODEM_LOCATION (self), dictionary);
 +}
@@ -174,7 +348,7 @@ index ba14f17..810927e 100644
  static void
  loc_location_nmea_indication_cb (QmiClientLoc               *client,
                                   QmiIndicationLocNmeaOutput *output,
-@@ -5707,6 +5746,123 @@ loc_start_ready (QmiClientLoc *client,
+@@ -5707,6 +5749,123 @@ loc_start_ready (QmiClientLoc *client,
  }
  
  
@@ -298,7 +472,7 @@ index ba14f17..810927e 100644
  static void
  start_gps_engine (MMSharedQmi         *self,
                    GAsyncReadyCallback  callback,
-@@ -5746,6 +5902,10 @@ start_gps_engine (MMSharedQmi         *self,
+@@ -5746,6 +5905,10 @@ start_gps_engine (MMSharedQmi         *self,
      if (client) {
          QmiMessageLocStartInput *input;
  
@@ -309,7 +483,7 @@ index ba14f17..810927e 100644
          input = qmi_message_loc_start_input_new ();
          qmi_message_loc_start_input_set_session_id (input, DEFAULT_LOC_SESSION_ID, NULL);
          qmi_message_loc_start_input_set_intermediate_report_state (input, QMI_LOC_INTERMEDIATE_REPORT_STATE_DISABLE, NULL);
-@@ -6458,6 +6618,10 @@ parent_enable_location_gathering_ready (MMIfaceModemLocation *_self,
+@@ -6458,6 +6621,10 @@ parent_enable_location_gathering_ready (MMIfaceModemLocation *_self,
  
      /* Only setup NMEA traces and start GPS engine if not done already */
      if (!(priv->enabled_sources & (MM_MODEM_LOCATION_SOURCE_GPS_NMEA | MM_MODEM_LOCATION_SOURCE_GPS_RAW))) {
@@ -320,7 +494,7 @@ index ba14f17..810927e 100644
          setup_required_nmea_traces (self,
                                      (GAsyncReadyCallback)setup_required_nmea_traces_ready,
                                      task);
-@@ -6542,6 +6706,12 @@ parent_load_capabilities_ready (MMIfaceModemLocation *self,
+@@ -6542,6 +6709,12 @@ parent_load_capabilities_ready (MMIfaceModemLocation *self,
                      MM_MODEM_LOCATION_SOURCE_AGPS_MSA |
                      MM_MODEM_LOCATION_SOURCE_AGPS_MSB);
  
