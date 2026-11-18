@@ -31,7 +31,6 @@
     "kasan_errors_observed": false,
     "patch_reconstruction_tree_verified": true,
     "host_script_tests_passed": 366,
-    "superterm_tests_passed": 62,
     "full_phone_kernel_built": false,
     "device_tested": false,
     "camera_accepted": false,

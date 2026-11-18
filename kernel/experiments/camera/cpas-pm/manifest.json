@@ -41,7 +41,6 @@
       "csid_cases": 3
     },
     "host_script_tests_passed": 366,
-    "superterm_tests_passed": 62,
     "host_tests_skipped": 0,
     "report": "../../../../docs/相机CPAS运行时握手-20261115.md",
     "full_phone_kernel_built": true,

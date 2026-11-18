@@ -35,7 +35,6 @@
     "full_board_schema_validated": false,
     "patch_reconstruction_tree_verified": true,
     "host_script_tests_passed": 366,
-    "superterm_tests_passed": 62,
     "full_phone_kernel_built": true,
     "package": "linux-image-7.4.0-rc1-fuxi-cam7cpas_7.4.0-rc1-cam7cpas_arm64.deb",
     "package_sha256": "f7ec342c09f8746f00dfa540410830e23e9fc389f51dabf2d70ee7d9a46e1552",

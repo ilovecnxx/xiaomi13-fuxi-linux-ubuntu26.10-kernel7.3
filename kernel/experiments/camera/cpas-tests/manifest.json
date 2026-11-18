@@ -53,7 +53,6 @@
     },
     "host_ci_mode": "host",
     "host_script_tests_passed": 366,
-    "superterm_tests_passed": 62,
     "host_tests_skipped": 0,
     "full_phone_kernel_built": false,
     "device_tested": false,
