@@ -1,0 +1,108 @@
+diff --git a/src/mm-shared-qmi.c b/src/mm-shared-qmi.c
+--- a/src/mm-shared-qmi.c
++++ b/src/mm-shared-qmi.c
+@@ -6732,26 +6732,21 @@
+-static void
+-loc_unlock_location_engine_ready (QmiClientLoc *client,
+-                                  GAsyncResult *res,
+-                                  GTask        *task)
+-{
+-    MMIfaceModemLocation             *self;
+-    QmiMessageLocSetEngineLockOutput *output;
+-    GError                           *error = NULL;
+-
+-    output = qmi_client_loc_set_engine_lock_finish (client, res, &error);
+-    if (!output) {
+-        mm_obj_warn (client, "QMI operation failed: %s", error->message);
+-        g_error_free (error);
+-    }
+-
+-    if (!qmi_message_loc_set_engine_lock_output_get_result (output, &error)
+-     && !g_error_matches (error, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_NO_PERMISSION)) {
+-        mm_obj_warn (client, "Couldn't unlock GPS engine: %s", error->message);
+-        g_error_free (error);
+-    }
+-
+-    qmi_message_loc_set_engine_lock_output_unref (output);
+-
+-    self = g_task_get_source_object (task);
+-    location_load_capabilities (self, task);
+-}
++static void
++loc_unlock_location_engine_ready (QmiClientLoc *client,
++                                  GAsyncResult *res,
++                                  GTask        *task)
++{
++    MMIfaceModemLocation                         *self;
++    g_autoptr(QmiMessageLocSetEngineLockOutput)    output = NULL;
++    g_autoptr(GError)                             error = NULL;
++
++    output = qmi_client_loc_set_engine_lock_finish (client, res, &error);
++    if (!output)
++        mm_obj_warn (client, "QMI operation failed: %s", error->message);
++    else if (!qmi_message_loc_set_engine_lock_output_get_result (output, &error) &&
++             !g_error_matches (error, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_NO_PERMISSION))
++        mm_obj_warn (client, "Couldn't unlock GPS engine: %s", error->message);
++
++    /* Unlocking is best effort; transport and protocol failures must still
++     * finish capability loading, without decoding a missing response. */
++    self = g_task_get_source_object (task);
++    location_load_capabilities (self, task);
++}
+diff --git a/src/mm-broadband-modem-qmi.c b/src/mm-broadband-modem-qmi.c
+--- a/src/mm-broadband-modem-qmi.c
++++ b/src/mm-broadband-modem-qmi.c
+@@ -14939,23 +14939,30 @@
+-static void
+-qmi_port_allocate_client_ready (MMPortQmi *qmi,
+-                                GAsyncResult *res,
+-                                GTask *task)
+-{
+-    MMBroadbandModemQmi *self;
+-    InitializationStartedContext *ctx;
+-    GError *error = NULL;
+-
+-    self = g_task_get_source_object (task);
+-    ctx  = g_task_get_task_data (task);
+-
+-    if (!mm_port_qmi_allocate_client_finish (qmi, res, &error)) {
+-        mm_obj_dbg (self, "couldn't allocate client for service '%s': %s",
+-                    ctx->service_index < G_N_ELEMENTS (qmi_services) ?
+-                        qmi_service_get_string (qmi_services[ctx->service_index]) : "voice (secondary subscription)",
+-                    error->message);
+-        g_error_free (error);
+-    }
+-
+-    ctx->service_index++;
+-    allocate_next_client (task);
+-}
++static void
++qmi_port_allocate_client_ready (MMPortQmi *qmi,
++                                GAsyncResult *res,
++                                GTask *task)
++{
++    MMBroadbandModemQmi *self;
++    InitializationStartedContext *ctx;
++    GError *error = NULL;
++
++    self = g_task_get_source_object (task);
++    ctx  = g_task_get_task_data (task);
++
++    if (!mm_port_qmi_allocate_client_finish (qmi, res, &error)) {
++        mm_obj_dbg (self, "couldn't allocate client for service '%s': %s",
++                    ctx->service_index < G_N_ELEMENTS (qmi_services) ?
++                        qmi_service_get_string (qmi_services[ctx->service_index]) : "voice (secondary subscription)",
++                    error->message);
++        /* Keep the missing-GPS cause visible without logging QMI payloads. */
++        if (ctx->service_index < G_N_ELEMENTS (qmi_services) &&
++            qmi_services[ctx->service_index] == QMI_SERVICE_LOC &&
++            g_file_test ("/etc/fuxi/mm-loc-identity", G_FILE_TEST_EXISTS))
++            mm_obj_warn (self, "LOC client unavailable; GPS capabilities may be missing: %s",
++                         error->message);
++
++        g_error_free (error);
++    }
++
++    ctx->service_index++;
++    allocate_next_client (task);
++}

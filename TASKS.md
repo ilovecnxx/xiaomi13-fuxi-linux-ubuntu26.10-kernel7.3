@@ -51,7 +51,7 @@
 | 手机运行/默认 | `7.4.0-rc3-fuxi-upstream74rc3`；fallback `7.4.0-rc1-fuxi-suspend6` | 2026-11-18 安装并正常重启；bootcount `pending=0`；新内核和 fallback 的 Image、DTB、initrd、cmdline 校验通过 |
 | 离线挂起候选 | `7.4.0-rc1-fuxi-suspend7`，六补丁树 `1c836d26101571c017fe6bdfdf94e45c11c83091` | QRTR RX/候选 QMI 头追踪，完整包和主机验证通过；比当前主用内核旧，保持离线实验包，不取代 rc3 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
-| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261116.0917`；`fuxi-desktop 0.20261118.1901` | 本轮仅升级 desktop，载荷仅两份会话关系配置变化；停止重复亮度服务，Phosh/传感器代理 PID 未变 |
+| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261118.1801`；`fuxi-desktop 0.20261118.1901` | 本轮仅升级 modem；普通重启 MM 后恢复 connected/home，GPS_RAW 按需启停通过 |
 
 ## 整机体验进展
 
@@ -74,7 +74,10 @@
   进行有界 GPS_RAW 启停及配置恢复，不读取坐标。15 秒实机会话 completed，清理恢复仅 lac-ci、
   signals=no。原始 LOC 20 秒收到 20 条 IN_PROGRESS、19 条卫星报告，仍是 0 有效位置/卫星 fix。
   MM 首次缺失 GPS_RAW 能力此前再次出现，调试重启后恢复，根因未修；临时调试配置已清除。
-  新会话选项已随 modem `0.20261116.0917` 安装；本轮未重做定位，不计有效 fix。
+  11-18 修复 LOC 解锁无响应时仍解析空响应的错误；带 fuxi marker 的 LOC 客户端分配失败现在记录普通警告。
+  更新前 rc3 上首次启动的 MM 只有 lac-ci，独立 LOC 查询成功；安装 `.1801` 后普通重启 MM，
+  GPS_RAW 恢复，蜂窝 connected/home。标准 15 秒启停及清理通过，未读取坐标。33 项定向及全脚本
+  460 项通过。下次自然启动先查能力和 LOC 分配警告；本轮没有证明首次能力缺失的根因。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC
   边界诊断和配方见 `kernel/experiments/suspend/`。当前 `suspend6` 在已有 IPCC 只读快照
