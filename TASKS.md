@@ -106,7 +106,11 @@
   绑定该接口的 IPv4/IPv6 证书校验 HTTPS 均为 200。`qmapmux0.0` 是 APN `IMS`、profile 2，
   仍为 DOWN、无地址和默认路由。默认数据链路正常；IMS bearer 的 MM connected 与内核接口
   状态差异仍待确认其预期语义，未断开、重连或重启。内核仍为
-  `7.4.0-rc3-fuxi-upstream74rc3`，21:42 时运行约 20 小时 24 分。
+  `7.4.0-rc3-fuxi-upstream74rc3`，21:49 时运行约 20 小时 31 分，boot ID 未变。
+  随后只读核对显示两个 `qmapmux` 设备均为 NetworkManager `unmanaged`，因此没有 NM 活动连接；
+  `qmapmux0.1` 仍由 MM 直接配置并保持双栈可用。IMS bearer 的 MM 配置为 IPv6-only，QMI 日志中
+  的 IPv4 建链被 `pdn-ipv4-call-disallowed` 拒绝；MM 仍报告 IPv6 配置，但内核接口没有地址或
+  路由且保持 DOWN。该状态仍不足以确认 IMS bearer 的预期内核语义，继续不做重连、断开或重启。
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
