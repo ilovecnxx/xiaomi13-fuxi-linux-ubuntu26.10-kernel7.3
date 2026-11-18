@@ -251,6 +251,48 @@ class Transport:
         if result or error:
             raise RuntimeError("QMI operation failed (%d, %d)" % (result, error))
 
+    def expanded_sv(self, _, message, report):
+        # Device::indication supplies a QMUX frame as bytes in PyGObject.
+        if len(message) < 13:
+            return
+        marker, size, _, service, cid, flags, _, msg_id, payload_size = struct.unpack_from('<BHBBBBHHH', message)
+        if (marker != 1 or service != int(self.Qmi.Service.LOC) or flags != 4 or msg_id != 0x25
+                or cid not in (self.client.get_cid(), self.Qmi.CID_BROADCAST)):
+            return
+        expanded = None
+        try:
+            if size != len(message) - 1 or payload_size != len(message) - 13:
+                raise ValueError('inconsistent frame size')
+            pos = 13
+            while pos < len(message):
+                kind, length = struct.unpack_from('<BH', message, pos)
+                pos += 3
+                end = pos + length
+                if end > len(message):
+                    raise ValueError('truncated TLV')
+                if kind == 0x11:
+                    if expanded is not None:
+                        raise ValueError('duplicate expanded SV list')
+                    expanded = memoryview(message)[pos:end]
+                pos = end
+            if expanded is None:
+                report['expanded_sv_list_absent'] += 1
+                return
+            count, = struct.unpack_from('B', expanded)
+            # LOC v02: one count byte, then 29 wire bytes per expanded SV.
+            if count > 176 or len(expanded) != 1 + 29 * count:
+                raise ValueError('invalid expanded SV list length')
+            signal = False
+            for valid, snr in struct.iter_unpack('<I20xf1x', expanded[1:]):
+                if valid & 0x80 and math.isfinite(snr) and snr > 0:
+                    signal = True
+                    break
+            report['expanded_sv_lists'] += 1
+            report['expanded_sv_lists_with_entries'] += bool(count)
+            report['expanded_sv_lists_with_signal'] += signal
+        except (ValueError, struct.error):
+            report['expanded_sv_list_errors'] += 1
+
     def register(self, report):
         q = self.Qmi
         flags = q.LocEventRegistrationFlag
@@ -267,7 +309,8 @@ class Transport:
             "nmea": lambda *_: self.increment(report, "nmea_reports"),
         }
         for name, callback in callbacks.items():
-            self.handlers.append(self.client.connect(name, callback))
+            self.handlers.append((self.client, self.client.connect(name, callback)))
+        self.handlers.append((self.device, self.device.connect('indication', self.expanded_sv, report)))
 
     @staticmethod
     def increment(report, key):
@@ -296,8 +339,8 @@ class Transport:
 
     def release(self):
         if self.client is not None:
-            for handler in self.handlers:
-                self.client.disconnect(handler)
+            for owner, handler in self.handlers:
+                owner.disconnect(handler)
             self.call(self.device, "release_client", self.client,
                       self.Qmi.DeviceReleaseClientFlags.RELEASE_CID, 8, None)
             self.client = None
@@ -315,6 +358,9 @@ def session(transport, node, seconds):
               "satellite_position_with_radius_utc_confidence": 0,
               "sv_reports_with_entries": 0, "sv_reports_with_signal": 0,
               "sv_reports_without_legacy_list": 0, "sv_reports_unreadable": 0,
+              "expanded_sv_lists": 0, "expanded_sv_lists_with_entries": 0,
+              "expanded_sv_lists_with_signal": 0, "expanded_sv_list_absent": 0,
+              "expanded_sv_list_errors": 0,
               "sv_reports": 0, "nmea_reports": 0, "session_status_counts": {},
               "cleanup": {"stop": "not_needed", "release": False, "close": False}}
     start_attempted = False

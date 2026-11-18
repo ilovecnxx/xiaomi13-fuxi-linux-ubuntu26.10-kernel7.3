@@ -2,6 +2,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import struct
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -276,6 +277,30 @@ class GnssSessionTest(unittest.TestCase):
             with self.assertRaises(type(failure)):
                 GNSS.preflight(run)
 
+    def test_expanded_sv_wire_reports(self):
+        transport = GNSS.Transport.__new__(GNSS.Transport)
+        transport.Qmi = SimpleNamespace(Service=SimpleNamespace(LOC=16), CID_BROADCAST=255)
+        transport.client = SimpleNamespace(get_cid=lambda: 3)
+        report = GNSS.session(FakeTransport(), 0, 1)
+        def send(data, cid=3, extra=b''):
+            payload = b'' if data is None else struct.pack('<BH', 0x11, len(data)) + data
+            payload += extra
+            header = struct.pack('<BHBBBBHHH', 1, 12 + len(payload), 128, 16, cid, 4, 1, 0x25, len(payload))
+            transport.expanded_sv(None, header + payload, report)
+        def entry(flags, snr):
+            return struct.pack('<IIHBIBfffB', flags, 1, 7, 0, 0, 0, 0, 0, snr, 0)
+        send(None)
+        send(b'\0')
+        send(b'\1')
+        send(b'\2' + entry(0, 30) + entry(128, float('nan')))
+        send(b'\2' + entry(128, 0) + entry(128, 30), cid=255)
+        send(b'\1' + entry(128, 30), cid=4)
+        send(b'\0', extra=b'\x12\x18\0')
+        send(b'\0', extra=b'\x11\x01\0\0')
+        self.assertEqual([report[k] for k in ('expanded_sv_lists', 'expanded_sv_lists_with_entries',
+                         'expanded_sv_lists_with_signal', 'expanded_sv_list_absent',
+                         'expanded_sv_list_errors', 'satellite_fix_reports')], [3, 2, 1, 1, 3, 0])
+
     def test_registration_wire_identity_and_order(self):
         transport = GNSS.Transport.__new__(GNSS.Transport)
         transport.handlers = []
@@ -284,6 +309,7 @@ class GnssSessionTest(unittest.TestCase):
                                        LocSatelliteValidInformation=SimpleNamespace(SIGNAL_TO_NOISE_RATIO=128),
                                        LocTechnologyUsed=SimpleNamespace(SATELLITE=1))
         transport.client = SimpleNamespace(connect=lambda *args: 1)
+        transport.device = SimpleNamespace(connect=lambda *args: 1)
         calls = []
         transport.raw = lambda message, tlvs: calls.append((message, tlvs))
         transport.register({})
