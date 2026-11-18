@@ -111,6 +111,12 @@
   `qmapmux0.1` 仍由 MM 直接配置并保持双栈可用。IMS bearer 的 MM 配置为 IPv6-only，QMI 日志中
   的 IPv4 建链被 `pdn-ipv4-call-disallowed` 拒绝；MM 仍报告 IPv6 配置，但内核接口没有地址或
   路由且保持 DOWN。该状态仍不足以确认 IMS bearer 的预期内核语义，继续不做重连、断开或重启。
+  源码审计确认 MM 创建 mux 子接口后，连接阶段显式置 UP 的对象是主数据接口；bearer 的
+  D-Bus `Connected`/IP 配置更新不检查子接口管理状态。内核 rmnet 子接口初始化未置 `IFF_UP`；
+  81voltd 将地址经 IMSD 回报给基带，没有执行主机地址或路由配置。独立的 `fuxi-datacard`
+  直接 WDS 数据路径会显式配置主机接口，但不负责这里的 MM IMS bearer。因此这些路径能解释
+  状态为何可能分离，不能证明 IMS 子接口保持 DOWN 一定符合预期；源码未发现足以支持修复的
+  已证实缺陷。设备 uptime 达 24 小时后再只读复核；此前不改接口、bearer 或服务状态。
   主机候选已补齐同一 LOC 报告的水平误差传递：MM 回调和私有 libmm-glib 字典往返保留
   `x-fuxi-horizontal-radius-m`，仅输出有限正值；缺失不补值，后续 NMEA 不继承旧半径。
   固定源码重放、amd64 MM/私有库构建、真实库 2 个回归用例和 463 项脚本测试通过。
