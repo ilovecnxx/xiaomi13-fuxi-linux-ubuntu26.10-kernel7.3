@@ -111,9 +111,12 @@
   问题；7 个新用例覆盖 GPS/蜂窝、立即重启及保留其他活动源，原有 Setup 阶段测试改为等待
   请求实际到达后再取消。amd64/ARM64 均为 4 个解析及 41 个 D-Bus 用例通过，源码重放、完整
   构建与全脚本 469 项通过。安装前后 Phosh PID894、MM PID29044、配置/授权策略均未变，
-  GeoClue inactive，定位 false、自动挂起 nothing；只读 Phosh agent MaxAccuracyLevel=0。
-  源码确认该值在创建 locator 前拒绝客户端，但没有发起真实 Start，不能算桌面权限链路验收。
-  下一步在保留用户隐私设置的前提下验证真实客户端权限链路，并完成室外有效 fix、误差/UTC、
+  GeoClue inactive，定位 false、自动挂起 nothing。后续以普通用户连接真实 GeoClue/Phosh
+  验证关闭定位的拒绝路径：Start 返回用户关闭定位的 AccessDenied，客户端始终 inactive、
+  Location 为 `/`；有效总线监测记录 Start=1、MM Setup/GetLocation/位置更新均为 0。
+  已确认运行程序是 `.2201` 候选，MM 源位/signals 和桌面/MM PID 未变；删除测试客户端后
+  正常停止 GeoClue，恢复 inactive。只验证关闭分支，未开启定位或验证获准后的采集链路。
+  下一步在保留用户隐私设置的前提下验证定位开启后的客户端授权，并完成室外有效 fix、误差/UTC、
   功耗及恢复验收；不得把原生隔离测试当成桌面或卫星验收。记录见 GNSS 验收文档及
   `work/{loc-radius,geoclue-raw}/`；主机测试不代表桌面定位已可用。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
@@ -254,7 +257,7 @@
    每个新候选保留准确来源及恢复入口；MM 还需多轮稳定性验证，自动挂起保持关闭，不开始
    续航验收。
 3. MM `.2101`、GeoClue `.2201` 已部署；下一次自然启动核对 GPS_RAW 能力与 LOC 分配警告，不为此主动重启。
-   桌面位置开关当前 false，保留用户设置；真实客户端权限链路、室外有效 fix 和误差/UTC、
+   桌面位置开关当前 false，关闭时真实客户端拒绝路径通过；保留用户设置，定位开启后的授权、室外有效 fix 和误差/UTC、
    功耗及恢复仍待验收。耳机验证 A2DP，操作前核对蓝牙当前用户设置。
 4. 核对 CS35L41 保护固件/标定与安全音量；识别 NFC 控制器和接线后实现驱动通路。
 
