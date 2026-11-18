@@ -91,8 +91,12 @@
   RAW 停止恢复原 RAW/signals 设置并保留其他当前源；覆盖启动中停止、取消、失败和设备消失。
   配方重放与已测树一致，amd64 MM/私有库及 GeoClue 完整守护进程构建通过；GeoClue 4 个解析与
   10 个隔离 D-Bus 用例、MM 扩展 3 个用例及现有 common/pco 测试、463 项脚本测试通过。
-  尚未部署，手机仍为 modem `.1801`、系统 GeoClue。下一步完成 ARM64 打包与配置保留方案，
-  检查重复启停/多消费者和桌面权限链路，再做室外有效 fix 验收。记录见 GNSS 验收文档及
+  后续主机回归复现并修复同步停止后立即重启残留 RAW、其他源停止清掉原有 RAW 的问题；
+  RAW 新会话读取实际配置，启动中重启排队，后续停止/取消可撤销排队请求；最后一个内部源
+  停止时补做延后的 signals 恢复。完整 GeoClue 构建、4 个解析及 18 个隔离 D-Bus 用例通过，
+  包括暂缓 Setup 返回后的重启/设备消失与两种停止顺序。尚未部署，手机仍为 modem `.1801`、
+  系统 GeoClue。下一步处理其他源启动与 RAW 启停的重叠配置请求及共享 signals 基线，
+  再完成 ARM64 打包、配置保留和桌面权限链路，最后做室外有效 fix 验收。记录见 GNSS 验收文档及
   `work/{loc-radius,geoclue-raw}/`；主机测试不代表桌面定位已可用。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
   捕获全 IRQ、设备 PM、RPMh/AOSS/SMP2P、丢失计数及只读平台睡眠统计。PSCI/GIC/PDC

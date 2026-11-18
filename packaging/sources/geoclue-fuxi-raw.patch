@@ -88,7 +88,7 @@ index 5b348d2..222edbb 100644
          if (gclue_modem_get_is_gps_available (priv->modem))
                  if (!gclue_modem_disable_gps (priv->modem,
 diff --git a/src/gclue-modem-manager.c b/src/gclue-modem-manager.c
-index e6ee823..a9b7550 100644
+index e6ee823..51d5643 100644
 --- a/src/gclue-modem-manager.c
 +++ b/src/gclue-modem-manager.c
 @@ -27,6 +27,7 @@
@@ -99,7 +99,7 @@ index e6ee823..a9b7550 100644
  
  /**
   * SECTION:gclue-modem-manager
-@@ -50,6 +51,12 @@ struct _GClueModemManagerPrivate {
+@@ -50,6 +51,14 @@ struct _GClueModemManagerPrivate {
          MMLocation3gpp *location_3gpp;
          gboolean location_3gpp_ignore_previous;
          MMLocationGpsNmea *location_nmea;
@@ -109,10 +109,12 @@ index e6ee823..a9b7550 100644
 +        gboolean raw_signals_were_enabled;
 +        gboolean raw_setup_pending;
 +        gboolean raw_stop_requested;
++        gboolean raw_signals_restore_pending;
++        GTask *raw_restart;
  
          GCancellable *cancellable;
  
-@@ -80,6 +87,7 @@ enum {
+@@ -80,6 +89,7 @@ enum {
          FIX_3G,
          FIX_CDMA,
          FIX_GPS,
@@ -120,7 +122,7 @@ index e6ee823..a9b7550 100644
          SIGNAL_LAST
  };
  
-@@ -247,6 +255,7 @@ gclue_modem_manager_class_init (GClueModemManagerClass *klass)
+@@ -247,6 +257,7 @@ gclue_modem_manager_class_init (GClueModemManagerClass *klass)
          signals[FIX_3G] = g_signal_lookup ("fix-3g", GCLUE_TYPE_MODEM);
          signals[FIX_CDMA] = g_signal_lookup ("fix-cdma", GCLUE_TYPE_MODEM);
          signals[FIX_GPS] = g_signal_lookup ("fix-gps", GCLUE_TYPE_MODEM);
@@ -128,7 +130,7 @@ index e6ee823..a9b7550 100644
  }
  
  static void
-@@ -585,6 +594,38 @@ on_location_changed_get_gps_nmea (GObject    *modem_object,
+@@ -585,6 +596,38 @@ on_location_changed_get_gps_nmea (GObject    *modem_object,
  #endif
  }
  
@@ -167,16 +169,94 @@ index e6ee823..a9b7550 100644
  static void
  on_location_changed (GObject    *modem_object,
                       GParamSpec *pspec,
-@@ -598,6 +639,8 @@ on_location_changed (GObject    *modem_object,
+@@ -598,6 +641,86 @@ on_location_changed (GObject    *modem_object,
                  on_location_changed_get_cdma (modem_object, manager);
          if ((manager->priv->caps & MM_MODEM_LOCATION_SOURCE_GPS_NMEA) != 0)
                  on_location_changed_get_gps_nmea (modem_object, manager);
 +        if ((manager->priv->caps & MM_MODEM_LOCATION_SOURCE_GPS_RAW) != 0)
 +                on_location_changed_get_gps_raw (modem_object, manager);
++}
++
++static gboolean
++location_state_from_reply (GVariant *reply, MMModemLocationSource *enabled,
++                           gboolean *signals_enabled, GError **error)
++{
++        g_autoptr(GVariant) properties = NULL;
++        guint sources;
++
++        if (!reply)
++                return FALSE;
++        g_variant_get (reply, "(@a{sv})", &properties);
++        if (!g_variant_lookup (properties, "Enabled", "u", &sources) ||
++            !g_variant_lookup (properties, "SignalsLocation", "b", signals_enabled)) {
++                g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
++                                     "Missing modem location configuration");
++                return FALSE;
++        }
++        *enabled = sources;
++        return TRUE;
++}
++
++static gboolean
++get_location_state_sync (GClueModemManager *manager, MMModemLocationSource *enabled,
++                         gboolean *signals_enabled, GCancellable *cancellable, GError **error)
++{
++        g_autoptr(GVariant) reply = g_dbus_proxy_call_sync (
++                G_DBUS_PROXY (manager->priv->modem_location),
++                "org.freedesktop.DBus.Properties.GetAll",
++                g_variant_new ("(s)", "org.freedesktop.ModemManager1.Modem.Location"),
++                G_DBUS_CALL_FLAGS_NONE, 5000, cancellable, error);
++
++        return location_state_from_reply (reply, enabled, signals_enabled, error);
++}
++
++static void
++on_raw_restarted (GObject *object, GAsyncResult *result, gpointer user_data)
++{
++        GTask *task = user_data;
++        GError *error = NULL;
++
++        if (gclue_modem_manager_enable_gps_finish (GCLUE_MODEM (object), result, &error))
++                g_task_return_boolean (task, TRUE);
++        else
++                g_task_return_error (task, error);
++        g_object_unref (task);
++}
++
++static void
++restart_raw_if_requested (GClueModemManager *manager)
++{
++        GTask *task = g_steal_pointer (&manager->priv->raw_restart);
++
++        if (!task)
++                return;
++        if (g_task_return_error_if_cancelled (task)) {
++                g_object_unref (task);
++                return;
++        }
++        if (manager->priv->raw_started_ms) {
++                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
++                                         "Previous GPS RAW configuration was not restored");
++                g_object_unref (task);
++                return;
++        }
++        gclue_modem_manager_enable_gps (GCLUE_MODEM (manager), g_task_get_cancellable (task),
++                                        on_raw_restarted, task);
++}
++
++static void
++cancel_raw_restart (GClueModemManager *manager)
++{
++        GTask *task = g_steal_pointer (&manager->priv->raw_restart);
++
++        if (!task)
++                return;
++        g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_CANCELLED, "GPS RAW stopped");
++        g_object_unref (task);
  }
  
  static void
-@@ -610,10 +653,31 @@ on_modem_location_setup (GObject      *modem_object,
+@@ -610,10 +733,31 @@ on_modem_location_setup (GObject      *modem_object,
                  (g_task_get_source_object (task));
          GClueModemManagerPrivate *priv = manager->priv;
          GError *error = NULL;
@@ -211,24 +291,120 @@ index e6ee823..a9b7550 100644
                  g_task_return_error (task, error);
  
                  goto out;
-@@ -642,12 +706,15 @@ enable_caps (GClueModemManager    *manager,
+@@ -627,9 +771,49 @@ on_modem_location_setup (GObject      *modem_object,
+ 
+         g_task_return_boolean (task, TRUE);
+ out:
++        if (priv->modem_location == MM_MODEM_LOCATION (modem_object) &&
++            GPOINTER_TO_UINT (g_task_get_task_data (task)) == MM_MODEM_LOCATION_SOURCE_GPS_RAW)
++                restart_raw_if_requested (manager);
+         g_object_unref (task);
+ }
+ 
++static void
++on_raw_state_ready (GObject *object, GAsyncResult *result, gpointer user_data)
++{
++        GTask *task = user_data;
++        GClueModemManager *manager = g_task_get_source_object (task);
++        GClueModemManagerPrivate *priv = manager->priv;
++        g_autoptr(GVariant) reply = NULL;
++        GError *error = NULL;
++        MMModemLocationSource enabled;
++        gboolean signals_enabled;
++
++        reply = g_dbus_proxy_call_finish (G_DBUS_PROXY (object), result, &error);
++        if (priv->modem_location != MM_MODEM_LOCATION (object)) {
++                g_clear_error (&error);
++                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_CANCELLED, "Modem disconnected");
++                g_object_unref (task);
++                return;
++        }
++        if (!location_state_from_reply (reply, &enabled, &signals_enabled, &error)) {
++                priv->raw_setup_pending = FALSE;
++                priv->raw_started_ms = 0;
++                priv->raw_stop_requested = FALSE;
++                priv->caps &= ~MM_MODEM_LOCATION_SOURCE_GPS_RAW;
++                g_task_return_error (task, error);
++                restart_raw_if_requested (manager);
++                g_object_unref (task);
++                return;
++        }
++        priv->raw_was_enabled = (enabled & MM_MODEM_LOCATION_SOURCE_GPS_RAW) != 0;
++        if (!priv->raw_signals_restore_pending)
++                priv->raw_signals_were_enabled = signals_enabled;
++        /* GetAll observes a completed stop even before proxy notifications run. */
++        mm_modem_location_setup (priv->modem_location,
++                                 enabled | priv->caps | MM_MODEM_LOCATION_SOURCE_GPS_RAW,
++                                 TRUE, NULL, on_modem_location_setup, task);
++}
++
+ static void
+ enable_caps (GClueModemManager    *manager,
+              MMModemLocationSource caps,
+@@ -642,14 +826,19 @@ enable_caps (GClueModemManager    *manager,
  
          priv->caps |= caps;
          task = g_task_new (manager, cancellable, callback, user_data);
+-
 +        g_task_set_task_data (task, GUINT_TO_POINTER (caps), NULL);
- 
-+        /* Wait for RAW Setup's result even if the caller cancels, then restore it. */
-+        cancellable = caps == MM_MODEM_LOCATION_SOURCE_GPS_RAW ? NULL : g_task_get_cancellable (task);
++
++        /* Read a fresh baseline; wait for Setup even on cancellation to restore it. */
++        if (caps == MM_MODEM_LOCATION_SOURCE_GPS_RAW) {
++                g_dbus_proxy_call (G_DBUS_PROXY (priv->modem_location),
++                                  "org.freedesktop.DBus.Properties.GetAll",
++                                  g_variant_new ("(s)", "org.freedesktop.ModemManager1.Modem.Location"),
++                                  G_DBUS_CALL_FLAGS_NONE, 5000, NULL, on_raw_state_ready, task);
++                return;
++        }
          caps = mm_modem_location_get_enabled (priv->modem_location) | priv->caps;
-         mm_modem_location_setup (priv->modem_location,
-                                  caps,
-                                  TRUE,
+-        mm_modem_location_setup (priv->modem_location,
+-                                 caps,
+-                                 TRUE,
 -                                 g_task_get_cancellable (task),
-+                                 cancellable,
-                                  on_modem_location_setup,
-                                  task);
+-                                 on_modem_location_setup,
+-                                 task);
++        mm_modem_location_setup (priv->modem_location, caps, TRUE, cancellable,
++                                 on_modem_location_setup, task);
  }
-@@ -766,6 +833,10 @@ disconnect_modem_location (GClueModemManager *manager)
+ 
+ static gboolean
+@@ -670,19 +859,28 @@ clear_caps (GClueModemManager    *manager,
+             GError              **error)
+ {
+         GClueModemManagerPrivate *priv;
++        MMModemLocationSource enabled, remaining;
++        gboolean signals_enabled;
+ 
+         priv = manager->priv;
+ 
+         if (priv->modem_location == NULL)
+                 return TRUE;
+ 
+-        priv->caps &= ~caps;
+-
+-        return mm_modem_location_setup_sync (priv->modem_location,
+-                                             priv->caps,
+-                                             TRUE,
+-                                             cancellable,
+-                                             error);
++        remaining = priv->caps & ~caps;
++        if (!get_location_state_sync (manager, &enabled, &signals_enabled, cancellable, error))
++                return FALSE;
++        if (!remaining && priv->raw_signals_restore_pending)
++                signals_enabled = priv->raw_signals_were_enabled;
++        if (!mm_modem_location_setup_sync (priv->modem_location,
++                                            (enabled & ~caps) | remaining,
++                                            remaining ? TRUE : signals_enabled,
++                                            cancellable, error))
++                return FALSE;
++        priv->caps = remaining;
++        if (!remaining)
++                priv->raw_signals_restore_pending = FALSE;
++        return TRUE;
+ }
+ 
+ static gboolean
+@@ -766,6 +964,12 @@ disconnect_modem_location (GClueModemManager *manager)
                                                manager);
  
          g_clear_object (&priv->modem_location);
@@ -236,10 +412,12 @@ index e6ee823..a9b7550 100644
 +        priv->raw_last_ms = 0;
 +        priv->raw_setup_pending = FALSE;
 +        priv->raw_stop_requested = FALSE;
++        priv->raw_signals_restore_pending = FALSE;
++        cancel_raw_restart (manager);
  }
  
  static void
-@@ -1137,7 +1208,7 @@ gclue_modem_manager_get_is_gps_available (GClueModem *modem)
+@@ -1137,7 +1341,7 @@ gclue_modem_manager_get_is_gps_available (GClueModem *modem)
          g_return_val_if_fail (GCLUE_IS_MODEM_MANAGER (modem), FALSE);
  
          return modem_has_caps (GCLUE_MODEM_MANAGER (modem),
@@ -248,7 +426,7 @@ index e6ee823..a9b7550 100644
  }
  
  static guint
-@@ -1237,11 +1308,34 @@ gclue_modem_manager_enable_gps (GClueModem         *modem,
+@@ -1237,11 +1441,44 @@ gclue_modem_manager_enable_gps (GClueModem         *modem,
                                  GAsyncReadyCallback callback,
                                  gpointer            user_data)
  {
@@ -263,18 +441,28 @@ index e6ee823..a9b7550 100644
 +                if (manager->priv->raw_setup_pending) {
 +                        GTask *task = g_task_new (manager, cancellable, callback, user_data);
 +
++                        if (manager->priv->raw_stop_requested) {
++                                cancel_raw_restart (manager);
++                                manager->priv->raw_restart = task;
++                                return;
++                        }
 +                        g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_PENDING, "GPS RAW setup pending");
 +                        g_object_unref (task);
 +                        return;
 +                }
-+                if (!manager->priv->raw_started_ms) {
-+                        manager->priv->raw_was_enabled =
-+                                (mm_modem_location_get_enabled (manager->priv->modem_location) & source) != 0;
-+                        manager->priv->raw_signals_were_enabled =
-+                                mm_modem_location_signals_location (manager->priv->modem_location);
-+                        manager->priv->raw_started_ms = g_get_real_time () / 1000;
-+                        manager->priv->raw_last_ms = 0;
++                if (manager->priv->raw_started_ms) {
++                        GTask *task = g_task_new (manager, cancellable, callback, user_data);
++
++                        if (manager->priv->raw_stop_requested)
++                                g_task_return_new_error (task, G_IO_ERROR, G_IO_ERROR_FAILED,
++                                                         "Previous GPS RAW configuration was not restored");
++                        else
++                                g_task_return_boolean (task, TRUE);
++                        g_object_unref (task);
++                        return;
 +                }
++                manager->priv->raw_started_ms = g_get_real_time () / 1000;
++                manager->priv->raw_last_ms = 0;
 +                manager->priv->raw_setup_pending = TRUE;
 +                manager->priv->raw_stop_requested = FALSE;
 +        }
@@ -284,20 +472,24 @@ index e6ee823..a9b7550 100644
                       cancellable,
                       callback,
                       user_data);
-@@ -1310,6 +1404,29 @@ gclue_modem_manager_disable_gps (GClueModem   *modem,
+@@ -1310,6 +1547,34 @@ gclue_modem_manager_disable_gps (GClueModem   *modem,
          manager = GCLUE_MODEM_MANAGER (modem);
  
          g_clear_object (&manager->priv->location_nmea);
 +        if (manager->priv->raw_started_ms) {
 +                GClueModemManagerPrivate *priv = manager->priv;
 +                MMModemLocationSource remaining = priv->caps & ~MM_MODEM_LOCATION_SOURCE_GPS_RAW;
-+                MMModemLocationSource enabled = mm_modem_location_get_enabled (priv->modem_location);
++                MMModemLocationSource enabled;
++                gboolean signals_enabled;
 +
 +                priv->raw_stop_requested = TRUE;
 +                if (priv->raw_setup_pending) {
++                        cancel_raw_restart (manager);
 +                        priv->caps = remaining;
 +                        return TRUE;
 +                }
++                if (!get_location_state_sync (manager, &enabled, &signals_enabled, cancellable, error))
++                        return FALSE;
 +                enabled &= ~MM_MODEM_LOCATION_SOURCE_GPS_RAW;
 +                if (priv->raw_was_enabled)
 +                        enabled |= MM_MODEM_LOCATION_SOURCE_GPS_RAW;
@@ -306,6 +498,7 @@ index e6ee823..a9b7550 100644
 +                                                    cancellable, error))
 +                        return FALSE;
 +                priv->caps = remaining;
++                priv->raw_signals_restore_pending = remaining != 0;
 +                priv->raw_started_ms = 0;
 +                priv->raw_last_ms = 0;
 +                priv->raw_stop_requested = FALSE;
@@ -378,10 +571,10 @@ index b5175f8..d83af9b 100644
             link_with: link_with,
 diff --git a/src/test-fuxi-modem.c b/src/test-fuxi-modem.c
 new file mode 100644
-index 0000000..d9e0cbf
+index 0000000..b57bd30
 --- /dev/null
 +++ b/src/test-fuxi-modem.c
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,384 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#include "gclue-modem-manager.c"
 +
@@ -404,6 +597,8 @@ index 0000000..d9e0cbf
 +        GClueModemManager *manager;
 +        guint capabilities, enabled;
 +        gboolean signals, fail_setup;
++        gboolean hold_setup;
++        GDBusMethodInvocation *pending_setup;
 +        gboolean done, success;
 +        guint fixes;
 +} Fixture;
@@ -452,13 +647,26 @@ index 0000000..d9e0cbf
 +        g_dbus_connection_emit_signal (connection, NULL, PATH,
 +                                      "org.freedesktop.DBus.Properties", "PropertiesChanged",
 +                                      g_variant_new ("(sa{sv}as)", IFACE, &changed, NULL), NULL);
-+        if (f->fail_setup) {
++        if (f->hold_setup) {
++                f->hold_setup = FALSE;
++                f->pending_setup = g_object_ref (invocation);
++        } else if (f->fail_setup) {
 +                f->fail_setup = FALSE;
 +                /* A failure may follow a partial hardware state change. */
 +                g_dbus_method_invocation_return_dbus_error (invocation,
 +                        "org.freedesktop.ModemManager1.Error.Core.Failed", "Synthetic failure");
 +        } else
 +                g_dbus_method_invocation_return_value (invocation, NULL);
++}
++
++static gboolean
++release_setup (gpointer data)
++{
++        Fixture *f = data;
++        g_assert_nonnull (f->pending_setup);
++        g_dbus_method_invocation_return_value (f->pending_setup, NULL);
++        g_clear_object (&f->pending_setup);
++        return G_SOURCE_REMOVE;
 +}
 +
 +static gpointer
@@ -559,6 +767,7 @@ index 0000000..d9e0cbf
 +{
 +        guint mode = GPOINTER_TO_UINT (data);
 +        Fixture f = { .capabilities = RAW | CELL, .enabled = CELL };
++        Fixture restarted = { 0 };
 +        g_autoptr(GError) error = NULL;
 +        g_autoptr(GDBusConnection) client = NULL;
 +        g_autoptr(GCancellable) cancellable = g_cancellable_new ();
@@ -568,10 +777,11 @@ index 0000000..d9e0cbf
 +        guint timeout;
 +        guint64 timestamp;
 +
-+        if (mode == 1 || mode == 2)
++        if (mode == 1 || mode == 2 || mode == 11)
 +                f.enabled |= RAW;
-+        f.signals = mode == 1;
++        f.signals = mode == 1 || mode == 11;
 +        f.fail_setup = mode == 4;
++        f.hold_setup = mode == 16 || mode == 17;
 +        if (mode == 5)
 +                f.capabilities |= NMEA;
 +        f.context = g_main_context_new ();
@@ -599,9 +809,28 @@ index 0000000..d9e0cbf
 +        g_assert_true (gclue_modem_get_is_gps_available (GCLUE_MODEM (f.manager)));
 +        timeout = g_timeout_add_seconds (5, timeout_cb, NULL);
 +        gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &f);
-+        if (mode == 3) {
++        if (mode == 16 || mode == 17) {
++                while (!g_async_queue_length (f.calls))
++                        g_main_context_iteration (NULL, TRUE);
++                g_assert_false (f.done);
++                if (mode == 16) {
++                        g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++                        g_assert_no_error (error);
++                        gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &restarted);
++                } else
++                        disconnect_modem_location (f.manager);
++                g_main_context_invoke (f.context, release_setup, &f);
++        }
++        if (mode == 3 || mode == 12 || mode == 13 || mode == 14) {
 +                g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
 +                g_assert_no_error (error);
++        }
++        if (mode == 12 || mode == 13 || mode == 14) {
++                gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &restarted);
++                if (mode == 13)
++                        g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++                if (mode == 14)
++                        g_cancellable_cancel (cancellable);
 +        }
 +        if (mode == 6)
 +                g_cancellable_cancel (cancellable);
@@ -610,8 +839,10 @@ index 0000000..d9e0cbf
 +        while (!f.done)
 +                g_main_context_iteration (NULL, TRUE);
 +        g_source_remove (timeout);
-+        assert_setup (&f, CELL | (mode == 5 ? NMEA : RAW), TRUE);
-+        g_assert_cmpint (f.success, ==, mode != 3 && mode != 4 && mode != 6 && mode != 7);
++        if (mode != 7)
++                assert_setup (&f, CELL | (mode == 5 ? NMEA : RAW), TRUE);
++        g_assert_cmpint (f.success, ==, mode != 3 && mode != 4 && mode != 6 && mode != 7 &&
++                         mode != 12 && mode != 13 && mode != 14 && mode != 16 && mode != 17);
 +        if (f.success && mode != 5) {
 +                timestamp = g_get_real_time () / 1000;
 +                dispatch_fix (&f, timestamp - 86400000);
@@ -619,11 +850,20 @@ index 0000000..d9e0cbf
 +                dispatch_fix (&f, timestamp);
 +                dispatch_fix (&f, timestamp);
 +                g_assert_cmpuint (f.fixes, ==, 1);
-+                if (mode == 8)
-+                        g_dbus_proxy_set_cached_property (G_DBUS_PROXY (f.manager->priv->modem_location),
-+                                "Enabled", g_variant_new_uint32 (CELL | RAW | MM_MODEM_LOCATION_SOURCE_CDMA_BS));
++                if (mode == 8) {
++                        g_assert_true (mm_modem_location_setup_sync (f.manager->priv->modem_location,
++                                CELL | RAW | MM_MODEM_LOCATION_SOURCE_CDMA_BS, TRUE, NULL, &error));
++                        g_assert_no_error (error);
++                        assert_setup (&f, CELL | RAW | MM_MODEM_LOCATION_SOURCE_CDMA_BS, TRUE);
++                }
 +                if (mode == 9)
 +                        f.manager->priv->caps |= CELL;
++                if (mode == 15) {
++                        f.manager->priv->caps |= CELL;
++                        g_assert_true (clear_caps (f.manager, CELL, NULL, &error));
++                        g_assert_no_error (error);
++                        assert_setup (&f, RAW, TRUE);
++                }
 +                g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
 +                g_assert_no_error (error);
 +                if (mode == 9)
@@ -632,11 +872,51 @@ index 0000000..d9e0cbf
 +                        dispatch_fix (&f, timestamp + 1);
 +                g_assert_cmpuint (f.fixes, ==, 1);
 +        }
-+        if (mode != 5 && mode != 7) {
-+                assert_setup (&f, CELL | ((mode == 1 || mode == 2) ? RAW : 0) |
-+                        (mode == 8 ? MM_MODEM_LOCATION_SOURCE_CDMA_BS : 0), mode == 1 || mode == 9);
-+                g_assert_cmpuint (f.manager->priv->raw_started_ms, ==, 0);
-+                g_assert_cmpuint (f.manager->priv->caps & RAW, ==, 0);
++        if (mode != 5 && mode != 7 && mode != 17) {
++                assert_setup (&f, (mode == 15 ? 0 : CELL) | ((mode == 1 || mode == 2 || mode == 11) ? RAW : 0) |
++                        (mode == 8 ? MM_MODEM_LOCATION_SOURCE_CDMA_BS : 0), mode == 1 || mode == 9 || mode == 11);
++                if (mode != 12 && mode != 16)
++                        g_assert_cmpuint (f.manager->priv->raw_started_ms, ==, 0);
++                if (mode != 12 && mode != 16)
++                        g_assert_cmpuint (f.manager->priv->caps & RAW, ==, 0);
++        }
++        if (mode == 9) {
++                g_assert_true (clear_caps (f.manager, CELL, NULL, &error));
++                g_assert_no_error (error);
++                assert_setup (&f, 0, FALSE);
++        }
++        if (mode == 12 || mode == 13 || mode == 14 || mode == 16) {
++                timeout = g_timeout_add_seconds (5, timeout_cb, NULL);
++                while (!restarted.done)
++                        g_main_context_iteration (NULL, TRUE);
++                g_source_remove (timeout);
++                g_assert_cmpint (restarted.success, ==, mode == 12 || mode == 16);
++                if (mode == 12 || mode == 16) {
++                        assert_setup (&f, CELL | RAW, TRUE);
++                        dispatch_fix (&f, g_get_real_time () / 1000);
++                        g_assert_cmpuint (f.fixes, ==, 1);
++                        g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++                        g_assert_no_error (error);
++                        assert_setup (&f, CELL, FALSE);
++                }
++        }
++        if (mode == 10) {
++                f.done = FALSE;
++                timeout = g_timeout_add_seconds (5, timeout_cb, NULL);
++                gclue_modem_enable_gps (GCLUE_MODEM (f.manager), cancellable, enabled_cb, &f);
++                while (!f.done)
++                        g_main_context_iteration (NULL, TRUE);
++                g_source_remove (timeout);
++                g_assert_true (f.success);
++                assert_setup (&f, CELL | RAW, TRUE);
++                g_assert_true (gclue_modem_disable_gps (GCLUE_MODEM (f.manager), NULL, &error));
++                g_assert_no_error (error);
++                assert_setup (&f, CELL, FALSE);
++        }
++        if (mode == 11) {
++                g_assert_true (clear_caps (f.manager, CELL, NULL, &error));
++                g_assert_no_error (error);
++                assert_setup (&f, RAW, TRUE);
 +        }
 +        g_assert_cmpint (g_async_queue_length (f.calls), ==, 0);
 +        g_object_unref (f.manager);
@@ -667,6 +947,14 @@ index 0000000..d9e0cbf
 +        g_test_add_data_func ("/fuxi/modem/disconnect-during-setup", GUINT_TO_POINTER (7), test_session);
 +        g_test_add_data_func ("/fuxi/modem/preserve-other-source", GUINT_TO_POINTER (8), test_session);
 +        g_test_add_data_func ("/fuxi/modem/keep-other-consumer-signals", GUINT_TO_POINTER (9), test_session);
++        g_test_add_data_func ("/fuxi/modem/immediate-restart", GUINT_TO_POINTER (10), test_session);
++        g_test_add_data_func ("/fuxi/modem/other-stop-preserves-raw", GUINT_TO_POINTER (11), test_session);
++        g_test_add_data_func ("/fuxi/modem/restart-during-setup", GUINT_TO_POINTER (12), test_session);
++        g_test_add_data_func ("/fuxi/modem/stop-queued-restart", GUINT_TO_POINTER (13), test_session);
++        g_test_add_data_func ("/fuxi/modem/cancel-queued-restart", GUINT_TO_POINTER (14), test_session);
++        g_test_add_data_func ("/fuxi/modem/other-consumer-stops-first", GUINT_TO_POINTER (15), test_session);
++        g_test_add_data_func ("/fuxi/modem/restart-during-held-setup", GUINT_TO_POINTER (16), test_session);
++        g_test_add_data_func ("/fuxi/modem/disconnect-during-held-setup", GUINT_TO_POINTER (17), test_session);
 +        result = g_test_run ();
 +        g_test_dbus_down (bus);
 +        return result;

@@ -45,7 +45,7 @@
       {"path": "packaging/sources/geoclue-0001-Mozilla-Include-SSID-for-geolocate-and-submission-re.patch", "sha256": "a9daa72731fa7d404bfb44482d0f4e56962564963fbf79d421b84f8ebad4c969"},
       {"path": "packaging/sources/geoclue-0002-Mozilla-replace-rather-than-append-User-Agent.patch", "sha256": "de36dbcff7289c2477f3c26b08c53613c54eba1dc378a08eebd38e9fdcbd101e"},
       {"path": "packaging/sources/geoclue-0003-Web-Source-Set-User-Agent-on-Soup-Session-Constructi.patch", "sha256": "a28c8e9b8e3f990eed1201b8a252b23747915f1fe1ca6526a5f16ce2afeac3cc"},
-      {"path": "packaging/sources/geoclue-fuxi-raw.patch", "sha256": "8b9aff3baaf785c682e5ce6306b58ca920a5b83c0f169d4b17dba3db05364a6f"}
+      {"path": "packaging/sources/geoclue-fuxi-raw.patch", "sha256": "89ec6d6158d5a96bae261a484509c9b7d7846af9d715a1e4a518663b77bfa7e9"}
     ]
   },
   "81voltd": {
