@@ -46,7 +46,8 @@
       {"path": "packaging/sources/geoclue-0002-Mozilla-replace-rather-than-append-User-Agent.patch", "sha256": "de36dbcff7289c2477f3c26b08c53613c54eba1dc378a08eebd38e9fdcbd101e"},
       {"path": "packaging/sources/geoclue-0003-Web-Source-Set-User-Agent-on-Soup-Session-Constructi.patch", "sha256": "a28c8e9b8e3f990eed1201b8a252b23747915f1fe1ca6526a5f16ce2afeac3cc"},
       {"path": "packaging/sources/geoclue-fuxi-raw.patch", "sha256": "6a40d62db1fba35b63e45dc94bebbc324f1f4dd6cf16b40624d0bf2ef144fb25"},
-      {"path": "packaging/sources/geoclue-cancel-before-setup.patch", "sha256": "ac4dff6b776990e17885084998ef1331044513fc4f3f759d10b56779f34c4cdc"}
+      {"path": "packaging/sources/geoclue-cancel-before-setup.patch", "sha256": "ac4dff6b776990e17885084998ef1331044513fc4f3f759d10b56779f34c4cdc"},
+      {"path": "packaging/sources/geoclue-explicit-stop.patch", "sha256": "9998042f66a766c54b374afeb0c57f6311eb17b3de769c23dd92fb2d29c3d6a0"}
     ]
   },
   "81voltd": {

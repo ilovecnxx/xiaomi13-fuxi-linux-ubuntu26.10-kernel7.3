@@ -1,0 +1,11 @@
+--- a/src/gclue-service-client.c
++++ b/src/gclue-service-client.c
+@@ -625,6 +625,8 @@
+ gclue_service_client_handle_stop (GClueDBusClient       *client,
+                                   GDBusMethodInvocation *invocation)
+ {
++        /* An explicit stop withdraws the request to resume with the agent. */
++        GCLUE_SERVICE_CLIENT (client)->priv->agent_stopped = FALSE;
+         stop_client (GCLUE_SERVICE_CLIENT (client));
+         gclue_dbus_client_complete_stop (client, invocation);
+         g_debug ("'%s' stopped.", gclue_dbus_client_get_desktop_id (client));

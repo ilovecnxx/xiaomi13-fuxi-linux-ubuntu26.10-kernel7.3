@@ -52,7 +52,7 @@
 | 手机运行/默认 | `7.4.0-rc3-fuxi-upstream74rc3`；fallback `7.4.0-rc1-fuxi-suspend6` | 2026-11-18 安装并正常重启；bootcount `pending=0`；新内核和 fallback 的 Image、DTB、initrd、cmdline 校验通过 |
 | 离线挂起候选 | `7.4.0-rc1-fuxi-suspend7`，六补丁树 `1c836d26101571c017fe6bdfdf94e45c11c83091` | QRTR RX/候选 QMI 头追踪，完整包和主机验证通过；比当前主用内核旧，保持离线实验包，不取代 rc3 |
 | 已知设备限制 | tainted=4；启动期互连 sync_state 等提示；BCB 曾残留 `boot-recovery` | 普通重启不保证进入 Android；不自动清除 BCB |
-| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261118.2101`；`fuxi-geoclue 0.20261118.2201`；`fuxi-desktop 0.20261118.1901` | 原生 ARM64 包已安装；MM `.2101` 的 GPS_RAW 按需启停及恢复通过；GeoClue `.2201` 修复配置读取期间取消，安装未重启服务，桌面位置权限 false |
+| 支持包 | `fuxi-device 0.20261114.1701`；`fuxi-modem 0.20261118.2101`；`fuxi-geoclue 0.20261118.2301`；`fuxi-desktop 0.20261118.1901` | 原生 ARM64 包已安装；MM `.2101` 的 GPS_RAW 按需启停及恢复通过；GeoClue `.2301` 修复权限撤销期间显式停止后意外恢复，桌面位置权限 false |
 
 ## 整机体验进展
 
@@ -116,7 +116,18 @@
   Location 为 `/`；有效总线监测记录 Start=1、MM Setup/GetLocation/位置更新均为 0。
   已确认运行程序是 `.2201` 候选，MM 源位/signals 和桌面/MM PID 未变；删除测试客户端后
   正常停止 GeoClue，恢复 inactive。只验证关闭分支，未开启定位或验证获准后的采集链路。
-  下一步在保留用户隐私设置的前提下验证定位开启后的客户端授权，并完成室外有效 fix、误差/UTC、
+  GeoClue `.2301` 已安装：新增 `scripts/tests/integration/geoclue_raw.py`，在私有 D-Bus 上运行完整
+  GeoClue 守护进程、模拟 MM/Agent 和客户端。复现权限撤销后客户端显式 Stop，权限恢复时
+  仍自动恢复采集的问题；`geoclue-explicit-stop.patch` 清除该客户端的自动恢复标记。
+  主机完整守护进程回归修复前失败，修复后 amd64/ARM64 均通过：3 次有效更新、6 次 Setup，覆盖关闭拒绝、
+  RAW 传递、无效报告拒绝、停止恢复、重启新鲜度及权限撤销/恢复；显式 Stop 后不再恢复。
+  此测试使用非沙箱客户端，只验证全局 Agent 权限和生命周期，不验证逐应用授权或真实桌面。
+  最终配方无偏移重放，`explicit-stop-final/geoclue` 与已测源码一致；amd64/ARM64 原有
+  4 个解析及 41 个隔离 D-Bus 用例、全脚本 469 项通过。安装前校验包来源及 rc3/suspend6
+  引导文件；安装后普通用户真实 Start 仍因关闭定位被拒绝，MM Setup/GetLocation/位置更新
+  均为 0，已核验运行的是 `.2301`。清理后 GeoClue inactive，定位 false、自动挂起 nothing、
+  蓝牙设置及 Phosh PID894/MM PID29044 未变。包哈希和证据见 GNSS 验收文档；下一步
+  在保留用户隐私设置的前提下验证定位开启后的客户端授权，并完成室外有效 fix、误差/UTC、
   功耗及恢复验收；不得把原生隔离测试当成桌面或卫星验收。记录见 GNSS 验收文档及
   `work/{loc-radius,geoclue-raw}/`；主机测试不代表桌面定位已可用。
 - 挂起：`scripts/fuxi-suspend-check.py` 等待完整 logind 周期后清理 RTC，超时保留保护闹钟；
