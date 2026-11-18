@@ -31,7 +31,7 @@ labels in the fix, but are not individually fault-injected in this suite.
 Restoring the original immediate return after runtime PM acquisition failure
 makes two CSID tests fail on missing parent puts. The fixed tree passes all
 17 cases under QEMU/KASAN, plus the ARM64 CAMSS W=1 build. Strict host CI
-passes 366 script and 62 SuperTerm tests without skips.
+also passes the repository script checks without skips.
 
 ## Reproduce
 
