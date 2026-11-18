@@ -76,11 +76,13 @@ cp -a "$B/packaging/fuxi-modem/root/." "$P/"
 cp -a "$B/packaging/fuxi-modem/DEBIAN" "$P/DEBIAN"
 cp -a "$MB/mm" "$P/usr/libexec/fuxi/mm"
 install -m755 "$MB/81voltd-sub2" "$P/usr/libexec/fuxi/81voltd-sub2"
-mkdir -p "$P/usr/share/doc/fuxi-modem/"{modemmanager,81voltd}
-cp "$B/build/sources/modemmanager/"COPYING* "$P/usr/share/doc/fuxi-modem/modemmanager/"
-cp /usr/share/common-licenses/GPL-2 "$P/usr/share/doc/fuxi-modem/81voltd/"
-cp "$MB/modemmanager-source.json" "$P/usr/share/doc/fuxi-modem/modemmanager/"
-cp "$MB/81voltd-source.json" "$P/usr/share/doc/fuxi-modem/81voltd/"
+# Retain provenance even when the device excludes /usr/share/doc/*.
+mkdir -p "$P/usr/share/fuxi-modem/"{modemmanager,81voltd}
+cp "$B/build/sources/modemmanager/"COPYING* "$P/usr/share/fuxi-modem/modemmanager/"
+cp /usr/share/common-licenses/GPL-2 "$P/usr/share/fuxi-modem/81voltd/"
+cp "$MB/modemmanager-source.json" "$P/usr/share/fuxi-modem/modemmanager/"
+cp "$MB/81voltd-source.json" "$P/usr/share/fuxi-modem/81voltd/"
+cp "$MB/build-environment.lock" "$P/usr/share/fuxi-modem/"
 python3 - "$P/DEBIAN/postinst" "$B/packaging/fuxi-modem/migrate.list" <<'EOF2'
 import sys
 p, m = sys.argv[1], open(sys.argv[2]).read().rstrip("\n")

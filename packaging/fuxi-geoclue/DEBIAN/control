@@ -1,0 +1,11 @@
+Package: fuxi-geoclue
+Version: @VERSION@
+Architecture: arm64
+Maintainer: fuxi port <noreply@localhost>
+Section: net
+Priority: optional
+Depends: geoclue-2.0 (= 2.7.2-2ubuntu3), systemd, @DEPENDS@
+Description: GeoClue GPS RAW support for Xiaomi 13 (fuxi)
+ Uses measured horizontal accuracy and full UTC from the fuxi ModemManager
+ location dictionary. Keeps the distribution configuration, authorization
+ policy, service sandbox and executable path using a service-local bind mount.

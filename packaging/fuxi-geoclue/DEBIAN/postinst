@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in
+configure)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+    fi
+    ;;
+esac
+# Activation is deferred to the next ordinary service start.
+exit 0

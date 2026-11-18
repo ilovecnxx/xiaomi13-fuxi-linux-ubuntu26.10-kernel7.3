@@ -11,6 +11,7 @@ RUN --mount=type=secret,id=host-ca,mode=0444 \
       python3-pip python3-venv git patch xz-utils zstd cpio rsync kmod fakeroot dpkg-dev \
       meson ninja-build pkg-config patchelf gettext xsltproc libglib2.0-dev libgudev-1.0-dev \
       libqmi-glib-dev libqrtr-glib-dev libqrtr-dev libmm-glib-dev libmbim-glib-dev \
+      libjson-glib-dev libsoup-3.0-dev libavahi-client-dev libavahi-glib-dev dbus-daemon \
       libpolkit-gobject-1-dev libsystemd-dev systemd-dev libdbus-1-dev gnupg && \
     dpkg-query -W -f='${binary:Package}=${Version}\n' > /build-environment.lock && \
     rm -rf /var/lib/apt/lists/*
