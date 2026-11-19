@@ -1,0 +1,53 @@
+Description: Return a specific error when discovery reports no sensor SUID
+Forwarded: no
+--- a/src/libssc-sensor.h
++++ b/src/libssc-sensor.h
+@@ -34,6 +34,7 @@ typedef enum {
+ 	SSC_SENSOR_ERROR_UNAVAILABLE,
+ 	SSC_SENSOR_ERROR_SAMPLE_RATE_UNAVAILABLE,
+ 	SSC_SENSOR_ERROR_NO_SERVICE,
++	SSC_SENSOR_ERROR_NO_SUID,
+ } SSCSensorError;
+ 
+ GQuark ssc_sensor_error_quark(void);
+--- a/src/libssc-sensor.c
++++ b/src/libssc-sensor.c
+@@ -348,7 +348,9 @@ report_received (SSCClient *self, guint32 msg_id, guint64 uid_high, guint64 uid_l
+ 			g_signal_handler_disconnect (self, priv->report_id);
+ 			priv->report_id = 0;
+ 
+-			g_task_return_boolean (ctx->task, FALSE);
++			g_set_error (&error, ssc_sensor_error_quark(), SSC_SENSOR_ERROR_NO_SUID,
++				     "No sensor SUID reported for data type '%s'", priv->data_type);
++			g_task_return_error (ctx->task, error);
+ 			g_clear_object (&ctx->task);
+ 			g_slice_free (ReportReceivedContext, ctx);
+ 
+--- a/tests/general.c
++++ b/tests/general.c
+@@ -75,10 +75,11 @@ sensor_unsupported_ready
+ {
+ 	GMainLoop *loop = user_data;
+-	GError *error = NULL;
++	g_autoptr (GError) error = NULL;
+ 	SSCSensor *sensor = NULL;
+ 
+ 	sensor = ssc_sensor_new_finish (result, &error);
+-	g_assert_true (sensor == NULL);
++	g_assert_null (sensor);
++	g_assert_error (error, ssc_sensor_error_quark(), SSC_SENSOR_ERROR_NO_SUID);
+ 
+ 	g_main_loop_quit (loop);
+ }
+--- a/mocking/ssc_server/ssc-server.in
++++ b/mocking/ssc_server/ssc-server.in
+@@ -327,8 +327,7 @@ if __name__ == '__main__':
+             p = mp.Process(target=server_start, args=(server,))
+             p.start()
+ 
+-        code = ERROR_OK
+-        code = os.system(args.test)
++        code = os.waitstatus_to_exitcode(os.system(args.test))
+         if code != 0:
+             print(f'❌ Test {args.test} finished with exit code {code}')
+ 

@@ -27,6 +27,8 @@ def classify(paths, full=False):
             selected["scripts"] = True
             if path.startswith("packaging/sources/") or path == "scripts/fuxi-sources.py":
                 selected["third_party"] = selected["userspace"] = True
+            elif path == "scripts/fuxi-build-libssc.sh":
+                selected["userspace"] = True
             elif path.startswith("packaging/") and not path.endswith(".md"):
                 selected["userspace"] = True
             if path in ("scripts/fuxi-build-deb.sh", "scripts/fuxi-source-state.py",

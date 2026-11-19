@@ -13,11 +13,16 @@ case "${1:-}" in
     ;;
   run)
     shift
+    network="${FUXI_BUILD_NETWORK:-none}"
+    case "$network" in
+      none|host) ;;
+      *) echo 'FUXI_BUILD_NETWORK must be none or host' >&2; exit 2 ;;
+    esac
     userns=()
     if [ "${engine##*/}" = podman ] && [ "$(id -u)" -ne 0 ]; then
       userns=(--userns=keep-id)
     fi
-    "$engine" run --rm --pull=never --network=none --platform="linux/$arch" \
+    "$engine" run --rm --pull=never --network="$network" --platform="linux/$arch" \
       "${userns[@]}" \
       --user "$(stat -c %u "$B"):$(stat -c %g "$B")" \
       -v "$B:/src:rw" -w /src "$tag" "$@"

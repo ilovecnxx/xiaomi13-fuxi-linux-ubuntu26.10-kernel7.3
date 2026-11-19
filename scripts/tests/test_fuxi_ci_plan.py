@@ -37,6 +37,8 @@ class CiPlanTests(unittest.TestCase):
                          self.selected("scripts/fuxi-build-deb.sh"))
         self.assertEqual({"docs", "scripts", "third_party", "userspace"},
                          self.selected("packaging/sources/manifest.json"))
+        self.assertEqual({"docs", "scripts", "userspace"},
+                         self.selected("scripts/fuxi-build-libssc.sh"))
         self.assertEqual({"docs", "source"},
                          self.selected("scripts/tests/kernel/test_fuxi_volume_limit.py"))
         self.assertEqual({"docs", "scripts"},
