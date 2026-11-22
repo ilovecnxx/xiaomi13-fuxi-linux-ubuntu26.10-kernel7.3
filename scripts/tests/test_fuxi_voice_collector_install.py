@@ -48,6 +48,15 @@ class CollectorInstallTest(unittest.TestCase):
             self.assertEqual((self.config / UNIT).readlink(), Path('/dev/null'))
             self.assertFalse(self.link.is_symlink())
 
+    def test_call_owner_migration_preserves_later_disable(self):
+        owner = 'fuxi-call-owner.service'
+        link = self.config / f'{UNIT}.wants' / owner
+        self.configure('0.20261122.2238')
+        self.assertEqual(link.readlink(), Path('/usr/lib/systemd/system') / owner)
+        link.unlink()
+        self.configure('0.20261122.2244')
+        self.assertFalse(link.is_symlink())
+
     def test_local_disable_preset_before_migration(self):
         policy = self.etc / 'systemd/system-preset/10-local.preset'
         policy.parent.mkdir()

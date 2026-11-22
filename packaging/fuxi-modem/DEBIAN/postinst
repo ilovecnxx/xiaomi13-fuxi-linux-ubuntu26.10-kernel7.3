@@ -46,14 +46,21 @@ MIGRATE
 	fi
 fi
 
-if [ -z "$2" ] || dpkg --compare-versions "$2" le 0.20261122.2147; then
-	collector=fuxi-voice-collector.service
-	state=$(systemctl --root=/ is-enabled "$collector") || :
+enable_new_unit() {
+	unit=$1
+	state=$(systemctl --root=/ is-enabled "$unit") || :
 	case "$state" in
-	disabled) systemctl --root=/ preset "$collector" ;;
+	disabled) systemctl --root=/ preset "$unit" ;;
 	enabled|enabled-runtime|masked|masked-runtime|linked|linked-runtime|static|indirect|alias) : ;;
-	*) echo "fuxi-modem: 无法确认 $collector 的启用状态 ($state)" >&2; exit 1 ;;
+	*) echo "fuxi-modem: 无法确认 $unit 的启用状态 ($state)" >&2; exit 1 ;;
 	esac
+}
+
+if [ -z "$2" ] || dpkg --compare-versions "$2" le 0.20261122.2147; then
+	enable_new_unit fuxi-voice-collector.service
+fi
+if [ -z "$2" ] || dpkg --compare-versions "$2" le 0.20261122.2238; then
+	enable_new_unit fuxi-call-owner.service
 fi
 
 # 卡槽 1 兜底移动数据连接（非电信卡时按运营商自动选 APN），只在没有时创建，不改已有的；

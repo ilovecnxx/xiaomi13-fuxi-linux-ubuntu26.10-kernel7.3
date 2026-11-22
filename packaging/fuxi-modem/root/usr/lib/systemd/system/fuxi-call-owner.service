@@ -1,0 +1,24 @@
+[Unit]
+Description=Own the initial VoLTE audio route for a single connected call
+BindsTo=fuxi-voice-collector.service
+PartOf=fuxi-voice-collector.service
+After=fuxi-voice-collector.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 -I -m fuxi_call_owner run
+ExecStopPost=/usr/bin/python3 -I -m fuxi_call_owner cleanup
+RuntimeDirectory=fuxi-call-owner
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=180
+
+[Install]
+WantedBy=fuxi-voice-collector.service
