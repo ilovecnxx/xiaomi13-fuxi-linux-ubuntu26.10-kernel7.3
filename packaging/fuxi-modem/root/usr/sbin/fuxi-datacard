@@ -359,10 +359,55 @@ def primary_names():
     return [name for name in PRIMARY_PROFILES if name in names]
 
 
-def primary_active(names):
-    return [name for name in names if sh(
+def primary_states(names):
+    return {name: sh(
         f"LC_ALL=C nmcli -g GENERAL.STATE con show id {name}", True
-    ).stdout.strip() == "activated"]
+    ).stdout.strip() for name in names}
+
+
+def primary_active(names):
+    return [name for name, state in primary_states(names).items() if state == "activated"]
+
+
+def primary_registered():
+    result = sh("LC_ALL=C timeout 4 mmcli -m any --output-keyvalue")
+    if result.returncode == 0:
+        for line in result.stdout.splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "modem.3gpp.registration-state":
+                return value.strip() in ("home", "roaming", "home-csfb-not-preferred",
+                                         "roaming-csfb-not-preferred")
+    return False
+
+
+def activate_primary(names, previous, preferred):
+    candidates = [name for name in preferred if name in names]
+    acceptable = candidates or names
+    if not candidates:
+        candidates = list(dict.fromkeys([name for name in names if previous.get(name) == "yes"] +
+                                        [name for name in names if name != STALE_NM_CON]))
+    deadline = time.monotonic() + 90
+    attempt = 0
+    reason = "no eligible primary profile"
+    while True:
+        states = primary_states(names)
+        if any(states[name] == "activated" for name in acceptable):
+            return
+        if not candidates or time.monotonic() >= deadline:
+            raise RuntimeError(f"primary data profile did not become active ({reason})")
+        if any(state in ("activating", "deactivating") for state in states.values()):
+            reason = "NM activation pending"
+        elif not primary_registered():
+            reason = "waiting for MM primary registration"
+        else:
+            remaining = int(deadline - time.monotonic())
+            if remaining < 1:
+                raise RuntimeError(f"primary data profile did not become active ({reason})")
+            name = candidates[attempt % len(candidates)]
+            attempt += 1
+            result = sh(f"nmcli --wait {min(30, remaining)} con up id {name}")
+            reason = f"NM activation of {name}, exit {result.returncode}"
+        time.sleep(2)
 
 
 def primary_settings(names):
@@ -395,37 +440,29 @@ def change_primary_profiles(enable):
                 or any(name not in previous for name in preferred)):
             raise RuntimeError("invalid primary profile snapshot")
     except FileNotFoundError:
+        if enable and active:
+            return
         previous, preferred = settings.copy(), active.copy()
-        if not enable:
-            atomic_write(path, json.dumps([previous, preferred]), 0o600)
-    if not enable and any(name not in previous for name in names):
+        atomic_write(path, json.dumps([previous, preferred]), 0o600)
+    if any(name not in previous for name in names):
         previous.update({name: settings[name] for name in names if name not in previous})
         atomic_write(path, json.dumps([previous, preferred]), 0o600)
-    for name in names:
-        target = previous.get(name, settings[name]) if enable else "no"
-        if target != settings[name]:
-            sh(f"nmcli con mod id {name} connection.autoconnect {target}", True)
-    if not enable:
-        for name in primary_active(names):
-            sh(f"nmcli con down id {name}", True)
-        return
-    candidates = [name for name in preferred if name in names]
-    active = primary_active(names)
-    if candidates and not any(name in active for name in candidates):
-        for name in candidates:
-            sh(f"nmcli --wait 30 con up id {name}")
-            if name in primary_active(names):
-                break
-        else:
-            raise RuntimeError("previous primary data profile did not become active")
-    elif not active:
-        candidates += [name for name in names if previous.get(name) == "yes"]
-        candidates += [name for name in names if name != STALE_NM_CON]
-        for name in dict.fromkeys(candidates):
-            if sh(f"nmcli --wait 15 con up id {name}").returncode == 0 or primary_active(names):
-                break
-        else:
-            raise RuntimeError("no primary data profile activated")
+    try:
+        for name in names:
+            if settings[name] != "no":
+                sh(f"nmcli con mod id {name} connection.autoconnect no", True)
+        if not enable:
+            for name in primary_active(names):
+                sh(f"nmcli con down id {name}", True)
+            return
+        activate_primary(names, previous, preferred)
+    finally:
+        if enable:
+            current = primary_settings(names)
+            for name in names:
+                target = previous[name]
+                if target != current[name]:
+                    sh(f"nmcli con mod id {name} connection.autoconnect {target}", True)
     if os.path.exists(path):
         os.unlink(path)
 
@@ -559,11 +596,11 @@ def set_slot(slot):
         finally:
             m.close()
         try:
-            nm_slot1(True)
-        finally:
             if switched and sh("systemctl is-active 81voltd").stdout.strip() == "active":
                 sh("systemctl restart 81voltd", True)
                 log("81voltd restarted (VoLTE re-registers in ~30 s)")
+        finally:
+            nm_slot1(True)
     for _ in range(30):
         time.sleep(1)
         ok = secondary_address() if slot == 2 else primary_active(primary_names())

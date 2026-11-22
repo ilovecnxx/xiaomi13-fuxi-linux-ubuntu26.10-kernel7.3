@@ -1,6 +1,7 @@
 """Persist preferences without exposing partial files or switching a real modem."""
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import stat
@@ -137,6 +138,7 @@ class DatacardPersistenceTest(unittest.TestCase):
             elif "down" in fields:
                 active.remove(fields[-1])
             elif "up" in fields:
+                self.assertEqual(set(settings.values()), {"no"})
                 active[:] = [fields[-1]]
             else:
                 self.fail(command)
@@ -144,7 +146,10 @@ class DatacardPersistenceTest(unittest.TestCase):
 
         with patch.object(datacard, "primary_names", return_value=list(settings)), \
                 patch.object(datacard, "primary_settings", side_effect=lambda _: settings.copy()), \
-                patch.object(datacard, "primary_active", side_effect=lambda _: active.copy()), \
+                patch.object(datacard, "primary_states", side_effect=lambda names: {
+                    name: "activated" if name in active else "" for name in names}), \
+                patch.object(datacard, "primary_registered", return_value=True), \
+                patch.object(datacard.time, "sleep"), \
                 patch.object(datacard, "sh", side_effect=shell):
             datacard.nm_slot1(False)
             snapshot = Path(str(self.state) + ".nm-restore")
@@ -159,6 +164,23 @@ class DatacardPersistenceTest(unittest.TestCase):
             self.assertEqual(active, [datacard.AUTO_NM_CON])
             self.assertEqual(settings, {datacard.NM_CON: "no", datacard.AUTO_NM_CON: "yes"})
             self.assertFalse(snapshot.exists())
+
+    def test_registration_timeout_restores_settings_and_keeps_snapshot_for_retry(self):
+        name = datacard.AUTO_NM_CON
+        self.existing()
+        snapshot = Path(str(self.state) + '.nm-restore')
+        snapshot.write_text(json.dumps([{name: 'yes'}, [name]]))
+        original = snapshot.read_bytes()
+        with patch.object(datacard, 'primary_names', return_value=[name]), \
+                patch.object(datacard, 'primary_settings', return_value={name: 'no'}), \
+                patch.object(datacard, 'primary_states', return_value={name: ''}), \
+                patch.object(datacard, 'primary_registered', return_value=False), \
+                patch.object(datacard.time, 'monotonic', side_effect=[0, 2, 92]), \
+                patch.object(datacard.time, 'sleep'), patch.object(datacard, 'sh') as shell:
+            with self.assertRaisesRegex(RuntimeError, 'waiting for MM primary registration'):
+                datacard.nm_slot1(True)
+            shell.assert_called_once_with(f'nmcli con mod id {name} connection.autoconnect yes', True)
+            self.assertEqual(snapshot.read_bytes(), original)
 
     def test_link_without_address_times_out(self):
         result = SimpleNamespace(stdout="qmapmux0.8 UP\n", returncode=0)
@@ -178,6 +200,65 @@ class DatacardPersistenceTest(unittest.TestCase):
         self.assertFalse(Path(str(self.state) + ".nm-restore").exists())
         with patch.object(datacard, "sh", return_value=SimpleNamespace(stdout="deactivated")):
             self.assertEqual(datacard.primary_active([name]), [])
+
+
+class PrimaryRecoveryTest(unittest.TestCase):
+    def test_waits_for_pending_nm_then_registration_then_exact_profile(self):
+        saved, other = datacard.AUTO_NM_CON, datacard.NM_CON
+        states = [{saved: '', other: 'activating'}, {saved: '', other: 'activated'},
+                  {saved: '', other: 'activated'}, {saved: 'activating', other: ''},
+                  {saved: 'activated', other: ''}]
+        with patch.object(datacard, 'primary_states', side_effect=states), \
+                patch.object(datacard, 'primary_registered', side_effect=[False, True]) as registered, \
+                patch.object(datacard.time, 'sleep'), patch.object(datacard, 'sh') as shell:
+            datacard.activate_primary([saved, other], {other: 'yes', saved: 'no'}, [saved])
+        shell.assert_called_once_with(f'nmcli --wait 30 con up id {saved}')
+        self.assertEqual(registered.call_count, 2)
+
+    def test_existing_target_activation_completes_without_an_up_request(self):
+        name = datacard.AUTO_NM_CON
+        with patch.object(datacard, 'primary_states', side_effect=[{name: 'activating'}, {name: 'activated'}]), \
+                patch.object(datacard.time, 'sleep'), patch.object(datacard, 'sh') as shell:
+            datacard.activate_primary([name], {name: 'yes'}, [name])
+        shell.assert_not_called()
+
+    def test_transient_nm_failure_retries_saved_profile_after_readback(self):
+        name = datacard.AUTO_NM_CON
+        with patch.object(datacard, 'primary_states', side_effect=[{name: ''}, {name: ''}, {name: 'activated'}]), \
+                patch.object(datacard, 'primary_registered', return_value=True), \
+                patch.object(datacard.time, 'sleep'), patch.object(datacard, 'sh', side_effect=[
+                    SimpleNamespace(returncode=4), SimpleNamespace(returncode=0)]) as shell:
+            datacard.activate_primary([name], {name: 'yes'}, [name])
+        self.assertEqual([entry.args for entry in shell.call_args_list], [(f'nmcli --wait 30 con up id {name}',)] * 2)
+
+    def test_requires_data_capable_3gpp_registration(self):
+        for status, code, ready in [('home', 0, True), ('roaming', 0, True), ('searching', 0, False),
+                                    ('home-sms-only', 0, False), ('home', 1, False)]:
+            output = f'modem.generic.state : connected\nmodem.3gpp.registration-state : {status}\n'
+            with self.subTest(status=status, code=code), patch.object(datacard, 'sh', return_value=
+                    SimpleNamespace(returncode=code, stdout=output)):
+                self.assertEqual(datacard.primary_registered(), ready)
+
+    def test_restart_active_ims_on_dds_change_before_nm_restore(self):
+        for initial, service, restart in [(2, 'active', True), (1, 'active', False), (2, 'inactive', False)]:
+            events = []
+
+            def shell(command, check=False):
+                events.append(command)
+                return SimpleNamespace(stdout=service)
+
+            modem = Mock()
+            modem.get_dds.return_value = initial
+            modem.set_dds.side_effect = lambda slot: events.append(f'dds {slot}')
+            with self.subTest(initial=initial, service=service), patch.object(datacard, 'save_slot'), \
+                    patch.object(datacard, 'Modem', return_value=modem), patch.object(datacard, 'sh', side_effect=shell), \
+                    patch.object(datacard, 'nm_slot1', side_effect=lambda enable: events.append('restore')), \
+                    patch.object(datacard, 'primary_names'), patch.object(datacard, 'primary_active', return_value=['ok']), \
+                    patch.object(datacard.time, 'sleep'), patch.object(datacard, 'status'):
+                datacard.set_slot(1)
+            self.assertEqual(events[0:2], ['systemctl disable --now fuxi-datacard.service', 'dds 1'])
+            self.assertEqual(events[-1], 'restore')
+            self.assertEqual('systemctl restart 81voltd' in events, restart)
 
 
 class DatacardReplyTest(unittest.TestCase):
