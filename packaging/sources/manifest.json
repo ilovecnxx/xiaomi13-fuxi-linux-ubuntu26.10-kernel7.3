@@ -33,7 +33,8 @@
       {"path": "work/patches/mm-rsrp-quality-20261106/0002-fuxi-rsrp-signal-quality.patch", "sha256": "87b1a67b8b3d5edee0baee4bb72dca8cb32e469a23981d0dc7791ced0d8f8b76"},
       {"path": "packaging/sources/modemmanager-fuxi-loc.patch", "sha256": "d684ce0c2423bc43ffeba5dae557c2ca8a51ca1a0c506c6f139492ccdfcc6cc7"},
       {"path": "packaging/sources/modemmanager-suspend-resume.patch", "sha256": "29fd06ea105ea357f2ea9147239b57459c19a01489bd3d44c94ae9ca16d09cd4"},
-      {"path": "packaging/sources/modemmanager-loc-initialization.patch", "sha256": "89b88135fb7d3274dc7945e3ca50efbfa19c7cd9d69c519dda6b29902ff77139"}
+      {"path": "packaging/sources/modemmanager-loc-initialization.patch", "sha256": "89b88135fb7d3274dc7945e3ca50efbfa19c7cd9d69c519dda6b29902ff77139"},
+      {"path": "packaging/sources/modemmanager-wds-subscription.patch", "sha256": "ac00854dcf7a7bd3d66d91a86652f750aa75c59d60e5d4f064d2c566a9dfaba6"}
     ]
   },
   "geoclue": {
@@ -59,7 +60,8 @@
     "license": "GPL-2.0-or-later",
     "patches": [
       {"path": "work/patches/third-party-local-20261104/81voltd-a7794dd-local.patch", "sha256": "26c1b00c47e3017ab8dd013e9f658a4572f55d19d8fdf66b3ec83e5d438c8b7f"},
-      {"path": "packaging/sources/81voltd-retry.patch", "sha256": "856bfc29532d88e8341cef7fc4e659a2daf6af6171120ec805b95a699adea410"}
+      {"path": "packaging/sources/81voltd-retry.patch", "sha256": "856bfc29532d88e8341cef7fc4e659a2daf6af6171120ec805b95a699adea410"},
+      {"path": "packaging/sources/81voltd-wds-subscription.patch", "sha256": "697f597ae83d7f439ed37b10e30fe5d598ffbb664385b524f93bb3f256eee46c"}
     ]
   },
   "uboot": {

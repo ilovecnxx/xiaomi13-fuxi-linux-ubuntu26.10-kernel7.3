@@ -1,0 +1,132 @@
+--- a/qvd-connection.c
++++ b/qvd-connection.c
+@@ -564,29 +564,40 @@
+ 	g_object_unref(conn);
+ }
+ 
+-static void wds_bind_ready(GObject *obj, GAsyncResult *res, gpointer data)
++static void wds_subscription_checked(GObject *obj, GAsyncResult *res, gpointer data)
+ {
+ 	QVDConnection *conn = QVD_CONNECTION(data);
+-	QmiMessageWdsBindSubscriptionOutput *out;
++	QmiMessageWdsGetBindSubscriptionOutput *out;
++	QmiSubscriptionType subscription;
++	gboolean verified;
+ 	QmiMessageWdsSetIpFamilyInput *in;
+ 	GError *err = NULL;
+ 
+ 	if (wds_stale(conn, obj))
+ 		return;
+ 
+-	out = qmi_client_wds_bind_subscription_finish(QMI_CLIENT_WDS(obj), res, &err);
+-	if (out == NULL || !qmi_message_wds_bind_subscription_output_get_result(out, &err)) {
++	out = qmi_client_wds_get_bind_subscription_finish(QMI_CLIENT_WDS(obj), res, &err);
++	verified = out && qmi_message_wds_get_bind_subscription_output_get_result(out, &err)
++		&& qmi_message_wds_get_bind_subscription_output_get_subscription_id(out, &subscription, &err);
++	if (verified && subscription != conn->wds_sub) {
++		verified = FALSE;
++		g_set_error(&err, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Expected WDS subscription %u, got %u",
++			    conn->wds_sub, subscription);
++	}
++	if (!verified || !conn->requested) {
+ 		conn->wds_busy = FALSE;
+-		wds_report_error(conn, err, CONNECT_ERR);
+-		g_clear_error(&err);
+-		/* Drop the client so the next attempt binds a fresh one. */
+ 		wds_release_client(conn);
++		if (err) {
++			wds_report_error(conn, err, CONNECT_ERR);
++			g_error_free(err);
++		}
+ 		goto out;
+ 	}
+ 
+-	g_info("WDS sub %u: client bound\n", conn->wds_sub);
+-	conn->wds_ind_sig = g_signal_connect(conn->wds, "packet-service-status",
+-					     G_CALLBACK(wds_on_packet_status), conn);
++	g_info("WDS sub %u: client %u verified\n", subscription, qmi_client_get_cid(QMI_CLIENT(obj)));
++	if (!conn->wds_ind_sig)
++		conn->wds_ind_sig = g_signal_connect(conn->wds, "packet-service-status",
++						     G_CALLBACK(wds_on_packet_status), conn);
+ 
+ 	in = qmi_message_wds_set_ip_family_input_new();
+ 	qmi_message_wds_set_ip_family_input_set_preference(in,
+@@ -598,15 +609,41 @@
+ 
+ out:
+ 	if (out != NULL)
+-		qmi_message_wds_bind_subscription_output_unref(out);
++		qmi_message_wds_get_bind_subscription_output_unref(out);
++	g_object_unref(conn);
++}
++
++static void wds_bind_ready(GObject *obj, GAsyncResult *res, gpointer data)
++{
++	QVDConnection *conn = QVD_CONNECTION(data);
++	g_autoptr(QmiMessageWdsBindSubscriptionOutput) out = NULL;
++	g_autoptr(GError) err = NULL;
++
++	if (wds_stale(conn, obj))
++		return;
++	out = qmi_client_wds_bind_subscription_finish(QMI_CLIENT_WDS(obj), res, &err);
++	if (out && qmi_message_wds_bind_subscription_output_get_result(out, &err)) {
++		qmi_client_wds_get_bind_subscription(conn->wds, NULL, WDS_TIMEOUT, NULL,
++						     wds_subscription_checked, conn);
++		return;
++	}
++	conn->wds_busy = FALSE;
++	wds_release_client(conn);
++	wds_report_error(conn, err, CONNECT_ERR);
+ 	g_object_unref(conn);
+ }
+ 
++static void wds_bind(QVDConnection *conn)
++{
++	g_autoptr(QmiMessageWdsBindSubscriptionInput) in = qmi_message_wds_bind_subscription_input_new();
++	qmi_message_wds_bind_subscription_input_set_subscription_id(in, (QmiSubscriptionType) conn->wds_sub, NULL);
++	qmi_client_wds_bind_subscription(conn->wds, in, WDS_TIMEOUT, NULL, wds_bind_ready, g_object_ref(conn));
++}
++
+ static void wds_mux_ready(GObject *obj, GAsyncResult *res, gpointer data)
+ {
+ 	QVDConnection *conn = QVD_CONNECTION(data);
+ 	QmiMessageWdsBindMuxDataPortOutput *out;
+-	QmiMessageWdsBindSubscriptionInput *in;
+ 	GError *err = NULL;
+ 
+ 	if (wds_stale(conn, obj))
+@@ -623,12 +660,7 @@
+ 
+ 	/* Bind Mux Data Port resets the client's subscription to the default
+ 	 * one, so the subscription must be bound after it. */
+-	in = qmi_message_wds_bind_subscription_input_new();
+-	qmi_message_wds_bind_subscription_input_set_subscription_id(in,
+-		(QmiSubscriptionType) conn->wds_sub, NULL);
+-	qmi_client_wds_bind_subscription(conn->wds, in, WDS_TIMEOUT, NULL,
+-					 wds_bind_ready, g_object_ref(conn));
+-	qmi_message_wds_bind_subscription_input_unref(in);
++	wds_bind(conn);
+ 
+ out:
+ 	if (out != NULL)
+@@ -680,7 +712,7 @@
+ 		qmi_device_allocate_client(conn->qmi, QMI_SERVICE_WDS, QMI_CID_NONE,
+ 					   WDS_TIMEOUT, NULL, wds_alloc_ready, g_object_ref(conn));
+ 	else
+-		wds_start_network(conn);
++		wds_bind(conn);
+ }
+ 
+ static void wds_stop_ready(GObject *obj, GAsyncResult *res, gpointer data)
+--- a/qvd-modem.c
++++ b/qvd-modem.c
+@@ -616,7 +616,8 @@
+ 	 * allocation) means the device itself is unusable; reopen it after a
+ 	 * pause instead of failing on the same dead socket forever.
+ 	 */
+-	if (qvd_connection_is_wds(conn) && err->domain != QMI_PROTOCOL_ERROR) {
++	if (qvd_connection_is_wds(conn) && err->domain != QMI_PROTOCOL_ERROR
++	 && !g_error_matches(err, G_IO_ERROR, G_IO_ERROR_INVALID_DATA)) {
+ 		g_printerr("QMI transport error on a secondary subscription\n");
+ 		schedule_reopen(ctx);
+ 	}

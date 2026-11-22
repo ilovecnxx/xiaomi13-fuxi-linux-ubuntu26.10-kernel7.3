@@ -126,8 +126,156 @@ class DatacardPersistenceTest(unittest.TestCase):
                 shell.assert_not_called()
                 modem.assert_not_called()
 
+    def test_suspend_twice_then_restore_original_profile_and_settings(self):
+        settings = {datacard.NM_CON: "no", datacard.AUTO_NM_CON: "yes"}
+        active = [datacard.AUTO_NM_CON]
+
+        def shell(command, check=False):
+            fields = command.split()
+            if "mod" in fields:
+                settings[fields[-3]] = fields[-1]
+            elif "down" in fields:
+                active.remove(fields[-1])
+            elif "up" in fields:
+                active[:] = [fields[-1]]
+            else:
+                self.fail(command)
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(datacard, "primary_names", return_value=list(settings)), \
+                patch.object(datacard, "primary_settings", side_effect=lambda _: settings.copy()), \
+                patch.object(datacard, "primary_active", side_effect=lambda _: active.copy()), \
+                patch.object(datacard, "sh", side_effect=shell):
+            datacard.nm_slot1(False)
+            snapshot = Path(str(self.state) + ".nm-restore")
+            original = snapshot.read_bytes()
+            self.assertEqual(snapshot.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(active, [])
+            self.assertEqual(set(settings.values()), {"no"})
+            datacard.nm_slot1(False)
+            self.assertEqual(snapshot.read_bytes(), original)
+            active.append(datacard.NM_CON)
+            datacard.nm_slot1(True)
+            self.assertEqual(active, [datacard.AUTO_NM_CON])
+            self.assertEqual(settings, {datacard.NM_CON: "no", datacard.AUTO_NM_CON: "yes"})
+            self.assertFalse(snapshot.exists())
+
+    def test_link_without_address_times_out(self):
+        result = SimpleNamespace(stdout="qmapmux0.8 UP\n", returncode=0)
+        with patch.object(datacard, "sh", return_value=result), patch.object(datacard.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "did not become ready"):
+                datacard.set_slot(2)
+            result.stdout = "41: qmapmux0.8    inet 192.0.2.4/30 scope global qmapmux0.8\n"
+            self.assertEqual(datacard.secondary_address(), "192.0.2.4/30")
+            result.returncode = 1
+            self.assertIsNone(datacard.secondary_address())
+
+    def test_duplicate_or_ambiguous_profile_queries_fail_before_mutation(self):
+        name = datacard.AUTO_NM_CON
+        with patch.object(datacard, "sh", return_value=SimpleNamespace(stdout=f"{name}\n{name}\n")):
+            with self.assertRaisesRegex(RuntimeError, "ambiguous"):
+                datacard.nm_slot1(False)
+        self.assertFalse(Path(str(self.state) + ".nm-restore").exists())
+        with patch.object(datacard, "sh", return_value=SimpleNamespace(stdout="deactivated")):
+            self.assertEqual(datacard.primary_active([name]), [])
+
+
+class DatacardReplyTest(unittest.TestCase):
+    def setUp(self):
+        self.modem = object.__new__(datacard.Modem)
+        self.modem.dev = Mock()
+        self.modem.dsd = Mock()
+        self.request = (42, 9, 17, 79)
+        self.qmi = Mock()
+        self.qmi.message_is_response.return_value = True
+        self.qmi.message_get_service.side_effect = lambda msg: msg[0]
+        self.qmi.message_get_client_id.side_effect = lambda msg: msg[1]
+        self.qmi.message_get_transaction_id.side_effect = lambda msg: msg[2]
+        self.qmi.message_get_message_id.side_effect = lambda msg: msg[3]
+        self.qmi.message_new.return_value = self.request
+        self.modem.dev.command_full_finish.return_value = self.request
+        self.qmi.message_tlv_read_init.return_value = (12, 4)
+        self.qmi.message_tlv_read_guint16.side_effect = [(True, 2, 0), (True, 4, 0)]
+        modules = SOURCE.parents[1] / 'lib/python3/dist-packages'
+        self.enterContext(patch.object(sys, 'path', [str(modules), *sys.path]))
+        self.enterContext(patch.object(datacard, 'Qmi', self.qmi))
+        self.enterContext(patch.object(datacard, 'wait'))
+
+    def test_wrong_direction_or_identity_cannot_select_dds(self):
+        for index in range(len(self.request)):
+            reply = list(self.request)
+            reply[index] += 1
+            self.modem.dev.command_full_finish.return_value = reply
+            with self.subTest(index=index), self.assertRaisesRegex(RuntimeError, 'header'):
+                self.modem.set_dds(2)
+        self.modem.dev.command_full_finish.return_value = self.request
+        self.qmi.message_is_response.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'header'):
+            self.modem.set_dds(2)
+        self.qmi.message_tlv_write_guint32.assert_not_called()
+
+    def test_confirmed_slot_and_invalid_readback(self):
+        for valid, slot in ((True, 1), (True, 2), (False, 1), (True, 0), (True, 3)):
+            self.qmi.message_tlv_read_guint16.side_effect = [(True, 2, 0), (True, 4, 0)]
+            self.qmi.message_tlv_read_guint32.return_value = (valid, 4, slot)
+            with self.subTest(valid=valid, slot=slot):
+                if valid and slot in (1, 2):
+                    self.assertEqual(self.modem.get_dds(), slot)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'Unknown DDS'):
+                        self.modem.get_dds()
+        self.qmi.message_tlv_read_guint16.side_effect = [(True, 2, 0), (True, 4, 0)]
+        self.qmi.message_tlv_read_init.side_effect = [(12, 4), (19, 2)]
+        with self.assertRaisesRegex(RuntimeError, 'DDS subscription length'):
+            self.modem.get_dds()
+
+    def test_malformed_result_cannot_confirm_nas_binding(self):
+        for length, status, error in ((2, 0, 0), (4, 0, 3), (4, 1, 0)):
+            self.qmi.message_tlv_read_init.return_value = (12, length)
+            self.qmi.message_tlv_read_guint16.side_effect = [(True, 2, status), (True, 4, error)]
+            with self.subTest(length=length, status=status, error=error), self.assertRaises(RuntimeError):
+                self.modem.raw_u8(Mock(), Mock(), 69, 1, 1)
+
 
 class DatacardWaitTest(unittest.TestCase):
+    def test_mismatched_subscription_never_binds_mux_or_removes_existing_interface(self):
+        modem = Mock()
+        session = datacard.Session(modem)
+        bind, readback = Mock(), Mock()
+        readback.get_subscription_id.return_value = datacard.Qmi.SubscriptionType.PRIMARY
+        with patch.object(datacard, 'call', side_effect=[bind, readback]) as calls, \
+                patch.object(datacard, 'sh') as shell:
+            with self.assertRaisesRegex(RuntimeError, 'secondary subscription'):
+                session.up()
+            session.teardown()
+            self.assertEqual([entry.args[0] for entry in calls.call_args_list],
+                             ['bind_subscription', 'get_bind_subscription'])
+            modem.release.assert_called_once_with(modem.alloc.return_value)
+            shell.assert_not_called()
+
+    def test_post_mux_binding_change_prevents_start_network(self):
+        session = datacard.Session(Mock())
+        secondary, primary = Mock(), Mock()
+        secondary.get_subscription_id.return_value = datacard.Qmi.SubscriptionType.SECONDARY
+        primary.get_subscription_id.return_value = datacard.Qmi.SubscriptionType.PRIMARY
+        replies = [Mock(), secondary, Mock(), Mock(), Mock(), primary]
+        with patch.object(datacard, 'call', side_effect=replies) as calls, patch.object(datacard, 'sh') as shell:
+            with self.assertRaisesRegex(RuntimeError, 'secondary subscription'):
+                session.up()
+            self.assertEqual([entry.args[0] for entry in calls.call_args_list],
+                             ['bind_subscription', 'get_bind_subscription', 'bind_mux_data_port',
+                              'set_ip_family', 'bind_subscription', 'get_bind_subscription'])
+            session.teardown()
+            shell.assert_not_called()
+
+    def test_teardown_only_once_after_link_creation(self):
+        session = datacard.Session(Mock())
+        session.link_created = True
+        with patch.object(datacard, 'sh') as shell:
+            session.teardown()
+            session.teardown()
+        shell.assert_called_once_with(f'ip link del {datacard.IF}')
+
     class MainLoop:
         def __init__(self):
             self.action = None

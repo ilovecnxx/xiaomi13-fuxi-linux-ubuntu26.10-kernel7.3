@@ -1,0 +1,107 @@
+--- a/src/mm-bearer-qmi.c
++++ b/src/mm-bearer-qmi.c
+@@ -474,6 +474,7 @@
+     CONNECT_STEP_IPV4,
+     CONNECT_STEP_WDS_CLIENT_IPV4,
+     CONNECT_STEP_BIND_DATA_PORT_IPV4,
++    CONNECT_STEP_BIND_SUBSCRIPTION_IPV4,
+     CONNECT_STEP_IP_FAMILY_IPV4,
+     CONNECT_STEP_ENABLE_INDICATIONS_IPV4,
+     CONNECT_STEP_START_NETWORK_IPV4,
+@@ -482,6 +483,7 @@
+     CONNECT_STEP_IPV6,
+     CONNECT_STEP_WDS_CLIENT_IPV6,
+     CONNECT_STEP_BIND_DATA_PORT_IPV6,
++    CONNECT_STEP_BIND_SUBSCRIPTION_IPV6,
+     CONNECT_STEP_IP_FAMILY_IPV6,
+     CONNECT_STEP_ENABLE_INDICATIONS_IPV6,
+     CONNECT_STEP_START_NETWORK_IPV6,
+@@ -1598,6 +1600,62 @@
+ }
+ 
+ static void
++primary_subscription_checked (QmiClientWds *client, GAsyncResult *res, GTask *task)
++{
++    ConnectContext *ctx = g_task_get_task_data (task);
++    g_autoptr(QmiMessageWdsGetBindSubscriptionOutput) output = NULL;
++    QmiSubscriptionType subscription;
++    GError *error = NULL;
++
++    output = qmi_client_wds_get_bind_subscription_finish (client, res, &error);
++    if (!output || !qmi_message_wds_get_bind_subscription_output_get_result (output, &error) ||
++        !qmi_message_wds_get_bind_subscription_output_get_subscription_id (output, &subscription, &error)) {
++        g_prefix_error (&error, "Couldn't read bearer WDS subscription: ");
++        complete_connect (task, NULL, error);
++        return;
++    }
++    if (subscription != QMI_SUBSCRIPTION_TYPE_PRIMARY) {
++        complete_connect (task, NULL, g_error_new (MM_CORE_ERROR, MM_CORE_ERROR_FAILED,
++                          "Expected primary bearer WDS subscription, got %u", subscription));
++        return;
++    }
++    mm_obj_info (ctx->self, "IPv%s WDS client %u verified primary (mux id %u)",
++                 ctx->running_ipv4 ? "4" : "6", qmi_client_get_cid (QMI_CLIENT (client)), ctx->mux_id);
++    ctx->step++;
++    connect_context_step (task);
++}
++
++static void
++primary_subscription_bound (QmiClientWds *client, GAsyncResult *res, GTask *task)
++{
++    g_autoptr(QmiMessageWdsBindSubscriptionOutput) output = NULL;
++    GError *error = NULL;
++
++    output = qmi_client_wds_bind_subscription_finish (client, res, &error);
++    if (!output || !qmi_message_wds_bind_subscription_output_get_result (output, &error)) {
++        g_prefix_error (&error, "Couldn't bind bearer WDS subscription: ");
++        complete_connect (task, NULL, error);
++        return;
++    }
++    qmi_client_wds_get_bind_subscription (client, NULL, 10, g_task_get_cancellable (task),
++                                          (GAsyncReadyCallback) primary_subscription_checked, task);
++}
++
++static gboolean
++bind_primary_subscription (QmiClientWds *client, GTask *task)
++{
++    g_autoptr(QmiMessageWdsBindSubscriptionInput) input = NULL;
++
++    if (!g_file_test (MM_PORT_QMI_SUB_BIND_FILE, G_FILE_TEST_EXISTS))
++        return FALSE;
++    input = qmi_message_wds_bind_subscription_input_new ();
++    qmi_message_wds_bind_subscription_input_set_subscription_id (input, QMI_SUBSCRIPTION_TYPE_PRIMARY, NULL);
++    qmi_client_wds_bind_subscription (client, input, 10, g_task_get_cancellable (task),
++                                      (GAsyncReadyCallback) primary_subscription_bound, task);
++    return TRUE;
++}
++
++static void
+ bind_data_port_ready (QmiClientWds *client,
+                       GAsyncResult *res,
+                       GTask        *task)
+@@ -2107,6 +2165,12 @@
+         ctx->step++;
+         /* fall through */
+ 
++    case CONNECT_STEP_BIND_SUBSCRIPTION_IPV4:
++        if (bind_primary_subscription (ctx->client_ipv4, task))
++            return;
++        ctx->step++;
++        /* fall through */
++
+     case CONNECT_STEP_IP_FAMILY_IPV4:
+         /* If client is new enough, select IP family */
+         if (!ctx->no_ip_family_preference) {
+@@ -2252,6 +2316,12 @@
+         ctx->step++;
+         /* fall through */
+ 
++    case CONNECT_STEP_BIND_SUBSCRIPTION_IPV6:
++        if (bind_primary_subscription (ctx->client_ipv6, task))
++            return;
++        ctx->step++;
++        /* fall through */
++
+     case CONNECT_STEP_IP_FAMILY_IPV6: {
+         QmiMessageWdsSetIpFamilyInput *input;
+ 
