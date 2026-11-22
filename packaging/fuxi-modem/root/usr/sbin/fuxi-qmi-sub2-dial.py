@@ -41,7 +41,7 @@ def main():
     dev = Qmi.Device.new_from_node_finish(wait(Qmi.Device.new_from_node, node, None)[1])
     dev.open_finish(wait(dev.open, Qmi.DeviceOpenFlags.PROXY, 10, None)[1])
     voice = dev.allocate_client_finish(wait(dev.allocate_client, Qmi.Service.VOICE, Qmi.CID_NONE, 10, None)[1])
-    call_id = []
+    ended_ids = set()
     states = []
 
     def on_ind(_dev, *args):
@@ -60,16 +60,16 @@ def main():
                         c = d[1 + 7 * i:8 + 7 * i]
                         if len(c) == 7:
                             log(f"call{c[0]}: {CALL_STATES.get(c[1], c[1])} type={c[2]} dir={c[3]} mode={c[4]}")
-                            states.append(CALL_STATES.get(c[1], c[1]))
+                            states.append(CALL_STATES.get(c[1], str(c[1])))
+                            if c[1] == 9:
+                                ended_ids.add(c[0])
                 o += 3 + ln
     dev.connect("indication", on_ind)
 
-    def end_call():
-        if not call_id:
-            return
+    def end_call(call_id):
         try:
             inp = Qmi.MessageVoiceEndCallInput()
-            inp.set_call_id(call_id[0])
+            inp.set_call_id(call_id)
             out = voice.end_call_finish(wait(voice.end_call, inp, 10, None)[1])
             out.get_result()
             log("end call OK")
@@ -77,11 +77,8 @@ def main():
             log(f"end call: {e.message}")
 
     try:
-        m = Qmi.message_new(voice.get_service(), voice.get_cid(), voice.get_next_transaction_id(), VOICE_BIND)
-        off = Qmi.message_tlv_write_init(m, 0x01)
-        Qmi.message_tlv_write_guint8(m, SUB)
-        Qmi.message_tlv_write_complete(m, off)
-        dev.command_full_finish(wait(dev.command_full, m, Qmi.MessageContext.new(), 10, None)[1])
+        from fuxi_qmi_bind import bind_subscription
+        bind_subscription(Qmi, wait, dev, voice, VOICE_BIND, SUB)
         log(f"VOICE bound to sub {SUB}")
         vin = Qmi.MessageVoiceIndicationRegisterInput()
         vin.set_call_notification_events(True)
@@ -89,11 +86,12 @@ def main():
         dial = Qmi.MessageVoiceDialCallInput()
         dial.set_calling_number(number)
         log(f"dialing (hold {hold}s)")
+        ended_ids.clear()
         try:
             out = voice.dial_call_finish(wait(voice.dial_call, dial, 30, None)[1])
             out.get_result()
-            call_id.append(out.get_call_id())
-            log(f"dial accepted, call_id={call_id[0]}")
+            call_id = out.get_call_id()
+            log(f"dial accepted, call_id={call_id}")
         except GLib.Error as e:
             log(f"dial FAILED: {e.message}")
             sys.exit(1)
@@ -101,11 +99,11 @@ def main():
         signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
         signal.signal(signal.SIGINT, lambda *_: stop.append(1))
         deadline = time.time() + hold
-        while time.time() < deadline and not stop and "end" not in states:
+        while time.time() < deadline and not stop and call_id not in ended_ids:
             ctx.iteration(False)
             time.sleep(0.05)
-        if "end" not in states:
-            end_call()
+        if call_id not in ended_ids:
+            end_call(call_id)
         t_end = time.time() + 3
         while time.time() < t_end:
             ctx.iteration(False)

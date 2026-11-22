@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>fuxi</vendor>
+  <action id="org.fuxi.sim2.telephony">
+    <description>Use secondary SIM calls and messages</description>
+    <description xml:lang="zh_CN">使用副卡电话与短信</description>
+    <message>Authentication is required to use secondary SIM calls and messages</message>
+    <message xml:lang="zh_CN">使用副卡电话与短信需要认证</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/sbin/fuxi-sim2-telephony</annotate>
+  </action>
+</policyconfig>

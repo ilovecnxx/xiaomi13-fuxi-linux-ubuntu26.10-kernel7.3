@@ -1,0 +1,22 @@
+[Unit]
+Description=Passive dual-subscription VOICE call metadata collector
+Requires=fuxi-qmi-proxy.service
+After=fuxi-qmi-proxy.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 -I /usr/sbin/fuxi-voice-collector.py
+TimeoutStartSec=100
+RuntimeDirectory=fuxi-voice-collector
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=fuxi-qmi-proxy.service

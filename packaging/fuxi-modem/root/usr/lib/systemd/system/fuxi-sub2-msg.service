@@ -1,5 +1,5 @@
 [Unit]
-Description=fuxi SIM2 VOICE/WMS listener (incoming SMS saved + acked, call state logged)
+Description=fuxi SIM2 VOICE/WMS listener (incoming SMS and passive call discovery)
 After=ModemManager.service 81voltd.service
 Wants=ModemManager.service
 
@@ -8,6 +8,8 @@ Type=simple
 ExecStart=/usr/bin/python3 -I /usr/sbin/fuxi-qmi-sub2-msg.py
 Restart=always
 RestartSec=10
+RuntimeDirectory=fuxi-sub2-msg
+RuntimeDirectoryMode=0700
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/log

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
 import signal
 import subprocess
@@ -132,6 +133,27 @@ sys.exit(module.listen(lambda: None, 0, GLib, unix))
 
 
 class SmsPersistenceTest(unittest.TestCase):
+    def test_ack_reports_modem_result(self):
+        class AckError(Exception):
+            message = "rejected"
+
+        client = Mock()
+        client.send_ack_finish.return_value.get_result.side_effect = AckError()
+        with patch.object(listener, "GLib", SimpleNamespace(Error=AckError), create=True), \
+                patch.object(listener, "log") as log:
+            listener.ack_cb(client, object())
+        log.assert_called_once_with("WMS ack failed: rejected")
+
+    def test_binding_must_identify_exact_secondary(self):
+        for value in (None, b"", b"\x00", b"\x01\x00", b"\x01"):
+            with self.subTest(value=value), patch.object(listener, "raw"), \
+                    patch.object(listener, "tlv_bytes", return_value=value):
+                if value == b"\x01":
+                    listener.check_wms_binding(object(), object())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "binding"):
+                        listener.check_wms_binding(object(), object())
+
     def test_pdu_is_saved_before_ack(self):
         qmi, client = Mock(), Mock()
         payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
@@ -276,11 +298,210 @@ class IndicationFrameTest(unittest.TestCase):
     def test_complete_indication_passes_exact_payload_to_sms_handler(self):
         payload = bytes([0]) + (42).to_bytes(4, "little") + bytes([6, 2, 0, 0xAA, 0xBB])
         frame = self.frame(b"\x11" + len(payload).to_bytes(2, "little") + payload)
-        with patch.object(listener, "handle_transfer_route") as handler, \
+        client = Mock()
+        client.get_cid.return_value = 7
+        with patch.object(listener, "WMS_CLIENT", client), \
+                patch.object(listener, "handle_transfer_route") as handler, \
                 patch.object(listener, "log") as log:
             listener.on_indication(None, frame)
-        handler.assert_called_once_with(payload)
+            handler.assert_called_once_with(payload)
+            handler.reset_mock()
+            client.get_cid.return_value = 8
+            listener.on_indication(None, frame)
+            handler.assert_not_called()
         self.assertNotIn("aabb", str(log.call_args_list))
+
+
+class VoiceRegistrationTest(unittest.TestCase):
+    def setUp(self):
+        dist = SOURCE.parents[1] / 'lib/python3/dist-packages'
+        self.enterContext(patch.object(sys, 'path', [str(dist), *sys.path]))
+        self.enterContext(patch.dict(os.environ, RUNTIME_DIRECTORY='/run/fuxi-sub2-msg',
+                                    INVOCATION_ID='a' * 32))
+        self.qmi = SimpleNamespace(Service=SimpleNamespace(VOICE=9))
+        self.enterContext(patch.object(listener, 'Qmi', self.qmi, create=True))
+        self.enterContext(patch.object(listener, 'GLib', Mock(), create=True))
+        self.log = self.enterContext(patch.object(listener, 'log'))
+        self.bind = self.enterContext(patch('fuxi_qmi_bind.bind_subscription'))
+        self.register = self.enterContext(patch('fuxi_sub2_control._register_calls'))
+        self.serve = self.enterContext(patch('fuxi_sub2_call_cache.serve'))
+        self.device, self.voice = Mock(), Mock()
+        self.voice.get_service.return_value = 9
+        self.voice.get_device.return_value = self.device
+        self.voice.get_cid.return_value = 7
+        self.handlers = {}
+
+        def connect(name, handler):
+            self.handlers[name] = handler
+            return name
+
+        self.device.connect.side_effect = connect
+        self.device.disconnect.side_effect = self.handlers.pop
+        self.body = b'\x01\x08\x00\x01\x06\x02\x01\x02\x04\x00\x00\x10\x07\x00private'
+        self.ring = IndicationFrameTest.frame(self.body, 9, 0x2e)
+
+    def start(self, resources):
+        listener.register_voice_listener(resources, self.device, self.voice, Mock())
+
+    def test_discovery_observes_registration_ring_and_discards_unrelated_frames(self):
+        def during_registration(*_):
+            self.bind.assert_called_once_with(self.qmi, listener.wait, self.device, self.voice, 0x44, 1)
+            self.serve.assert_not_called()
+            self.handlers['indication'](self.device, self.ring)
+
+        self.register.side_effect = during_registration
+        with ExitStack() as resources:
+            self.start(resources)
+            cache = self.serve.call_args.args[-1]
+            on_frame = self.handlers['indication']
+            snapshot = cache.snapshot()
+            self.assertEqual(snapshot['calls'], [{'id': 6, 'state': 'incoming', 'direction': 'incoming'}])
+            on_frame(object(), self.ring)
+            for offset, value in ((4, 5), (5, 8), (6, 2), (9, 0x2f)):
+                foreign = bytearray(self.ring)
+                foreign[offset] = value
+                on_frame(self.device, foreign)
+            self.assertIs(cache.snapshot(), snapshot)
+            self.assertEqual(self.log.call_count, 1)
+            self.assertNotIn('private', str(self.log.call_args_list))
+            on_frame(self.device, self.ring[:-1])
+            self.assertIsNone(cache.snapshot())
+            on_frame(self.device, IndicationFrameTest.frame(b'\x01\x01\x00\x00', 9, 0x2e))
+            self.assertEqual(cache.snapshot()['calls'], [])
+            self.handlers['device-removed'](self.device)
+            on_frame(self.device, self.ring)
+            self.assertIsNone(cache.snapshot())
+        self.assertFalse(self.handlers)
+
+    def test_bind_and_registration_failures_do_not_publish(self):
+        for step in (self.bind, self.register):
+            with self.subTest(step=step), self.assertRaises(RuntimeError), ExitStack() as resources:
+                step.side_effect = RuntimeError('rejected')
+                self.start(resources)
+            step.side_effect = None
+            self.assertFalse(self.handlers)
+            self.serve.assert_not_called()
+
+    def test_manual_observer_logs_only_bound_metadata_without_service_endpoint(self):
+        with patch.dict(os.environ, RUNTIME_DIRECTORY=''), ExitStack() as resources:
+            self.start(resources)
+            listener.on_indication(self.device, self.ring)
+            self.log.assert_not_called()
+            self.handlers['indication'](self.device, self.ring)
+            self.log.assert_called_once_with('VOICE calls', [{'id': 6, 'state': 'incoming', 'direction': 'incoming'}])
+            self.serve.assert_not_called()
+
+
+class StoredMtTest(unittest.TestCase):
+    tpdu = bytes.fromhex("04 03 91 21 f3 00 08 62 11 22 01 00 00 00 02 4e 2d")
+
+    def setUp(self):
+        directory = self.enterContext(tempfile.TemporaryDirectory())
+        self.path = Path(directory) / 'sms.jsonl'
+        self.enterContext(patch.object(listener, 'SMS_FILE', str(self.path)))
+        self.client = Mock(spec=['get_cid', 'raw_read', 'raw_read_finish'])
+        self.client.get_cid.return_value = 7
+        self.enterContext(patch.object(listener, 'WMS_CLIENT', self.client))
+        self.enterContext(patch.object(listener, 'STORED_READS', {}))
+        self.log = self.enterContext(patch.object(listener, 'log'))
+        self.qmi = SimpleNamespace(MessageWmsRawReadInput=Mock(), WmsStorageType=int,
+                                   WmsMessageMode=SimpleNamespace(GSM_WCDMA=1),
+                                   WmsMessageTagType=SimpleNamespace(MT_READ=0, MT_NOT_READ=1),
+                                   WmsMessageFormat=SimpleNamespace(GSM_WCDMA_POINT_TO_POINT=6))
+        self.enterContext(patch.object(listener, 'Qmi', self.qmi, create=True))
+        self.enterContext(patch.object(listener, 'GLib', SimpleNamespace(Error=RuntimeError), create=True))
+
+    def indicate(self, storage=1, index=0x12345678, mode=b'', stored=None):
+        value = bytes([storage]) + index.to_bytes(4, 'little') if stored is None else stored
+        body = b'\x10' + len(value).to_bytes(2, 'little') + value + mode
+        listener.on_indication(None, IndicationFrameTest.frame(body))
+
+    def finish(self, data=None, tag=1, fmt=6):
+        output = self.client.raw_read_finish.return_value
+        output.get_result.return_value = None
+        output.get_raw_message_data.return_value = (tag, fmt, list(b'\0' + self.tpdu if data is None else data))
+        self.client.raw_read.call_args.args[-1](self.client, object())
+
+    def rows(self):
+        return [json.loads(line) for line in self.path.read_bytes().splitlines()]
+
+    def test_stored_framing_and_existing_inbox_reader(self):
+        reader = SOURCE.parents[1] / 'lib/python3/dist-packages/fuxi_sub2_inbox.py'
+        spec = importlib.util.spec_from_file_location('inbox', reader)
+        inbox = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(inbox)
+        self.indicate(mode=b'\x12\x01\x00\x01')
+        request = self.qmi.MessageWmsRawReadInput.return_value
+        request.set_message_memory_storage_id.assert_called_once_with(1, 0x12345678)
+        request.set_message_mode.assert_called_once_with(1)
+        self.finish(b'\x03\x91\x21\xf3' + self.tpdu)
+        row, = self.rows()
+        self.assertEqual((row['txn'], row['storage'], row['format'], row['pdu']),
+                         (0x12345678, 1, 6, self.tpdu.hex()))
+        item = inbox.record(0, self.path.read_bytes())
+        self.assertEqual((item['sender'], item['text']), ('+123', '中'))
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        for private in ('+123', '中', self.tpdu.hex()):
+            self.assertNotIn(private, str(self.log.call_args_list))
+
+    def test_duplicate_in_flight_then_restart_and_reuse(self):
+        self.indicate()
+        self.indicate()
+        self.indicate()
+        self.client.raw_read.assert_called_once()
+        self.finish()
+        self.assertEqual(self.client.raw_read.call_count, 2)
+        self.finish(tag=0)
+        with patch.object(listener, 'STORED_READS', {}):
+            self.indicate()
+            self.finish()
+        self.assertEqual(len(self.rows()), 1)
+        other = self.tpdu[:-2] + bytes.fromhex('4e 00')
+        self.indicate()
+        self.finish(b'\0' + other)
+        self.indicate()
+        self.finish()
+        self.indicate(storage=0)
+        self.finish()
+        self.assertEqual([row['pdu'] for row in self.rows()], [self.tpdu.hex(), other.hex()] + [self.tpdu.hex()] * 2)
+
+    def test_unsupported_and_foreign_indications_do_not_read(self):
+        self.indicate(storage=255)
+        self.indicate(stored=b'\0' * 4)
+        self.indicate(stored=b'\0' * 6)
+        self.indicate(mode=b'\x12\x01\x00\x00')
+        self.client.get_cid.return_value = 9
+        self.indicate()
+        self.client.raw_read.assert_not_called()
+
+    def test_transfer_route_takes_precedence(self):
+        with patch.object(listener, 'handle_transfer_route') as transfer:
+            self.indicate(mode=b'\x11\x08\x00' + b'\0' * 8)
+            transfer.assert_called_once()
+        self.client.raw_read.assert_not_called()
+
+    def test_failure_unsupported_format_tag_and_invalid_framing(self):
+        for args in (dict(tag=2), dict(fmt=7), dict(fmt=0), dict(data=b''), dict(data=b'\x03\x91'),
+                     dict(data=b'\0' + self.tpdu[:-1]), dict(data=b'\0\x02' + self.tpdu[1:])):
+            self.indicate()
+            self.finish(**args)
+        self.indicate()
+        self.client.raw_read_finish.side_effect = RuntimeError('private error')
+        self.finish()
+        self.assertFalse(listener.STORED_READS)
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('private error', str(self.log.call_args_list))
+
+    def test_replay_syncs_existing_row_after_directory_sync_failure(self):
+        self.indicate()
+        with patch.object(listener.os, 'fsync', side_effect=[None, OSError('private error')]):
+            self.finish()
+        self.indicate()
+        with patch.object(listener.os, 'fsync', wraps=os.fsync) as sync:
+            self.finish()
+            self.assertEqual(sync.call_count, 2)
+        self.assertEqual(len(self.rows()), 1)
+        self.assertNotIn('private error', str(self.log.call_args_list))
 
 
 if __name__ == "__main__":

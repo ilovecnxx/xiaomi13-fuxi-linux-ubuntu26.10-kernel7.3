@@ -79,11 +79,8 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: stop.append(1))
     answered = False
     try:
-        m = Qmi.message_new(voice.get_service(), voice.get_cid(), voice.get_next_transaction_id(), VOICE_BIND)
-        off = Qmi.message_tlv_write_init(m, 0x01)
-        Qmi.message_tlv_write_guint8(m, SUB)
-        Qmi.message_tlv_write_complete(m, off)
-        dev.command_full_finish(wait(dev.command_full, m, Qmi.MessageContext.new(), 10, None)[1])
+        from fuxi_qmi_bind import bind_subscription
+        bind_subscription(Qmi, wait, dev, voice, VOICE_BIND, SUB)
         vin = Qmi.MessageVoiceIndicationRegisterInput()
         vin.set_call_notification_events(True)
         voice.indication_register_finish(wait(voice.indication_register, vin, 10, None)[1])

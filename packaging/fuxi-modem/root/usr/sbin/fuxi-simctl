@@ -239,6 +239,71 @@ def status():
     }, ensure_ascii=False))
 
 
+def listener_active():
+    try:
+        result = subprocess.run(
+            ["/usr/bin/systemctl", "show", "--property=ActiveState", "--value", "fuxi-sub2-msg.service"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=3, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    state = result.stdout.strip()
+    if state in ("active", "reloading", "refreshing"):
+        return True
+    if state in ("inactive", "failed", "activating", "deactivating", "maintenance"):
+        return False
+    return None
+
+
+def sim2_card(modem):
+    client = modem.alloc(Qmi.Service.UIM)
+    response = call("get_card_status", client, None, 10, None)
+    response.get_result()
+    _, _, secondary_gw, _, cards = gv(response.get_card_status())
+    if len(cards) < 2:
+        return "unknown", None
+    card = cards[1]
+    state = nick(card.card_state)
+    if state in ("absent", "error"):
+        return state, False
+    if state != "present":
+        return "unknown", None
+    if secondary_gw >> 8 != 1:
+        return state, False
+    app_index = secondary_gw & 0xff
+    apps = card.applications
+    if apps is None or app_index >= len(apps):
+        return state, None
+    app_state = nick(apps[app_index].state)
+    if app_state == "ready":
+        return state, True
+    if app_state in ("detected", "pin1-or-upin-pin-required", "puk1-or-upin-puk-required",
+                     "check-personalization-state", "pin1-blocked", "illegal"):
+        return state, False
+    return state, None
+
+
+def sim2_status():
+    snapshot = {"version": 1, "slot": 2, "listener_active": listener_active(),
+                "card_state": "unknown", "subscription_ready": None, "registered": None}
+    try:
+        modem = Modem()
+        try:
+            snapshot["card_state"], snapshot["subscription_ready"] = sim2_card(modem)
+            if snapshot["subscription_ready"] is True:
+                response = call("get_serving_system", modem.nas(1), None, 10, None)
+                response.get_result()
+                state = nick(gv(response.get_serving_system())[0])
+                if state == "registered":
+                    snapshot["registered"] = True
+                elif state in ("not-registered", "not-registered-searching", "registration-denied"):
+                    snapshot["registered"] = False
+        finally:
+            modem.close()
+    except (GLib.Error, RuntimeError):
+        pass
+    print(json.dumps(snapshot))
+
+
 def busy():
     try:
         fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
@@ -312,6 +377,9 @@ def reconnect():
 
 def main():
     a = sys.argv[1:]
+    if a == ["sim2-status"]:
+        sim2_status()
+        return 0
     if a == ["status"]:
         status()
         return 0
@@ -319,7 +387,7 @@ def main():
          (len(a) == 3 and a[0] == "mode" and a[1] in ("1", "2") and a[2] in ("5g", "4g")) or \
          a == ["reconnect"]
     if not ok:
-        print("用法: status | data 1|2 | voice 1|2 | mode 1|2 5g|4g | reconnect", file=sys.stderr)
+        print("用法: status | sim2-status | data 1|2 | voice 1|2 | mode 1|2 5g|4g | reconnect", file=sys.stderr)
         return 2
     fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
     try:

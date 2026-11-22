@@ -1,0 +1,41 @@
+#!/usr/bin/python3 -I
+import json
+import sys
+
+
+def main(arguments, stream):
+    if arguments == ["sms-send"]:
+        from fuxi_sub2_sms import run_send
+        return run_send(stream)
+    if arguments == ["sms-inbox"]:
+        from fuxi_sub2_inbox import run_inbox
+        return run_inbox(stream)
+    if arguments == ["sms-message"]:
+        from fuxi_sub2_inbox import run_message
+        return run_message(stream)
+    if arguments in (["calls"], ["wait-calls"]):
+        from fuxi_sub2_control import run
+        return run(arguments[0])
+    if len(arguments) == 1 and arguments[0] in ("dial", "answer", "end"):
+        action = arguments[0]
+        key = "number" if action == "dial" else "id"
+        try:
+            raw = stream.read(257)
+            if len(raw) > 256:
+                raise ValueError
+            request = json.loads(raw.decode("utf-8"))
+            if (not isinstance(request, dict) or set(request) != {"version", key}
+                    or type(request["version"]) is not int or request["version"] != 1
+                    or type(request[key]) is not (str if action == "dial" else int)):
+                raise ValueError
+        except (ValueError, RecursionError):
+            print(json.dumps({"version": 1, "slot": 2, "error": "invalid_request"}))
+            return 2
+        from fuxi_sub2_control import run
+        return run(action, str(request[key]))
+    print("usage: fuxi-sim2-telephony calls|wait-calls|dial|answer|end|sms-send|sms-inbox|sms-message", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:], sys.stdin.buffer))
